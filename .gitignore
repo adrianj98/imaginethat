@@ -1,0 +1,24 @@
+# Swift / Xcode
+.build/
+build/
+DerivedData/
+*.xcuserdata
+*.xcworkspace
+xcuserdata/
+
+# Go
+gocryptfs-lib/internal/
+gocryptfs-lib/go.sum
+
+# macOS
+.DS_Store
+._*
+
+# Editors
+*.swp
+*~
+.vscode/
+.idea/
+
+# Claude
+.claude/

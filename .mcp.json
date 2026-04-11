@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "macuse": {
+      "command": "/Applications/Macuse.app/Contents/MacOS/macuse",
+      "args": ["mcp"]
+    }
+  }
+}

@@ -1,0 +1,41 @@
+name: ImageThat
+options:
+  bundleIdPrefix: com.adrianm.imagethat
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+targets:
+  ImageThat:
+    type: application
+    platform: macOS
+    sources:
+      - ImageThat
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.adrianm.imagethat
+        INFOPLIST_FILE: ImageThat/Resources/Info.plist
+        PRODUCT_NAME: ImageThat
+        SWIFT_OBJC_BRIDGING_HEADER: ImageThat/BridgingHeader.h
+        CODE_SIGN_ENTITLEMENTS: ""
+        ENABLE_APP_SANDBOX: NO
+        LIBRARY_SEARCH_PATHS: "$(SRCROOT)/build"
+        OTHER_LDFLAGS: "-lgocryptfs"
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
+    preBuildScripts:
+      - name: Build gocryptfs library
+        script: |
+          if [ -f "${SRCROOT}/Scripts/build-golib.sh" ]; then
+            bash "${SRCROOT}/Scripts/build-golib.sh"
+          fi
+        basedOnDependencyAnalysis: false
+    postCompileScripts:
+      - name: Copy gocryptfs dylib
+        script: |
+          mkdir -p "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+          cp "${SRCROOT}/build/libgocryptfs.dylib" "${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/" 2>/dev/null || true
+        basedOnDependencyAnalysis: false

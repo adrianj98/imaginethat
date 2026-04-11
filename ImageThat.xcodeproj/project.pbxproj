@@ -1,0 +1,458 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		11C413989487289DD5D40375 /* SupportedFormats.swift in Sources */ = {isa = PBXBuildFile; fileRef = D793BD3EC1727272269EBC82 /* SupportedFormats.swift */; };
+		1870D0AB1EF64EFFAF563A38 /* GocryptfsBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38B2DD767C1BD7A518446BCB /* GocryptfsBridge.swift */; };
+		1A3C3967AC01A34160E61AE2 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = E400CC4330BB2A3B36A0580C /* AppState.swift */; };
+		3302C10B9DEF6A87923C85E6 /* MediaLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 715A2AF41150E32A9A9ABC52 /* MediaLoader.swift */; };
+		531DD1C9690FA660148D5E78 /* ImageThatApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F6779733FE6F9484B5C97ED /* ImageThatApp.swift */; };
+		53903B2FC7B34D21CF8A0DD3 /* VaultUnlockSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4D4B043666D53967F22BAF8 /* VaultUnlockSheet.swift */; };
+		6382C04FEBE752AD26088E9E /* BrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 277A55BB13A0E01B41E6CDBC /* BrowserView.swift */; };
+		6587338EE487E1A622490A55 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEB71906A391099E20CC6B32 /* SidebarView.swift */; };
+		6EA3A8F4638924A7B13A85EF /* VideoPlayerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6078938E05B14D951AAC949F /* VideoPlayerView.swift */; };
+		811286E8AEC3B6F3E2A700A3 /* MediaSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = C917F953111AF4FE825532A4 /* MediaSource.swift */; };
+		8B2B7A0877509DBB2BBB6501 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 301337B6F045862912F8D11A /* Assets.xcassets */; };
+		8F785C9417BB6934EB6FF6D2 /* MediaItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64B07CBA8795FAED3B4204BC /* MediaItem.swift */; };
+		B2F348009BD4C0787B34184F /* DetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6C0EA66B49831234B51076D /* DetailView.swift */; };
+		C0594AE3A2B59045E7036CC0 /* VaultSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E87C58F2F28510B96824BBB /* VaultSource.swift */; };
+		D00B8140454C2FD4625F9511 /* FolderSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C4DE24385B00F8CB2AAF187 /* FolderSource.swift */; };
+		DD03D68169D79F04F2DCEBA2 /* EncryptedResourceLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08097B0E675A17A027548F5A /* EncryptedResourceLoader.swift */; };
+		DDA4A750A73999E7C96970D0 /* ThumbnailCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1855F054097D8568AF31562 /* ThumbnailCache.swift */; };
+		F64A64B88617D7369F49C0C8 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 517842FB651C4C64BA5B3611 /* ContentView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		04F21F176EB0F0A5C57A9430 /* BridgingHeader.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = BridgingHeader.h; sourceTree = "<group>"; };
+		08097B0E675A17A027548F5A /* EncryptedResourceLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EncryptedResourceLoader.swift; sourceTree = "<group>"; };
+		1C4DE24385B00F8CB2AAF187 /* FolderSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderSource.swift; sourceTree = "<group>"; };
+		277A55BB13A0E01B41E6CDBC /* BrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserView.swift; sourceTree = "<group>"; };
+		301337B6F045862912F8D11A /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		38B2DD767C1BD7A518446BCB /* GocryptfsBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GocryptfsBridge.swift; sourceTree = "<group>"; };
+		4ABE10C6DC4695D25FA25533 /* ImageThat.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ImageThat.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4E87C58F2F28510B96824BBB /* VaultSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultSource.swift; sourceTree = "<group>"; };
+		517842FB651C4C64BA5B3611 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		6078938E05B14D951AAC949F /* VideoPlayerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoPlayerView.swift; sourceTree = "<group>"; };
+		64B07CBA8795FAED3B4204BC /* MediaItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaItem.swift; sourceTree = "<group>"; };
+		715A2AF41150E32A9A9ABC52 /* MediaLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaLoader.swift; sourceTree = "<group>"; };
+		727B8D19A81FCE5B871F7A54 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		7F6779733FE6F9484B5C97ED /* ImageThatApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageThatApp.swift; sourceTree = "<group>"; };
+		B1855F054097D8568AF31562 /* ThumbnailCache.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThumbnailCache.swift; sourceTree = "<group>"; };
+		B4D4B043666D53967F22BAF8 /* VaultUnlockSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VaultUnlockSheet.swift; sourceTree = "<group>"; };
+		C917F953111AF4FE825532A4 /* MediaSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediaSource.swift; sourceTree = "<group>"; };
+		CEB71906A391099E20CC6B32 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		D793BD3EC1727272269EBC82 /* SupportedFormats.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupportedFormats.swift; sourceTree = "<group>"; };
+		E400CC4330BB2A3B36A0580C /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		E6C0EA66B49831234B51076D /* DetailView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DetailView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		49D02FEA074D59A97ED8839C /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				1C4DE24385B00F8CB2AAF187 /* FolderSource.swift */,
+				64B07CBA8795FAED3B4204BC /* MediaItem.swift */,
+				C917F953111AF4FE825532A4 /* MediaSource.swift */,
+				4E87C58F2F28510B96824BBB /* VaultSource.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		62F958590B9D80ABCB004351 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				E400CC4330BB2A3B36A0580C /* AppState.swift */,
+				7F6779733FE6F9484B5C97ED /* ImageThatApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		6929CF93DCFB6AB80A3BC47B /* ImageThat */ = {
+			isa = PBXGroup;
+			children = (
+				04F21F176EB0F0A5C57A9430 /* BridgingHeader.h */,
+				62F958590B9D80ABCB004351 /* App */,
+				49D02FEA074D59A97ED8839C /* Models */,
+				938D8AED34B9FBA3B85F6D7A /* Resources */,
+				F4EC17FDD302C99684C3DCC4 /* Services */,
+				77F89CC94DAEAE9856EBC1D2 /* Utilities */,
+				6953A9CED35B21240BD235F5 /* Views */,
+			);
+			path = ImageThat;
+			sourceTree = "<group>";
+		};
+		6953A9CED35B21240BD235F5 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				277A55BB13A0E01B41E6CDBC /* BrowserView.swift */,
+				517842FB651C4C64BA5B3611 /* ContentView.swift */,
+				E6C0EA66B49831234B51076D /* DetailView.swift */,
+				CEB71906A391099E20CC6B32 /* SidebarView.swift */,
+				B4D4B043666D53967F22BAF8 /* VaultUnlockSheet.swift */,
+				6078938E05B14D951AAC949F /* VideoPlayerView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		6E30F8DFF2204E76614E107B = {
+			isa = PBXGroup;
+			children = (
+				6929CF93DCFB6AB80A3BC47B /* ImageThat */,
+				88E6A1850312A5F6A70D3060 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		77F89CC94DAEAE9856EBC1D2 /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				D793BD3EC1727272269EBC82 /* SupportedFormats.swift */,
+			);
+			path = Utilities;
+			sourceTree = "<group>";
+		};
+		88E6A1850312A5F6A70D3060 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				4ABE10C6DC4695D25FA25533 /* ImageThat.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		938D8AED34B9FBA3B85F6D7A /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				301337B6F045862912F8D11A /* Assets.xcassets */,
+				727B8D19A81FCE5B871F7A54 /* Info.plist */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		F4EC17FDD302C99684C3DCC4 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				08097B0E675A17A027548F5A /* EncryptedResourceLoader.swift */,
+				38B2DD767C1BD7A518446BCB /* GocryptfsBridge.swift */,
+				715A2AF41150E32A9A9ABC52 /* MediaLoader.swift */,
+				B1855F054097D8568AF31562 /* ThumbnailCache.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		359D21DE690BFC47146CFC45 /* ImageThat */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0C77011A4DD13B2D584E5A40 /* Build configuration list for PBXNativeTarget "ImageThat" */;
+			buildPhases = (
+				9CA6B952698027DFFD91148D /* Build gocryptfs library */,
+				56E2A91F18D3252D475A84D8 /* Sources */,
+				07FCD5084C5D2213FA6DB264 /* Copy gocryptfs dylib */,
+				920F024B69E216C084183416 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ImageThat;
+			packageProductDependencies = (
+			);
+			productName = ImageThat;
+			productReference = 4ABE10C6DC4695D25FA25533 /* ImageThat.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		D9819941F24551BD4B7565E6 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+				};
+			};
+			buildConfigurationList = ABC052D4A459194567FCA5EE /* Build configuration list for PBXProject "ImageThat" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 6E30F8DFF2204E76614E107B;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 88E6A1850312A5F6A70D3060 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				359D21DE690BFC47146CFC45 /* ImageThat */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		920F024B69E216C084183416 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8B2B7A0877509DBB2BBB6501 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		07FCD5084C5D2213FA6DB264 /* Copy gocryptfs dylib */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Copy gocryptfs dylib";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "mkdir -p \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}\"\ncp \"${SRCROOT}/build/libgocryptfs.dylib\" \"${BUILT_PRODUCTS_DIR}/${FRAMEWORKS_FOLDER_PATH}/\" 2>/dev/null || true\n";
+		};
+		9CA6B952698027DFFD91148D /* Build gocryptfs library */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Build gocryptfs library";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "if [ -f \"${SRCROOT}/Scripts/build-golib.sh\" ]; then\n  bash \"${SRCROOT}/Scripts/build-golib.sh\"\nfi\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		56E2A91F18D3252D475A84D8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1A3C3967AC01A34160E61AE2 /* AppState.swift in Sources */,
+				6382C04FEBE752AD26088E9E /* BrowserView.swift in Sources */,
+				F64A64B88617D7369F49C0C8 /* ContentView.swift in Sources */,
+				B2F348009BD4C0787B34184F /* DetailView.swift in Sources */,
+				DD03D68169D79F04F2DCEBA2 /* EncryptedResourceLoader.swift in Sources */,
+				D00B8140454C2FD4625F9511 /* FolderSource.swift in Sources */,
+				1870D0AB1EF64EFFAF563A38 /* GocryptfsBridge.swift in Sources */,
+				531DD1C9690FA660148D5E78 /* ImageThatApp.swift in Sources */,
+				8F785C9417BB6934EB6FF6D2 /* MediaItem.swift in Sources */,
+				3302C10B9DEF6A87923C85E6 /* MediaLoader.swift in Sources */,
+				811286E8AEC3B6F3E2A700A3 /* MediaSource.swift in Sources */,
+				6587338EE487E1A622490A55 /* SidebarView.swift in Sources */,
+				11C413989487289DD5D40375 /* SupportedFormats.swift in Sources */,
+				DDA4A750A73999E7C96970D0 /* ThumbnailCache.swift in Sources */,
+				C0594AE3A2B59045E7036CC0 /* VaultSource.swift in Sources */,
+				53903B2FC7B34D21CF8A0DD3 /* VaultUnlockSheet.swift in Sources */,
+				6EA3A8F4638924A7B13A85EF /* VideoPlayerView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		08046F6CC3DBDE2E21F98CFD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "";
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				INFOPLIST_FILE = ImageThat/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/build";
+				OTHER_LDFLAGS = "-lgocryptfs";
+				PRODUCT_BUNDLE_IDENTIFIER = com.adrianm.imagethat;
+				PRODUCT_NAME = ImageThat;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = ImageThat/BridgingHeader.h;
+			};
+			name = Debug;
+		};
+		241C76F20F3E876C7806285D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+		293A61C61B9D7BBAAB2D888D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "";
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				INFOPLIST_FILE = ImageThat/Resources/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
+				LIBRARY_SEARCH_PATHS = "$(SRCROOT)/build";
+				OTHER_LDFLAGS = "-lgocryptfs";
+				PRODUCT_BUNDLE_IDENTIFIER = com.adrianm.imagethat;
+				PRODUCT_NAME = ImageThat;
+				SDKROOT = macosx;
+				SWIFT_OBJC_BRIDGING_HEADER = ImageThat/BridgingHeader.h;
+			};
+			name = Release;
+		};
+		E76833614A9095316151CF68 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0C77011A4DD13B2D584E5A40 /* Build configuration list for PBXNativeTarget "ImageThat" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				08046F6CC3DBDE2E21F98CFD /* Debug */,
+				293A61C61B9D7BBAAB2D888D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		ABC052D4A459194567FCA5EE /* Build configuration list for PBXProject "ImageThat" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E76833614A9095316151CF68 /* Debug */,
+				241C76F20F3E876C7806285D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = D9819941F24551BD4B7565E6 /* Project object */;
+}
