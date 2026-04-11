@@ -78,7 +78,8 @@ public struct ThumbnailCell: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
         }
-        .task {
+        .task(id: item.id) {
+            thumbnail = nil
             thumbnail = await appState.loadThumbnail(for: item, size: CGSize(width: 200, height: 200))
         }
     }

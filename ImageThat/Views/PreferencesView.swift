@@ -81,8 +81,7 @@ public struct SecurityTab: View {
                             }
                             Spacer()
                             Button("Forget") {
-                                try? KeychainManager.shared.deletePassword(forVault: path)
-                                savedVaults.removeAll { $0 == path }
+                                forgetVault(path: path)
                             }
                             .foregroundStyle(.red)
                         }
@@ -111,9 +110,8 @@ public struct SecurityTab: View {
             HStack {
                 Spacer()
                 Button("Forget All Passwords") {
-                    for path in savedVaults {
-                        try? KeychainManager.shared.deletePassword(forVault: path)
-                    }
+                    PasswordStore.shared.deleteAll()
+                    KeychainManager.shared.deleteMasterKey()
                     savedVaults = []
                 }
                 .disabled(savedVaults.isEmpty)
@@ -121,9 +119,24 @@ public struct SecurityTab: View {
         }
         .padding()
         .onAppear {
-            savedVaults = KeychainManager.shared.savedVaultPaths()
+            loadSavedVaults()
             updateCacheSize()
         }
+    }
+
+    private func loadSavedVaults() {
+        guard let key = try? KeychainManager.shared.getMasterKey() else {
+            savedVaults = []
+            return
+        }
+        savedVaults = PasswordStore.shared.savedVaultPaths(masterKey: key)
+    }
+
+    private func forgetVault(path: String) {
+        if let key = try? KeychainManager.shared.getMasterKey() {
+            try? PasswordStore.shared.delete(vault: path, masterKey: key)
+        }
+        savedVaults.removeAll { $0 == path }
     }
 
     private var cacheSizeLabel: String {

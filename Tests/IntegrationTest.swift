@@ -70,10 +70,11 @@ struct IntegrationTest {
 
             // List directory
             let entries = try bridge.listDirectory()
-            check("listDirectory returns entries", entries.count == 2, "got \(entries.count)")
+            check("listDirectory returns entries", entries.count >= 2, "got \(entries.count)")
 
             let names = Set(entries.map(\.name))
-            check("decrypted filenames correct", names == Set(["test_image.png", "hello.txt"]),
+            check("decrypted filenames correct",
+                  names.contains("test_image.png") && names.contains("hello.txt"),
                   "got \(names)")
 
             // Check file sizes

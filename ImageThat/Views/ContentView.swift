@@ -5,10 +5,8 @@ public struct ContentView: View {
 
     public init() {}
 
-    @State private var sidebarVisibility: NavigationSplitViewVisibility = .automatic
-
     public var body: some View {
-        NavigationSplitView(columnVisibility: $sidebarVisibility) {
+        NavigationSplitView {
             SidebarView()
         } detail: {
             Group {
@@ -30,9 +28,6 @@ public struct ContentView: View {
         }
         .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 350)
         .frame(minWidth: 800, minHeight: 600)
-        .onChange(of: appState.viewMode) { _, newValue in
-            sidebarVisibility = newValue == .detail ? .detailOnly : .automatic
-        }
         .alert("Error", isPresented: .init(
             get: { appState.errorMessage != nil },
             set: { if !$0 { appState.errorMessage = nil } }

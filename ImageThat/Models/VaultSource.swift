@@ -53,7 +53,7 @@ public final class VaultSource: MediaSource, @unchecked Sendable {
     }
 
     public func loadImage(for item: MediaItem) async throws -> NSImage {
-        let data = try bridge.decryptFile(path: item.url.path)
+        let data = try readFileInChunks(path: item.url.path)
         guard let image = NSImage(data: data) else {
             throw MediaError.failedToLoadImage(item.name)
         }
@@ -95,8 +95,31 @@ public final class VaultSource: MediaSource, @unchecked Sendable {
 
     // MARK: - Private
 
+    /// Read an entire file using chunked readRange calls to avoid 3x memory overhead of decryptFile.
+    private func readFileInChunks(path: String) throws -> Data {
+        let fileSize = try bridge.fileSize(path: path)
+        guard fileSize > 0 else { return Data() }
+
+        var data = Data()
+        data.reserveCapacity(Int(fileSize))
+
+        let chunkSize: Int32 = 256 * 1024 // 256KB
+        var offset: Int64 = 0
+
+        while offset < fileSize {
+            let toRead = Int32(min(Int64(chunkSize), fileSize - offset))
+            let chunk = try bridge.readRange(path: path, offset: offset, length: toRead)
+            if chunk.isEmpty { break }
+            data.append(chunk)
+            offset += Int64(chunk.count)
+            if chunk.count < Int(toRead) { break }
+        }
+
+        return data
+    }
+
     private func loadImageThumbnail(for item: MediaItem, size: CGSize) throws -> NSImage {
-        let data = try bridge.decryptFile(path: item.url.path)
+        let data = try readFileInChunks(path: item.url.path)
         let maxDimension = max(size.width, size.height) * 2
 
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {

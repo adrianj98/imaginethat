@@ -1,4 +1,4 @@
-.PHONY: build run golib clean app
+.PHONY: build run golib clean app test test-logic test-e2e
 
 BIN_DIR = .build/arm64-apple-macosx/debug
 APP_BUNDLE = build/ImageThat.app
@@ -43,6 +43,17 @@ golib:
 	cd gocryptfs-lib && CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 		go build -tags without_openssl -buildmode=c-shared \
 		-o ../build/libgocryptfs.dylib .
+
+# Run all tests
+test: test-logic test-e2e
+
+# Run logic/integration tests
+test-logic: build
+	DYLD_LIBRARY_PATH=$(PWD)/build $(BIN_DIR)/IntegrationTest
+
+# Run E2E tests (requires Peekaboo: brew install steipete/tap/peekaboo)
+test-e2e: app
+	bash Tests/e2e_test.sh
 
 # Clean all build artifacts
 clean:

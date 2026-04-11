@@ -1,4 +1,5 @@
 import SwiftUI
+import CryptoKit
 import UniformTypeIdentifiers
 
 public enum ViewMode {
@@ -16,6 +17,7 @@ public class AppState: ObservableObject {
     @Published public var errorMessage: String?
     @Published public var showVaultUnlock = false
     @Published public var pendingVaultURL: URL?
+    private var pendingVaultRebuildSidebar = false
 
     // Sidebar state
     @Published public var sidebarItems: [SidebarItem] = []
@@ -30,11 +32,49 @@ public class AppState: ObservableObject {
 
     /// Session password cache: vault path → password
     private var vaultPasswords: [String: String] = [:]
+    /// Cached master key for the session (after Touch ID)
+    private var masterKey: Data?
 
-    /// Active vault bridge (kept alive for subfolder navigation)
+    /// Vault bridges keyed by vault path — kept alive for the session
+    private var vaultBridges: [String: GocryptfsBridge] = [:]
+    /// The most recently used vault bridge
     private var activeVaultBridge: GocryptfsBridge?
 
     public init() {}
+
+    /// Load all saved vault passwords on app launch. Triggers Touch ID if passwords exist.
+    public func loadSavedPasswords() {
+        guard KeychainManager.shared.hasMasterKey(), PasswordStore.shared.hasPasswords else { return }
+        Task {
+            do {
+                guard let key = try KeychainManager.shared.getMasterKey() else { return }
+                self.masterKey = key
+                let saved = try PasswordStore.shared.loadAll(masterKey: key)
+                for (path, password) in saved {
+                    self.vaultPasswords[path] = password
+                }
+            } catch {
+                // Touch ID cancelled or failed — user can enter passwords manually
+            }
+        }
+    }
+
+    /// Get or create the master key. Creates a new one if none exists.
+    private func getOrCreateMasterKey() throws -> Data {
+        if let key = masterKey { return key }
+        if KeychainManager.shared.hasMasterKey() {
+            if let key = try KeychainManager.shared.getMasterKey() {
+                masterKey = key
+                return key
+            }
+        }
+        // Generate new master key
+        let key = SymmetricKey(size: .bits256)
+        let keyData = key.withUnsafeBytes { Data($0) }
+        try KeychainManager.shared.saveMasterKey(keyData)
+        masterKey = keyData
+        return keyData
+    }
 
     public var selectedItem: MediaItem? {
         guard mediaItems.indices.contains(selectedIndex) else { return nil }
@@ -68,12 +108,16 @@ public class AppState: ObservableObject {
         }
     }
 
-    /// Called from sidebar selection — never rebuilds the sidebar.
+    /// Called from sidebar selection — never rebuilds the sidebar, but lazily expands children.
     public func navigateToSidebarItem(_ item: SidebarItem) {
+        // Lazily expand children in the sidebar if not yet loaded
+        expandSidebarItem(item)
+
         if let vaultPath = item.vaultPath {
-            // Already-open vault subfolder navigation
-            guard let bridge = activeVaultBridge else { return }
-            if let current = mediaSource as? VaultSource, current.currentPath == vaultPath { return }
+            // Look up the correct bridge for this vault (item.url is the vault root)
+            guard let bridge = vaultBridges[item.url.path] ?? activeVaultBridge else { return }
+            if let current = mediaSource as? VaultSource, current.currentPath == vaultPath, current.bridge === bridge { return }
+            activeVaultBridge = bridge
             let source = VaultSource(bridge: bridge, currentPath: vaultPath)
             self.mediaSource = source
             self.viewMode = .grid
@@ -89,35 +133,80 @@ public class AppState: ObservableObject {
         }
     }
 
+    /// Lazily load children for a sidebar item if it hasn't been expanded yet.
+    private func expandSidebarItem(_ item: SidebarItem) {
+        // Already has children — nothing to do
+        if !item.children.isEmpty { return }
+
+        let itemID = item.id
+        let itemURL = item.url
+
+        if let vaultPath = item.vaultPath {
+            // Vault subfolder — load decrypted subfolders
+            guard let bridge = activeVaultBridge else { return }
+            Task.detached {
+                let children = Self.vaultSubfolders(bridge: bridge, path: vaultPath, maxDepth: 1)
+                await MainActor.run { [weak self] in
+                    self?.updateSidebarChildren(parentID: itemID, children: children)
+                }
+            }
+        } else {
+            if isVault(itemURL) {
+                // Vault folder — expand with decrypted names if unlocked
+                guard let bridge = activeVaultBridge, bridge.vaultPath == itemURL else { return }
+                Task.detached {
+                    let children = Self.vaultSubfolders(bridge: bridge, path: "", maxDepth: 1)
+                    await MainActor.run { [weak self] in
+                        self?.updateSidebarChildrenByURL(parentURL: itemURL, children: children)
+                    }
+                }
+            } else {
+                // Plain folder — load subfolders
+                Task.detached {
+                    let children = Self.subfolders(of: itemURL, maxDepth: 1)
+                    await MainActor.run { [weak self] in
+                        self?.updateSidebarChildren(parentID: itemID, children: children)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Update a sidebar item's children in the tree by ID.
+    private func updateSidebarChildren(parentID: UUID, children: [SidebarItem]) {
+        guard !children.isEmpty else { return }
+        sidebarItems = sidebarItems.map { updateChildren(in: $0, parentID: parentID, children: children) }
+    }
+
+    private func updateChildren(in item: SidebarItem, parentID: UUID, children: [SidebarItem]) -> SidebarItem {
+        if item.id == parentID {
+            var updated = item
+            updated.children = children
+            return updated
+        }
+        var updated = item
+        updated.children = item.children.map { updateChildren(in: $0, parentID: parentID, children: children) }
+        return updated
+    }
+
     private func tryUnlockVault(url: URL, rebuildSidebar: Bool) {
         // 1. Session cache
         if let password = vaultPasswords[url.path] {
             unlockVault(url: url, password: password, rebuildSidebar: rebuildSidebar)
             return
         }
-        // 2. Keychain (triggers Touch ID)
-        if KeychainManager.shared.hasPassword(forVault: url.path) {
-            Task {
-                do {
-                    if let password = try KeychainManager.shared.getPassword(forVault: url.path) {
-                        unlockVault(url: url, password: password, rebuildSidebar: rebuildSidebar)
-                        return
-                    }
-                } catch { }
-                pendingVaultURL = url
-                showVaultUnlock = true
-            }
-            return
-        }
-        // 3. Manual password prompt
+        // 2. Manual password prompt
         pendingVaultURL = url
+        pendingVaultRebuildSidebar = rebuildSidebar
         showVaultUnlock = true
     }
 
     public func unlockVault(password: String, saveToKeychain: Bool = true) {
         guard let url = pendingVaultURL else { return }
+        let rebuild = pendingVaultRebuildSidebar
         pendingVaultURL = nil
-        unlockVault(url: url, password: password, rebuildSidebar: false, saveToKeychain: saveToKeychain)
+        pendingVaultRebuildSidebar = false
+        unlockVault(url: url, password: password, rebuildSidebar: rebuild, saveToKeychain: saveToKeychain)
     }
 
     // MARK: - Directory navigation
@@ -222,24 +311,19 @@ public class AppState: ObservableObject {
         self.mediaSource = source
         self.viewMode = .grid
         self.selectedIndex = 0
+        loadMedia(from: source)
 
         if rebuildSidebar {
             let rootName = url.lastPathComponent
-            let rootItem = SidebarItem(name: rootName, url: url, children: [])
-            sidebarItems = [rootItem]
-            selectedSidebarItem = rootItem
-            // Build sidebar children in background
             Task.detached {
                 let children = Self.subfolders(of: url, maxDepth: 1)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
-                    let updatedRoot = SidebarItem(name: rootName, url: url, children: children)
-                    self.sidebarItems = [updatedRoot]
+                    let rootItem = SidebarItem(name: rootName, url: url, children: children)
+                    self.sidebarItems = [rootItem]
                 }
             }
         }
-
-        loadMedia(from: source)
     }
 
     private func unlockVault(url: URL, password: String, rebuildSidebar: Bool = true, saveToKeychain: Bool = true) {
@@ -248,9 +332,13 @@ public class AppState: ObservableObject {
             do {
                 let bridge = try GocryptfsBridge(vaultPath: url, password: password)
                 vaultPasswords[url.path] = password
+                // Save password to encrypted file if user opted in
                 if saveToKeychain {
-                    try? KeychainManager.shared.savePassword(password, forVault: url.path)
+                    if let key = try? getOrCreateMasterKey() {
+                        try? PasswordStore.shared.save(password: password, forVault: url.path, masterKey: key)
+                    }
                 }
+                vaultBridges[url.path] = bridge
                 activeVaultBridge = bridge
                 let source = VaultSource(bridge: bridge)
                 self.mediaSource = source
@@ -258,6 +346,9 @@ public class AppState: ObservableObject {
                 self.selectedIndex = 0
                 if rebuildSidebar {
                     buildVaultSidebar(bridge: bridge, rootName: url.lastPathComponent)
+                } else {
+                    // Expand the vault's children in the existing sidebar
+                    expandVaultInSidebar(bridge: bridge, vaultURL: url)
                 }
                 loadMedia(from: source)
             } catch {
@@ -302,6 +393,32 @@ public class AppState: ObservableObject {
         }
     }
 
+    /// After unlocking a vault via sidebar click, expand its children in the sidebar tree.
+    private func expandVaultInSidebar(bridge: GocryptfsBridge, vaultURL: URL) {
+        Task.detached {
+            let children = Self.vaultSubfolders(bridge: bridge, path: "", maxDepth: 1)
+            await MainActor.run { [weak self] in
+                self?.updateSidebarChildrenByURL(parentURL: vaultURL, children: children)
+            }
+        }
+    }
+
+    private func updateSidebarChildrenByURL(parentURL: URL, children: [SidebarItem]) {
+        guard !children.isEmpty else { return }
+        sidebarItems = sidebarItems.map { updateChildrenByURL(in: $0, parentURL: parentURL, children: children) }
+    }
+
+    private func updateChildrenByURL(in item: SidebarItem, parentURL: URL, children: [SidebarItem]) -> SidebarItem {
+        if item.url == parentURL && item.vaultPath == nil {
+            var updated = item
+            updated.children = children
+            return updated
+        }
+        var updated = item
+        updated.children = item.children.map { updateChildrenByURL(in: $0, parentURL: parentURL, children: children) }
+        return updated
+    }
+
     // MARK: - Sidebar building (off main thread, depth-limited)
 
     nonisolated private static func subfolders(of url: URL, maxDepth: Int) -> [SidebarItem] {
@@ -313,7 +430,12 @@ public class AppState: ObservableObject {
         return contents
             .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
             .sorted { $0.lastPathComponent.localizedCaseInsensitiveCompare($1.lastPathComponent) == .orderedAscending }
-            .map { SidebarItem(name: $0.lastPathComponent, url: $0, children: subfolders(of: $0, maxDepth: maxDepth - 1)) }
+            .map { subURL in
+                // Don't recurse into vault directories — their contents are encrypted
+                let isVault = fm.fileExists(atPath: subURL.appendingPathComponent("gocryptfs.conf").path)
+                let children = isVault ? [] : subfolders(of: subURL, maxDepth: maxDepth - 1)
+                return SidebarItem(name: subURL.lastPathComponent, url: subURL, children: children)
+            }
     }
 
     private func buildVaultSidebar(bridge: GocryptfsBridge, rootName: String) {

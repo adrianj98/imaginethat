@@ -123,8 +123,16 @@ public final class GocryptfsBridge: @unchecked Sendable {
             }
         }
 
-        guard bytesRead >= 0 else {
-            throw GocryptfsError.decryptFailed("readRange failed")
+        if bytesRead < 0 {
+            NSLog("[GocryptfsBridge] readRange FAILED: path=%@, offset=%lld, length=%d, bytesRead=%d",
+                  path, offset, length, bytesRead)
+            throw GocryptfsError.decryptFailed("readRange failed at offset=\(offset) length=\(length)")
+        }
+
+        if bytesRead == 0 {
+            // Zero bytes read - could be EOF or error
+            NSLog("[GocryptfsBridge] readRange EOF: path=%@, offset=%lld, length=%d",
+                  path, offset, length)
         }
 
         return buffer.prefix(Int(bytesRead))

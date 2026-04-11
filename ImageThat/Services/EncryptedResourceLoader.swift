@@ -1,4 +1,7 @@
 import AVFoundation
+import os
+
+private let logger = Logger(subsystem: "com.imagethat", category: "EncryptedResourceLoader")
 
 /// AVAssetResourceLoaderDelegate that streams decrypted gocryptfs content to AVPlayer.
 /// Decrypted data stays in memory — never written to disk.
@@ -42,7 +45,9 @@ public final class EncryptedResourceLoader: NSObject, AVAssetResourceLoaderDeleg
                 contentRequest.contentLength = size
                 contentRequest.contentType = contentType
                 contentRequest.isByteRangeAccessSupported = true
+                logger.info("Content info: path=\(self.relativePath, privacy: .public) size=\(size) type=\(self.contentType)")
             } catch {
+                logger.error("Content info error: \(error.localizedDescription, privacy: .public)")
                 loadingRequest.finishLoading(with: error)
                 return true
             }
@@ -53,14 +58,22 @@ public final class EncryptedResourceLoader: NSObject, AVAssetResourceLoaderDeleg
             let offset = dataRequest.requestedOffset
             let length = dataRequest.requestedLength
 
-            // Read in chunks to avoid huge allocations
+            logger.info("Data request: offset=\(offset) length=\(length) (will chunk into \(256 * 1024) byte chunks)")
+
+            // For large requests, just read what we can quickly and let AVPlayer request more
             let chunkSize: Int32 = 256 * 1024 // 256KB chunks
-            var currentOffset = offset
-            var remaining = Int32(length)
 
             do {
-                while remaining > 0 {
-                    let toRead = min(chunkSize, remaining)
+                var bytesRead: Int64 = 0
+                var currentOffset = offset
+
+                // Respond with up to 10MB at a time, then finish and let AVPlayer request more
+                let maxBufferPerRequest: Int64 = 10 * 1024 * 1024 // 10MB
+                let totalRequested = Int64(length)
+                while bytesRead < maxBufferPerRequest && bytesRead < totalRequested {
+                    let toRead = Int32(min(Int64(chunkSize), totalRequested - bytesRead))
+                    logger.info("readRange offset=\(currentOffset) length=\(toRead)")
+
                     let data = try bridge.readRange(
                         path: relativePath,
                         offset: currentOffset,
@@ -68,19 +81,24 @@ public final class EncryptedResourceLoader: NSObject, AVAssetResourceLoaderDeleg
                     )
 
                     if data.isEmpty {
+                        logger.info("EOF at offset=\(currentOffset)")
                         break
                     }
 
                     dataRequest.respond(with: data)
+                    bytesRead += Int64(data.count)
                     currentOffset += Int64(data.count)
-                    remaining -= Int32(data.count)
 
-                    if data.count < Int(toRead) {
-                        break // EOF
+                    if data.count < toRead {
+                        logger.info("Short read, EOF")
+                        break
                     }
                 }
+
+                logger.info("Responding with \(bytesRead)/\(totalRequested) bytes")
                 loadingRequest.finishLoading()
             } catch {
+                logger.error("readRange error: \(error.localizedDescription, privacy: .public)")
                 loadingRequest.finishLoading(with: error)
             }
             return true

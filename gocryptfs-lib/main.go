@@ -28,10 +28,12 @@ import "C"
 import (
 	"encoding/base64"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	"github.com/adrianm/imagethat/gocryptfs-lib/internal/configfile"
@@ -40,9 +42,18 @@ import (
 	"github.com/adrianm/imagethat/gocryptfs-lib/internal/nametransform"
 )
 
+func init() {
+	// Write logs to a file for debugging
+	logFile, err := os.OpenFile("/tmp/gocryptfs.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err == nil {
+		log.SetOutput(logFile)
+	}
+}
+
 type openFile struct {
 	f      *os.File
 	header *contentenc.FileHeader
+	refs   int32 // atomic reference count; file closed when refs hits 0
 }
 
 type vaultSession struct {
@@ -124,8 +135,9 @@ func GocryptfsClose(sessionID C.int) {
 	if sess, ok := sessions[int(sessionID)]; ok {
 		sess.openFilesMu.Lock()
 		for _, of := range sess.openFiles {
-			of.f.Close()
+			of.release() // release cache's reference
 		}
+		sess.openFiles = nil
 		sess.openFilesMu.Unlock()
 	}
 	delete(sessions, int(sessionID))
@@ -391,19 +403,35 @@ func GocryptfsDecryptFile(sessionID C.int, relativePath *C.char) C.DecryptResult
 func GocryptfsReadRange(sessionID C.int, relativePath *C.char, offset C.int64_t, length C.int32_t, outBuf unsafe.Pointer) C.int32_t {
 	sess := getSession(int(sessionID))
 	if sess == nil {
+		log.Printf("[GocryptfsReadRange] ERROR: invalid session %d\n", sessionID)
 		return -1
 	}
 
 	relPath := C.GoString(relativePath)
+	log.Printf("[GocryptfsReadRange] Reading %s offset=%d length=%d\n", relPath, offset, length)
+
 	of, err := sess.getOrOpenFile(relPath)
 	if err != nil {
+		log.Printf("[GocryptfsReadRange] ERROR opening file: %v\n", err)
 		return -1
 	}
+	defer of.release()
 
 	plainOff := uint64(offset)
 	plainLen := uint64(length)
 	cipherBS := sess.contentEnc.CipherBS()
 	plainBS := sess.contentEnc.PlainBS()
+
+	// Cap plainLen to prevent overflow in plainOff + plainLen arithmetic
+	// Max safe read is INT64_MAX - plainOff
+	const maxInt64 uint64 = 1<<63 - 1
+	if plainOff > maxInt64 {
+		return 0 // Offset beyond valid range
+	}
+	maxLen := maxInt64 - plainOff
+	if plainLen > maxLen {
+		plainLen = maxLen
+	}
 
 	firstBlock := plainOff / plainBS
 	lastBlock := (plainOff + plainLen - 1) / plainBS
@@ -415,11 +443,17 @@ func GocryptfsReadRange(sessionID C.int, relativePath *C.char, offset C.int64_t,
 		cipherOff := int64(contentenc.HeaderLen + blockNo*cipherBS)
 		n, err := of.f.ReadAt(blockBuf, cipherOff)
 		if n == 0 {
+			log.Printf("[GocryptfsReadRange] Block %d: ReadAt returned 0 bytes\n", blockNo)
+			break
+		}
+		if err != nil && n == 0 {
+			log.Printf("[GocryptfsReadRange] Block %d: ReadAt error: %v\n", blockNo, err)
 			break
 		}
 
 		plain, err2 := sess.contentEnc.DecryptBlock(blockBuf[:n], blockNo, of.header.ID)
 		if err2 != nil {
+			log.Printf("[GocryptfsReadRange] Block %d: DecryptBlock failed: %v\n", blockNo, err2)
 			return -1
 		}
 
@@ -446,8 +480,11 @@ func GocryptfsReadRange(sessionID C.int, relativePath *C.char, offset C.int64_t,
 	}
 
 	if len(result) == 0 {
+		log.Printf("[GocryptfsReadRange] ERROR: read returned 0 bytes for offset=%d length=%d\n", offset, length)
 		return 0
 	}
+
+	log.Printf("[GocryptfsReadRange] OK: read %d bytes (requested %d)\n", len(result), length)
 
 	C.memcpy(outBuf, unsafe.Pointer(&result[0]), C.size_t(len(result)))
 
@@ -581,6 +618,19 @@ func (s *vaultSession) resolveCipherFilePath(plainRelPath string) string {
 	return cipherFilePath
 }
 
+// retain increments the reference count. Call release() when done.
+func (of *openFile) retain() {
+	atomic.AddInt32(&of.refs, 1)
+}
+
+// release decrements the reference count, closing the file when it reaches 0.
+func (of *openFile) release() {
+	if atomic.AddInt32(&of.refs, -1) == 0 {
+		of.f.Close()
+	}
+}
+
+// getOrOpenFile returns a retained *openFile. The caller MUST call release() when done.
 func (s *vaultSession) getOrOpenFile(relPath string) (*openFile, error) {
 	cipherPath := s.resolveCipherFilePath(relPath)
 
@@ -588,6 +638,7 @@ func (s *vaultSession) getOrOpenFile(relPath string) (*openFile, error) {
 	defer s.openFilesMu.Unlock()
 
 	if of, ok := s.openFiles[cipherPath]; ok {
+		of.retain() // caller's reference
 		return of, nil
 	}
 
@@ -607,14 +658,15 @@ func (s *vaultSession) getOrOpenFile(relPath string) (*openFile, error) {
 		return nil, err
 	}
 
-	of := &openFile{f: f, header: header}
+	// refs=2: one for the cache, one for the caller
+	of := &openFile{f: f, header: header, refs: 2}
 	s.openFiles[cipherPath] = of
 
 	// Limit cache size — evict oldest if > 16 open files
 	if len(s.openFiles) > 16 {
 		for k, v := range s.openFiles {
 			if k != cipherPath {
-				v.f.Close()
+				v.release()             // release cache's reference
 				delete(s.openFiles, k)
 				break
 			}

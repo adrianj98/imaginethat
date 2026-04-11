@@ -18,32 +18,34 @@ public enum KeychainError: LocalizedError {
     }
 }
 
+/// Manages a single master encryption key in the Keychain, protected by Touch ID.
+/// The master key is used to encrypt/decrypt vault passwords stored in a local file.
 public final class KeychainManager: @unchecked Sendable {
     public static let shared = KeychainManager()
 
-    private let service = "com.adrianm.imagethat.vault"
+    private let service = "com.adrianm.imagethat"
+    private let account = "master-key"
+    private let hasKeyFlag = "imagethat_has_master_key"
 
     private init() {}
 
-    // MARK: - Public API
+    // MARK: - Master Key
 
-    /// Save a vault password to the Keychain.
-    public func savePassword(_ password: String, forVault path: String) throws {
-        guard let passwordData = password.data(using: .utf8) else { return }
-
-        // Delete any existing entry first
+    /// Save a 32-byte master key to the Keychain.
+    public func saveMasterKey(_ key: Data) throws {
+        // Delete existing first
         let deleteQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: path
+            kSecAttrAccount as String: account
         ]
         SecItemDelete(deleteQuery as CFDictionary)
 
         let addQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: path,
-            kSecValueData as String: passwordData,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: key,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         ]
 
@@ -51,17 +53,15 @@ public final class KeychainManager: @unchecked Sendable {
         guard status == errSecSuccess else {
             throw KeychainError.saveFailed(status)
         }
-        UserDefaults.standard.set(true, forKey: "vault_saved_\(path)")
+        UserDefaults.standard.set(true, forKey: hasKeyFlag)
     }
 
-    /// Retrieve a vault password. Prompts Touch ID first, then reads from Keychain.
-    /// Returns nil if no password is saved. Throws on auth cancellation.
-    public func getPassword(forVault path: String) throws -> String? {
-        // Authenticate with Touch ID first
+    /// Retrieve the master key. Authenticates with Touch ID first, then reads from Keychain.
+    /// Returns nil if no key is saved. Throws on auth cancellation.
+    public func getMasterKey() throws -> Data? {
+        // Touch ID first
         let context = LAContext()
         var error: NSError?
-
-        // Prefer biometrics, fall back to device password
         let policy: LAPolicy = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
             ? .deviceOwnerAuthenticationWithBiometrics
             : .deviceOwnerAuthentication
@@ -71,7 +71,7 @@ public final class KeychainManager: @unchecked Sendable {
         var authResult: Result<Bool, Error> = .success(false)
         let semaphore = DispatchSemaphore(value: 0)
 
-        context.evaluatePolicy(policy, localizedReason: "Unlock encrypted vault") { success, authError in
+        context.evaluatePolicy(policy, localizedReason: "Unlock saved vault passwords") { success, authError in
             if success {
                 authResult = .success(true)
             } else if let authError {
@@ -93,12 +93,14 @@ public final class KeychainManager: @unchecked Sendable {
             return nil
         }
 
-        // Touch ID passed — now read from Keychain
+        // Touch ID passed — read from Keychain
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: path,
-            kSecReturnData as String: true
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecUseAuthenticationContext as String: context,
+            kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail
         ]
 
         var result: CFTypeRef?
@@ -106,49 +108,32 @@ public final class KeychainManager: @unchecked Sendable {
 
         switch status {
         case errSecSuccess:
-            guard let data = result as? Data,
-                  let password = String(data: data, encoding: .utf8) else { return nil }
-            return password
+            return result as? Data
         case errSecItemNotFound:
+            UserDefaults.standard.removeObject(forKey: hasKeyFlag)
             return nil
         default:
             throw KeychainError.retrievalFailed(status)
         }
     }
 
-    /// Check if a password is saved for a vault (without triggering any prompt).
-    /// Uses a UserDefaults flag to avoid Keychain access which can trigger password dialogs.
-    public func hasPassword(forVault path: String) -> Bool {
-        UserDefaults.standard.bool(forKey: "vault_saved_\(path)")
+    /// Check if a master key exists without triggering any prompt.
+    public func hasMasterKey() -> Bool {
+        UserDefaults.standard.bool(forKey: hasKeyFlag)
     }
 
-    /// Delete a saved vault password.
-    public func deletePassword(forVault path: String) throws {
+    /// Delete the master key from Keychain.
+    public func deleteMasterKey() {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: path
+            kSecAttrAccount as String: account
         ]
-
-        let status = SecItemDelete(query as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw KeychainError.deleteFailed(status)
-        }
-        UserDefaults.standard.removeObject(forKey: "vault_saved_\(path)")
+        SecItemDelete(query as CFDictionary)
+        UserDefaults.standard.removeObject(forKey: hasKeyFlag)
     }
 
-    /// List all vault paths that have saved passwords.
-    public func savedVaultPaths() -> [String] {
-        let defaults = UserDefaults.standard.dictionaryRepresentation()
-        return defaults.keys
-            .filter { $0.hasPrefix("vault_saved_") }
-            .compactMap { key -> String? in
-                guard defaults[key] as? Bool == true else { return nil }
-                return String(key.dropFirst("vault_saved_".count))
-            }
-    }
-
-    /// Check if biometrics (Touch ID) are available on this Mac.
+    /// Check if biometrics (Touch ID / Face ID) are available.
     public var isBiometricAvailable: Bool {
         let context = LAContext()
         return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)

@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "macuse": {
-      "command": "/Applications/Macuse.app/Contents/MacOS/macuse",
+    "peekaboo": {
+      "command": "/opt/homebrew/bin/peekaboo",
       "args": ["mcp"]
     }
   }

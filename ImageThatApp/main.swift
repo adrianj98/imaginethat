@@ -2,23 +2,10 @@ import SwiftUI
 import AppKit
 import ImageThatCore
 
-/// Holds the initial folder path from env or command line
-enum LaunchArgs {
-    static var initialPath: URL? = {
-        // Check environment variable first (used by `make run FOLDER=...`)
-        if let envPath = ProcessInfo.processInfo.environment["IMAGETHAT_OPEN"], !envPath.isEmpty {
-            return URL(fileURLWithPath: (envPath as NSString).expandingTildeInPath)
-        }
-        // Fall back to command line argument
-        let args = CommandLine.arguments
-        guard args.count > 1 else { return nil }
-        return URL(fileURLWithPath: (args[1] as NSString).expandingTildeInPath)
-    }()
-}
-
 @main
 struct ImageThatApp: App {
     @StateObject private var appState = AppState()
+    @State private var hasOpenedInitialPath = false
 
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
@@ -29,13 +16,21 @@ struct ImageThatApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
-                .onAppear {
-                    if let url = LaunchArgs.initialPath {
-                        LaunchArgs.initialPath = nil
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                            appState.openDirectory(url: url)
-                        }
-                    }
+                .task {
+                    guard !hasOpenedInitialPath else { return }
+                    hasOpenedInitialPath = true
+
+                    // Load saved vault passwords (triggers Touch ID if any exist)
+                    appState.loadSavedPasswords()
+
+                    // Open folder from command line argument
+                    let args = CommandLine.arguments
+                    guard args.count > 1 else { return }
+                    let path = (args[1] as NSString).expandingTildeInPath
+                    let url = URL(fileURLWithPath: path)
+
+                    try? await Task.sleep(for: .seconds(1))
+                    appState.openDirectory(url: url)
                 }
         }
         .commands {
