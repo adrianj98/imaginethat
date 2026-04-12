@@ -398,44 +398,16 @@ public class AppState: ObservableObject {
 
                     // Use larger chunks (1MB) for better throughput
                     let chunkSize = 1_048_576  // 1MB chunks
-                    var totalRead: Int64 = 0
-                    var lastProgressUpdate: Int64 = 0
-
-                    // Read chunks and wrap with progress tracking
-                    // Key: don't accumulate here — let destination's writeChunks handle it if needed
                     let sourceChunks = localSource.readChunks(for: item, chunkSize: chunkSize)
 
-                    let progressChunks = AsyncThrowingStream<Data, Error> { continuation in
-                        Task {
-                            do {
-                                for try await chunk in sourceChunks {
-                                    totalRead += Int64(chunk.count)
+                    // Pass chunks directly to destination without intermediate wrapping.
+                    // No buffering layer means read/write are synchronized by destination's backpressure.
+                    try await dest.writeChunks(sourceChunks, to: destPath, totalSize: size)
 
-                                    // Only update progress every 10MB
-                                    if totalRead - lastProgressUpdate >= 10_000_000 || totalRead >= size {
-                                        lastProgressUpdate = totalRead
-                                        await MainActor.run {
-                                            self.fileTransferProgress = (totalRead, size, startTime)
-                                        }
-                                    }
-
-                                    // Yield to event loop periodically
-                                    if totalRead % 50_000_000 == 0 {
-                                        try Task.checkCancellation()
-                                        await Task.yield()
-                                    }
-
-                                    continuation.yield(chunk)
-                                }
-                                continuation.finish()
-                            } catch {
-                                continuation.finish(throwing: error)
-                            }
-                        }
+                    // Final progress update when complete
+                    await MainActor.run {
+                        self.fileTransferProgress = (size, size, startTime)
                     }
-
-                    // Write to destination (no pre-accumulation)
-                    try await dest.writeChunks(progressChunks, to: destPath, totalSize: size)
 
                     print("importFiles: successfully copied \(name)")
                 } catch {
