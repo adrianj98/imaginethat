@@ -397,39 +397,45 @@ public class AppState: ObservableObject {
                     print("importFiles: copying \(name) (\(size) bytes) to \(destPath)")
 
                     // Use larger chunks (1MB) for better throughput
-                    let chunkSize = 1_048_576  // 1MB chunks (1024 * 1024)
+                    let chunkSize = 1_048_576  // 1MB chunks
                     var totalRead: Int64 = 0
-                    let chunks = localSource.readChunks(for: item, chunkSize: chunkSize)
-                    var allData = Data()
-                    allData.reserveCapacity(Int(size))
                     var lastProgressUpdate: Int64 = 0
 
-                    for try await chunk in chunks {
-                        allData.append(chunk)
-                        totalRead += Int64(chunk.count)
+                    // Read chunks and wrap with progress tracking
+                    // Key: don't accumulate here — let destination's writeChunks handle it if needed
+                    let sourceChunks = localSource.readChunks(for: item, chunkSize: chunkSize)
 
-                        // Only update progress every 5MB to reduce overhead
-                        if totalRead - lastProgressUpdate >= 5_000_000 || totalRead >= size {
-                            lastProgressUpdate = totalRead
-                            await MainActor.run {
-                                self.fileTransferProgress = (totalRead, size, startTime)
+                    let progressChunks = AsyncThrowingStream<Data, Error> { continuation in
+                        Task {
+                            do {
+                                for try await chunk in sourceChunks {
+                                    totalRead += Int64(chunk.count)
+
+                                    // Only update progress every 10MB
+                                    if totalRead - lastProgressUpdate >= 10_000_000 || totalRead >= size {
+                                        lastProgressUpdate = totalRead
+                                        await MainActor.run {
+                                            self.fileTransferProgress = (totalRead, size, startTime)
+                                        }
+                                    }
+
+                                    // Yield to event loop periodically
+                                    if totalRead % 50_000_000 == 0 {
+                                        try Task.checkCancellation()
+                                        await Task.yield()
+                                    }
+
+                                    continuation.yield(chunk)
+                                }
+                                continuation.finish()
+                            } catch {
+                                continuation.finish(throwing: error)
                             }
                         }
                     }
 
-                    // Final progress update
-                    await MainActor.run {
-                        self.fileTransferProgress = (totalRead, size, startTime)
-                    }
-
-                    // Create stream from accumulated data
-                    let dataStream = AsyncThrowingStream<Data, Error> { continuation in
-                        continuation.yield(allData)
-                        continuation.finish()
-                    }
-
-                    // Write to destination
-                    try await dest.writeChunks(dataStream, to: destPath, totalSize: size)
+                    // Write to destination (no pre-accumulation)
+                    try await dest.writeChunks(progressChunks, to: destPath, totalSize: size)
 
                     print("importFiles: successfully copied \(name)")
                 } catch {
@@ -494,7 +500,7 @@ public class AppState: ObservableObject {
                 let destFileName = (transfer.itemRelativePath as NSString).lastPathComponent
                 let destPath = destVaultPath.isEmpty ? destFileName : "\(destVaultPath)/\(destFileName)"
                 let fileSize = try await sourceMediaSource.fileSize(for: sourceItem)
-                let chunks = sourceMediaSource.readChunks(for: sourceItem, chunkSize: 262_144)
+                let chunks = sourceMediaSource.readChunks(for: sourceItem, chunkSize: 1_048_576)  // 1MB chunks
                 try await destSource.writeChunks(chunks, to: destPath, totalSize: fileSize)
                 self.loadMedia(from: mediaSource ?? destSource)
             } catch {
