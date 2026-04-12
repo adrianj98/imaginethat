@@ -61,11 +61,22 @@ public class AppState: ObservableObject {
             name: .openExternalFile,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleFileTransferProgress(_:)),
+            name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
+            object: nil
+        )
     }
 
     @objc private func handleExternalFileOpen(_ notification: Notification) {
         guard let url = notification.object as? URL else { return }
         openFile(url: url)
+    }
+
+    @objc private func handleFileTransferProgress(_ notification: Notification) {
+        guard let tuple = notification.object as? (current: Int64, total: Int64, startTime: Date) else { return }
+        self.fileTransferProgress = tuple
     }
 
     /// Load all saved vault passwords on app launch. Triggers Touch ID if passwords exist.

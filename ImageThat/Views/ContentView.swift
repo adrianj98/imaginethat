@@ -31,8 +31,13 @@ public struct ContentView: View {
         .overlay(alignment: .bottom) {
             if let progress = appState.fileTransferProgress,
                let status = appState.fileTransferStatus {
-                let isComplete = progress.current >= progress.total
                 let elapsed = Date().timeIntervalSince(progress.startTime)
+                let percentComplete = progress.total > 0 ? Double(progress.current) / Double(progress.total) : 0
+                let bytesPerSecond = elapsed > 0 ? Double(progress.current) / elapsed : 0
+                let mbPerSecond = bytesPerSecond / 1_000_000
+                let remainingBytes = progress.total - progress.current
+                let secondsRemaining = bytesPerSecond > 0 ? Double(remainingBytes) / bytesPerSecond : 0
+                let timeRemainingText = secondsRemaining < 60 ? String(format: "%.0fs", secondsRemaining) : String(format: "%.1fm", secondsRemaining / 60)
 
                 VStack(spacing: 12) {
                     HStack {
@@ -45,37 +50,20 @@ public struct ContentView: View {
                         }
                         .buttonStyle(.plain)
                     }
-
-                    if isComplete {
-                        // Show completion info
-                        ProgressView(value: 1.0)
-                        HStack {
-                            Text("\(progress.total / 1_000_000) MB")
-                                .font(.caption)
-                            Spacer()
-                            let seconds = max(elapsed, 0.1)
-                            let mbPerSecond = Double(progress.total) / seconds / 1_000_000
-                            Text(String(format: "%.1f MB/s", mbPerSecond))
-                                .font(.caption)
-                                .fontWeight(.semibold)
-                                .foregroundStyle(.blue)
-                            Spacer()
-                            Text(String(format: "%.1fs", seconds))
-                                .font(.caption)
-                        }
-                        .foregroundStyle(.secondary)
-                    } else {
-                        // Transfer in progress - show indeterminate progress with elapsed time
-                        ProgressView()
-                        HStack {
-                            Text("\(progress.total / 1_000_000) MB total")
-                                .font(.caption)
-                            Spacer()
-                            Text(String(format: "%.0fs elapsed", elapsed))
-                                .font(.caption)
-                        }
-                        .foregroundStyle(.secondary)
+                    ProgressView(value: percentComplete)
+                    HStack {
+                        Text("\(progress.current / 1_000_000) / \(progress.total / 1_000_000) MB")
+                            .font(.caption)
+                        Spacer()
+                        Text(String(format: "%.1f MB/s", mbPerSecond))
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.blue)
+                        Spacer()
+                        Text("\(timeRemainingText) left")
+                            .font(.caption)
                     }
+                    .foregroundStyle(.secondary)
                 }
                 .padding()
                 .background(Color(nsColor: .controlBackgroundColor))

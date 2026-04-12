@@ -237,9 +237,29 @@ public final class VaultSource: WritableMediaSource, @unchecked Sendable {
         where S.Element == Data {
         var assembled = Data()
         assembled.reserveCapacity(Int(totalSize))
+        let startTime = Date()
+        var lastReportTime = Date()
+
         for try await chunk in chunks {
             assembled.append(chunk)
+
+            // Report progress every 0.5 seconds while accumulating
+            let now = Date()
+            if now.timeIntervalSince(lastReportTime) >= 0.5 {
+                lastReportTime = now
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
+                    object: (current: Int64(assembled.count), total: totalSize, startTime: startTime)
+                )
+            }
         }
+
+        // Final progress update before writing
+        NotificationCenter.default.post(
+            name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
+            object: (current: Int64(assembled.count), total: totalSize, startTime: startTime)
+        )
+
         try bridge.writeFile(path: destinationPath, data: assembled)
     }
 }
