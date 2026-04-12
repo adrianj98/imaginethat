@@ -219,6 +219,7 @@ public struct DetailView: View {
             return
         }
         isLoadingMedia = true
+        sourceCGImage = nil
         Task {
             guard let source = appState.mediaSource else { return }
             do {

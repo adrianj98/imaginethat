@@ -1,6 +1,11 @@
 import SwiftUI
 import CryptoKit
 import UniformTypeIdentifiers
+import Foundation
+
+extension Notification.Name {
+    public static let openExternalFile = Notification.Name("com.adrianm.imagethat.openExternalFile")
+}
 
 public enum ViewMode {
     case grid
@@ -38,7 +43,22 @@ public class AppState: ObservableObject {
     /// Vault bridges keyed by vault path — kept alive for the session
     private var vaultBridges: [String: GocryptfsBridge] = [:]
 
-    public init() {}
+    /// File to select after loading a folder (set by openFile)
+    @Published private(set) var pendingSelectionName: String?
+
+    public init() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleExternalFileOpen(_:)),
+            name: .openExternalFile,
+            object: nil
+        )
+    }
+
+    @objc private func handleExternalFileOpen(_ notification: Notification) {
+        guard let url = notification.object as? URL else { return }
+        openFile(url: url)
+    }
 
     /// Load all saved vault passwords on app launch. Triggers Touch ID if passwords exist.
     public func loadSavedPasswords() {
@@ -104,6 +124,13 @@ public class AppState: ObservableObject {
         } else {
             loadFolder(url: url, rebuildSidebar: true)
         }
+    }
+
+    /// Open a specific file from Finder, loading its parent folder and selecting the file
+    public func openFile(url: URL) {
+        let parentURL = url.deletingLastPathComponent()
+        pendingSelectionName = url.lastPathComponent
+        openDirectory(url: parentURL)
     }
 
     /// Called from sidebar selection — never rebuilds the sidebar, but lazily expands children.
@@ -322,6 +349,82 @@ public class AppState: ObservableObject {
         }
     }
 
+    // MARK: - Cross-source file transfers
+
+    /// Import external files (from Finder) into the current media source
+    public func importFiles(_ urls: [URL], into source: (any MediaSource)?) {
+        guard let dest = source as? WritableMediaSource else { return }
+        Task {
+            for url in urls {
+                do {
+                    let name = url.lastPathComponent
+                    let destPath: String
+                    if let vaultSource = dest as? VaultSource {
+                        destPath = vaultSource.currentPath.isEmpty ? name : "\(vaultSource.currentPath)/\(name)"
+                    } else {
+                        destPath = name
+                    }
+
+                    let localSource = FolderSource(rootURL: url.deletingLastPathComponent())
+                    let item = MediaItem(url: url)
+                    let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+                    let size = (attrs[.size] as? Int64) ?? 0
+                    let chunks = localSource.readChunks(for: item, chunkSize: 262_144)
+                    try await dest.writeChunks(chunks, to: destPath, totalSize: size)
+                } catch {
+                    self.errorMessage = error.localizedDescription
+                }
+            }
+            self.loadMedia(from: source ?? dest)
+        }
+    }
+
+    /// Handle a MediaTransfer drop onto a sidebar folder
+    public func handleTransferDrop(_ transfer: MediaTransfer, to sidebarItem: SidebarItem) {
+        guard let destVaultPath = sidebarItem.vaultPath,
+              let destBridge = vaultBridges[sidebarItem.url.path] else { return }
+        let destSource = VaultSource(bridge: destBridge, currentPath: destVaultPath)
+
+        // Same vault → move (preserve existing behaviour)
+        if transfer.isVault && transfer.sourceRootPath == sidebarItem.url.path {
+            guard let sourceItem = mediaItems.first(where: { $0.url.path == transfer.itemRelativePath }) else { return }
+            moveItem(sourceItem, to: destVaultPath)
+            return
+        }
+
+        // Cross-source → copy using readChunks / writeChunks
+        Task {
+            do {
+                let sourceMediaSource: any MediaSource
+                let sourceItem: MediaItem
+
+                if transfer.isVault, let bridge = vaultBridges[transfer.sourceRootPath] {
+                    // Vault source
+                    let vs = VaultSource(bridge: bridge, currentPath: "")
+                    sourceMediaSource = vs
+                    let urlString = transfer.itemRelativePath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? transfer.itemRelativePath
+                    let url = URL(string: urlString) ?? URL(fileURLWithPath: transfer.itemRelativePath)
+                    sourceItem = MediaItem(name: url.lastPathComponent, url: url, mediaType: .image)
+                } else {
+                    // Local folder source
+                    let rootURL = URL(fileURLWithPath: transfer.sourceRootPath)
+                    sourceMediaSource = FolderSource(rootURL: rootURL)
+                    let fileURL = rootURL.appendingPathComponent(transfer.itemRelativePath)
+                    sourceItem = MediaItem(url: fileURL)
+                }
+
+                let destFileName = (transfer.itemRelativePath as NSString).lastPathComponent
+                let destPath = destVaultPath.isEmpty ? destFileName : "\(destVaultPath)/\(destFileName)"
+                let fileSize = try await sourceMediaSource.fileSize(for: sourceItem)
+                let chunks = sourceMediaSource.readChunks(for: sourceItem, chunkSize: 262_144)
+                try await destSource.writeChunks(chunks, to: destPath, totalSize: fileSize)
+                self.loadMedia(from: mediaSource ?? destSource)
+            } catch {
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     // MARK: - Directory navigation
 
     public var canGoUp: Bool {
@@ -517,6 +620,14 @@ public class AppState: ObservableObject {
                 // Only apply results if this is still the current load
                 guard myGeneration == self.loadGeneration else { return }
                 self.mediaItems = items
+
+                // Resolve pending selection if set
+                if let name = self.pendingSelectionName,
+                   let index = items.firstIndex(where: { $0.name == name }) {
+                    self.selectedIndex = index
+                    self.viewMode = .detail
+                }
+                self.pendingSelectionName = nil
                 self.isLoading = false
             } catch {
                 loadingTask.cancel()

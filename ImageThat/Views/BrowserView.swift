@@ -32,6 +32,19 @@ public struct BrowserView: View {
                 }
                 .padding()
             }
+            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                Task {
+                    var urls: [URL] = []
+                    for provider in providers {
+                        if let data = try? await provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) as? URL {
+                            urls.append(data)
+                        }
+                    }
+                    guard appState.mediaSource is WritableMediaSource else { return }
+                    appState.importFiles(urls, into: appState.mediaSource)
+                }
+                return true
+            }
             .contextMenu {
                 if appState.mediaSource is VaultSource {
                     Button("New Folder") {
@@ -112,8 +125,8 @@ public struct ThumbnailCell: View {
 
     public var body: some View {
         Group {
-            if isInVault {
-                cellContent.draggable(item.url.path)
+            if let transfer = MediaTransfer(for: item, source: appState.mediaSource) {
+                cellContent.draggable(transfer)
             } else {
                 cellContent
             }

@@ -4,6 +4,7 @@ import ImageThatCore
 
 @main
 struct ImageThatApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var appState = AppState()
     @State private var hasOpenedInitialPath = false
 

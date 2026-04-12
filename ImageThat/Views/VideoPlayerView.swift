@@ -85,10 +85,10 @@ public struct VideoPlayerView: View {
         let interval = CMTime(seconds: 0.5, preferredTimescale: 1000)
         player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak player] time in
             guard let player = player else { return }
-            currentTime = time.seconds
+            self.currentTime = time.seconds
             if let item = player.currentItem {
                 let duration = item.duration.seconds
-                if !duration.isNaN && !duration.isInfinite {
+                if !duration.isNaN && !duration.isInfinite && self.duration != duration {
                     self.duration = duration
                 }
             }
