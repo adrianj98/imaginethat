@@ -31,13 +31,39 @@ public struct ContentView: View {
         .overlay(alignment: .bottom) {
             if let progress = appState.fileTransferProgress,
                let status = appState.fileTransferStatus {
+                let elapsed = Date().timeIntervalSince(progress.startTime)
+                let bytesPerSecond = elapsed > 0 ? Double(progress.current) / elapsed : 0
+                let mbPerSecond = bytesPerSecond / 1_000_000
+                let percentComplete = progress.total > 0 ? Double(progress.current) / Double(progress.total) : 0
+                let remainingBytes = progress.total - progress.current
+                let secondsRemaining = bytesPerSecond > 0 ? Double(remainingBytes) / bytesPerSecond : 0
+                let timeRemainingText = secondsRemaining < 60 ? String(format: "%.0fs", secondsRemaining) : String(format: "%.1fm", secondsRemaining / 60)
+
                 VStack(spacing: 12) {
-                    Text(status)
-                        .font(.subheadline)
-                    ProgressView(value: Double(progress.current), total: Double(progress.total))
-                    Text("\(progress.current / 1_000_000) / \(progress.total / 1_000_000) MB")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack {
+                        Text(status)
+                            .font(.subheadline)
+                        Spacer()
+                        Button(action: { appState.cancelFileTransfer() }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 14))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    ProgressView(value: percentComplete)
+                    HStack {
+                        Text("\(progress.current / 1_000_000) / \(progress.total / 1_000_000) MB")
+                            .font(.caption)
+                        Spacer()
+                        Text(String(format: "%.1f MB/s", mbPerSecond))
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.blue)
+                        Spacer()
+                        Text("\(timeRemainingText) left")
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.secondary)
                 }
                 .padding()
                 .background(Color(nsColor: .controlBackgroundColor))

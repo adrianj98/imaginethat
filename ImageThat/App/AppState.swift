@@ -46,10 +46,13 @@ public class AppState: ObservableObject {
     /// File to select after loading a folder (set by openFile)
     @Published private(set) var pendingSelectionName: String?
 
-    /// File transfer progress: (current bytes, total bytes)
-    @Published public var fileTransferProgress: (current: Int64, total: Int64)? = nil
+    /// File transfer progress: (current bytes, total bytes, start time)
+    @Published public var fileTransferProgress: (current: Int64, total: Int64, startTime: Date)? = nil
     /// Human-readable status during transfer
     @Published public var fileTransferStatus: String? = nil
+
+    /// Current file transfer task (for cancellation)
+    private var fileTransferTask: Task<Void, Never>? = nil
 
     public init() {
         NotificationCenter.default.addObserver(
@@ -363,7 +366,11 @@ public class AppState: ObservableObject {
             return
         }
         print("importFiles: importing \(urls.count) files")
-        Task.detached { [weak self] in
+
+        // Cancel any existing transfer
+        fileTransferTask?.cancel()
+
+        fileTransferTask = Task.detached { [weak self] in
             guard let self else { return }
             for url in urls {
                 do {
@@ -381,27 +388,38 @@ public class AppState: ObservableObject {
                     let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
                     let size = (attrs[.size] as? Int64) ?? 0
 
+                    let startTime = Date()
                     await MainActor.run {
                         self.fileTransferStatus = "Copying \(name)..."
-                        self.fileTransferProgress = (0, size)
+                        self.fileTransferProgress = (0, size, startTime)
                     }
 
                     print("importFiles: copying \(name) (\(size) bytes) to \(destPath)")
 
-                    // Read chunks with progress tracking
+                    // Use larger chunks (1MB) for better throughput
+                    let chunkSize = 1_048_576  // 1MB chunks (1024 * 1024)
                     var totalRead: Int64 = 0
-                    let chunks = localSource.readChunks(for: item, chunkSize: 262_144)
+                    let chunks = localSource.readChunks(for: item, chunkSize: chunkSize)
                     var allData = Data()
                     allData.reserveCapacity(Int(size))
+                    var lastProgressUpdate: Int64 = 0
 
                     for try await chunk in chunks {
                         allData.append(chunk)
                         totalRead += Int64(chunk.count)
 
-                        // Update progress on main thread — this keeps UI responsive
-                        await MainActor.run {
-                            self.fileTransferProgress = (totalRead, size)
+                        // Only update progress every 5MB to reduce overhead
+                        if totalRead - lastProgressUpdate >= 5_000_000 || totalRead >= size {
+                            lastProgressUpdate = totalRead
+                            await MainActor.run {
+                                self.fileTransferProgress = (totalRead, size, startTime)
+                            }
                         }
+                    }
+
+                    // Final progress update
+                    await MainActor.run {
+                        self.fileTransferProgress = (totalRead, size, startTime)
                     }
 
                     // Create stream from accumulated data
@@ -429,6 +447,14 @@ public class AppState: ObservableObject {
                 self.loadMedia(from: source ?? dest)
             }
         }
+    }
+
+    /// Cancel the current file transfer
+    public func cancelFileTransfer() {
+        fileTransferTask?.cancel()
+        fileTransferTask = nil
+        fileTransferStatus = nil
+        fileTransferProgress = nil
     }
 
     /// Handle a MediaTransfer drop onto a sidebar folder
