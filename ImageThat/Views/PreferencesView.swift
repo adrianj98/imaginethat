@@ -53,11 +53,26 @@ public struct ShortcutsTab: View {
 
 public struct SecurityTab: View {
     @State private var savedVaults: [String] = []
+    @State private var plaintextMode = PasswordStore.encryptionDisabled
 
     public init() {}
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Password Storage")
+                    .font(.headline)
+                Toggle("Store passwords without encryption (debug mode)", isOn: $plaintextMode)
+                    .onChange(of: plaintextMode) { _, newValue in
+                        PasswordStore.encryptionDisabled = newValue
+                    }
+                Text("When disabled, passwords require Touch ID on first vault access.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Divider()
+
             Text("Saved Vault Passwords")
                 .font(.headline)
 

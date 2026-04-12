@@ -15,8 +15,4 @@ public actor MediaLoader {
     public func loadThumbnail(for item: MediaItem, size: CGSize) async throws -> NSImage {
         try await source.loadThumbnail(for: item, size: size)
     }
-
-    public func videoURL(for item: MediaItem) async throws -> URL {
-        try await source.videoURL(for: item)
-    }
 }

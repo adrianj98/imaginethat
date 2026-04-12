@@ -3,6 +3,8 @@ import SwiftUI
 public struct BrowserView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject private var shortcuts = ShortcutManager.shared
+    @State private var showNewFolderDialog = false
+    @State private var newFolderName = ""
 
     private let columns = [
         GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 12)
@@ -11,23 +13,32 @@ public struct BrowserView: View {
     public init() {}
 
     public var body: some View {
-        ScrollView {
-            LazyVGrid(columns: columns, spacing: 12) {
-                ForEach(Array(appState.mediaItems.enumerated()), id: \.element.id) { index, item in
-                    ThumbnailCell(item: item)
-                        .onTapGesture(count: 2) {
-                            appState.enterDetail(at: index)
-                        }
-                        .onTapGesture(count: 1) {
-                            appState.selectedIndex = index
-                        }
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(appState.selectedIndex == index ? Color.accentColor : Color.clear, lineWidth: 3)
-                        )
+        VStack {
+            ScrollView {
+                LazyVGrid(columns: columns, spacing: 12) {
+                    ForEach(Array(appState.mediaItems.enumerated()), id: \.element.id) { index, item in
+                        ThumbnailCell(item: item, isInVault: appState.mediaSource is VaultSource)
+                            .onTapGesture(count: 2) {
+                                appState.enterDetail(at: index)
+                            }
+                            .onTapGesture(count: 1) {
+                                appState.selectedIndex = index
+                            }
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(appState.selectedIndex == index ? Color.accentColor : Color.clear, lineWidth: 3)
+                            )
+                    }
+                }
+                .padding()
+            }
+            .contextMenu {
+                if appState.mediaSource is VaultSource {
+                    Button("New Folder") {
+                        showNewFolderDialog = true
+                    }
                 }
             }
-            .padding()
         }
         .focusable()
         .focusEffectDisabled()
@@ -35,19 +46,31 @@ public struct BrowserView: View {
             appState.viewMode = .detail
             return .handled
         }
+        .alert("New Folder", isPresented: $showNewFolderDialog) {
+            TextField("Folder name", text: $newFolderName)
+            Button("Create") {
+                appState.createFolder(named: newFolderName)
+                newFolderName = ""
+            }
+            Button("Cancel", role: .cancel) {
+                newFolderName = ""
+            }
+        }
     }
 }
 
 public struct ThumbnailCell: View {
     @EnvironmentObject var appState: AppState
     public let item: MediaItem
+    public let isInVault: Bool
     @State private var thumbnail: NSImage?
 
-    public init(item: MediaItem) {
+    public init(item: MediaItem, isInVault: Bool = false) {
         self.item = item
+        self.isInVault = isInVault
     }
 
-    public var body: some View {
+    var cellContent: some View {
         VStack(spacing: 4) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8)
@@ -77,6 +100,23 @@ public struct ThumbnailCell: View {
                 .font(.caption)
                 .lineLimit(1)
                 .truncationMode(.middle)
+        }
+        .contextMenu {
+            if isInVault {
+                Button("Delete", role: .destructive) {
+                    appState.deleteItem(item)
+                }
+            }
+        }
+    }
+
+    public var body: some View {
+        Group {
+            if isInVault {
+                cellContent.draggable(item.url.path)
+            } else {
+                cellContent
+            }
         }
         .task(id: item.id) {
             thumbnail = nil

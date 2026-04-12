@@ -37,8 +37,6 @@ public class AppState: ObservableObject {
 
     /// Vault bridges keyed by vault path — kept alive for the session
     private var vaultBridges: [String: GocryptfsBridge] = [:]
-    /// The most recently used vault bridge
-    private var activeVaultBridge: GocryptfsBridge?
 
     public init() {}
 
@@ -115,9 +113,8 @@ public class AppState: ObservableObject {
 
         if let vaultPath = item.vaultPath {
             // Look up the correct bridge for this vault (item.url is the vault root)
-            guard let bridge = vaultBridges[item.url.path] ?? activeVaultBridge else { return }
+            guard let bridge = vaultBridges[item.url.path] else { return }
             if let current = mediaSource as? VaultSource, current.currentPath == vaultPath, current.bridge === bridge { return }
-            activeVaultBridge = bridge
             let source = VaultSource(bridge: bridge, currentPath: vaultPath)
             self.mediaSource = source
             self.viewMode = .grid
@@ -143,7 +140,7 @@ public class AppState: ObservableObject {
 
         if let vaultPath = item.vaultPath {
             // Vault subfolder — load decrypted subfolders
-            guard let bridge = activeVaultBridge else { return }
+            guard let bridge = vaultBridges[itemURL.path] else { return }
             Task.detached {
                 let children = Self.vaultSubfolders(bridge: bridge, path: vaultPath, maxDepth: 1)
                 await MainActor.run { [weak self] in
@@ -153,7 +150,7 @@ public class AppState: ObservableObject {
         } else {
             if isVault(itemURL) {
                 // Vault folder — expand with decrypted names if unlocked
-                guard let bridge = activeVaultBridge, bridge.vaultPath == itemURL else { return }
+                guard let bridge = vaultBridges[itemURL.path] else { return }
                 Task.detached {
                     let children = Self.vaultSubfolders(bridge: bridge, path: "", maxDepth: 1)
                     await MainActor.run { [weak self] in
@@ -195,7 +192,57 @@ public class AppState: ObservableObject {
             unlockVault(url: url, password: password, rebuildSidebar: rebuildSidebar)
             return
         }
-        // 2. Manual password prompt
+
+        // 2. Try to load saved passwords (encrypted mode with Touch ID, or plaintext mode)
+        if PasswordStore.shared.hasPasswords {
+            Task {
+                do {
+                    var saved: [String: String] = [:]
+
+                    if PasswordStore.encryptionDisabled {
+                        // Plaintext mode — no Touch ID needed
+                        saved = try PasswordStore.shared.loadAll(masterKey: nil)
+                    } else if KeychainManager.shared.hasMasterKey() {
+                        // Encrypted mode — ask for Touch ID
+                        guard let key = try KeychainManager.shared.getMasterKey() else {
+                            await MainActor.run {
+                                self.pendingVaultURL = url
+                                self.pendingVaultRebuildSidebar = rebuildSidebar
+                                self.showVaultUnlock = true
+                            }
+                            return
+                        }
+                        self.masterKey = key
+                        saved = try PasswordStore.shared.loadAll(masterKey: key)
+                    }
+
+                    // Cache all loaded passwords
+                    for (path, password) in saved {
+                        self.vaultPasswords[path] = password
+                    }
+
+                    // Check if this vault was saved
+                    if let password = saved[url.path] {
+                        unlockVault(url: url, password: password, rebuildSidebar: rebuildSidebar)
+                    } else {
+                        await MainActor.run {
+                            self.pendingVaultURL = url
+                            self.pendingVaultRebuildSidebar = rebuildSidebar
+                            self.showVaultUnlock = true
+                        }
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.pendingVaultURL = url
+                        self.pendingVaultRebuildSidebar = rebuildSidebar
+                        self.showVaultUnlock = true
+                    }
+                }
+            }
+            return
+        }
+
+        // 3. No saved passwords — show password prompt
         pendingVaultURL = url
         pendingVaultRebuildSidebar = rebuildSidebar
         showVaultUnlock = true
@@ -207,6 +254,72 @@ public class AppState: ObservableObject {
         pendingVaultURL = nil
         pendingVaultRebuildSidebar = false
         unlockVault(url: url, password: password, rebuildSidebar: rebuild, saveToKeychain: saveToKeychain)
+    }
+
+    // MARK: - File operations
+
+    public func moveItem(_ item: MediaItem, to destinationPath: String) {
+        guard let source = mediaSource as? WritableMediaSource else { return }
+        Task {
+            do {
+                try await source.moveItem(item, to: destinationPath)
+                self.loadMedia(from: mediaSource ?? source)
+            } catch {
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    public func createFolder(named name: String) {
+        guard let source = mediaSource as? WritableMediaSource else { return }
+        Task {
+            do {
+                try await source.createDirectory(named: name)
+                // Rebuild sidebar to show the new folder
+                if let vaultSource = source as? VaultSource {
+                    self.buildVaultSidebar(bridge: vaultSource.bridge, rootName: vaultSource.bridge.vaultPath.lastPathComponent)
+                } else if let folderSource = source as? FolderSource {
+                    let rootName = folderSource.rootURL.lastPathComponent
+                    let children = Self.subfolders(of: folderSource.rootURL, maxDepth: 1)
+                    let rootItem = SidebarItem(name: rootName, url: folderSource.rootURL, children: children)
+                    self.sidebarItems = [rootItem]
+                }
+            } catch {
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    public func deleteItem(_ item: MediaItem) {
+        guard let source = mediaSource as? WritableMediaSource else { return }
+        Task {
+            do {
+                try await source.deleteItem(item)
+                self.loadMedia(from: mediaSource ?? source)
+            } catch {
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    public func deleteSidebarFolder(_ sidebarItem: SidebarItem) {
+        guard let vaultPath = sidebarItem.vaultPath,
+              let bridge = vaultBridges[sidebarItem.url.path] else { return }
+
+        Task {
+            do {
+                let source = VaultSource(bridge: bridge, currentPath: vaultPath)
+                try await source.deleteCurrentDirectory()
+                self.buildVaultSidebar(bridge: bridge, rootName: bridge.vaultPath.lastPathComponent)
+                // If we were viewing that folder, go back to root
+                if let vaultSource = self.mediaSource as? VaultSource,
+                   vaultSource.currentPath == vaultPath {
+                    self.openDirectory(url: sidebarItem.url)
+                }
+            } catch {
+                self.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     // MARK: - Directory navigation
@@ -240,6 +353,23 @@ public class AppState: ObservableObject {
 
     public func exitDetail() {
         viewMode = .grid
+    }
+
+    public var isSourceWritable: Bool {
+        mediaSource is WritableMediaSource
+    }
+
+    public func invalidateThumbnail(for item: MediaItem) {
+        // Re-trigger BrowserView's ThumbnailCell task by momentarily replacing the item
+        if let index = mediaItems.firstIndex(where: { $0.id == item.id }) {
+            mediaItems[index] = item
+        }
+    }
+
+    public func insertMediaItem(_ item: MediaItem, after existing: MediaItem) {
+        if let index = mediaItems.firstIndex(where: { $0.id == existing.id }) {
+            mediaItems.insert(item, at: index + 1)
+        }
     }
 
     public func loadThumbnail(for item: MediaItem, size: CGSize) async -> NSImage? {
@@ -306,7 +436,6 @@ public class AppState: ObservableObject {
     }
 
     private func loadFolder(url: URL, rebuildSidebar: Bool) {
-        activeVaultBridge = nil
         let source = FolderSource(rootURL: url)
         self.mediaSource = source
         self.viewMode = .grid
@@ -332,14 +461,19 @@ public class AppState: ObservableObject {
             do {
                 let bridge = try GocryptfsBridge(vaultPath: url, password: password)
                 vaultPasswords[url.path] = password
-                // Save password to encrypted file if user opted in
+                // Save password to file if user opted in
                 if saveToKeychain {
-                    if let key = try? getOrCreateMasterKey() {
-                        try? PasswordStore.shared.save(password: password, forVault: url.path, masterKey: key)
+                    if PasswordStore.encryptionDisabled {
+                        // Plaintext mode — save without Touch ID
+                        try? PasswordStore.shared.save(password: password, forVault: url.path, masterKey: nil)
+                    } else {
+                        // Encrypted mode — get or create master key
+                        if let key = try? getOrCreateMasterKey() {
+                            try? PasswordStore.shared.save(password: password, forVault: url.path, masterKey: key)
+                        }
                     }
                 }
                 vaultBridges[url.path] = bridge
-                activeVaultBridge = bridge
                 let source = VaultSource(bridge: bridge)
                 self.mediaSource = source
                 self.viewMode = .grid
@@ -442,8 +576,8 @@ public class AppState: ObservableObject {
         let vaultURL = bridge.vaultPath
         Task.detached { [weak self] in
             let children = Self.vaultSubfolders(bridge: bridge, path: "", maxDepth: 3)
+            let rootItem = SidebarItem(name: rootName, url: vaultURL, vaultPath: "", children: children)
             await MainActor.run {
-                let rootItem = SidebarItem(name: rootName, url: vaultURL, vaultPath: "", children: children)
                 self?.sidebarItems = [rootItem]
                 self?.selectedSidebarItem = rootItem
             }

@@ -26,6 +26,7 @@ typedef struct {
 import "C"
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"log"
@@ -717,5 +718,268 @@ func wipeMasterkey(key []byte) {
 
 // unused import guard
 var _ = base64.URLEncoding
+
+//export GocryptfsRenameFile
+func GocryptfsRenameFile(sessionID C.int, sourcePath *C.char, destDirPath *C.char) C.int {
+	sess := getSession(int(sessionID))
+	if sess == nil {
+		return -1
+	}
+
+	srcRel := C.GoString(sourcePath)
+	dstDirRel := C.GoString(destDirPath)
+	plainName := filepath.Base(srcRel)
+
+	srcCipherPath := sess.resolveCipherFilePath(srcRel)
+	dstCipherDir := sess.resolveCipherPath(dstDirRel)
+
+	if _, err := os.Stat(srcCipherPath); err != nil {
+		return -2
+	}
+
+	srcIsLong := nametransform.IsLongContent(filepath.Base(srcCipherPath))
+
+	var dstCipherPath string
+	var dstIsLong bool
+	var dstDirIV []byte
+
+	if sess.plaintextNames {
+		dstCipherPath = filepath.Join(dstCipherDir, plainName)
+	} else {
+		if sess.useDirIV {
+			var err error
+			dstDirIV, err = readDirIV(dstCipherDir)
+			if err != nil {
+				return -3
+			}
+		}
+		dstEncName, err := sess.nameTransform.EncryptAndHashName(plainName, dstDirIV)
+		if err != nil {
+			return -4
+		}
+		dstCipherPath = filepath.Join(dstCipherDir, dstEncName)
+		dstIsLong = nametransform.IsLongContent(dstEncName)
+	}
+
+	if err := os.Rename(srcCipherPath, dstCipherPath); err != nil {
+		return -5
+	}
+
+	if !sess.plaintextNames {
+		if dstIsLong {
+			fullEncName, _ := sess.nameTransform.EncryptName(plainName, dstDirIV)
+			_ = os.WriteFile(dstCipherPath+nametransform.LongNameSuffix, []byte(fullEncName), 0600)
+		}
+		if srcIsLong {
+			_ = os.Remove(srcCipherPath + nametransform.LongNameSuffix)
+		}
+	}
+
+	sess.openFilesMu.Lock()
+	if of, ok := sess.openFiles[srcCipherPath]; ok {
+		of.release()
+		delete(sess.openFiles, srcCipherPath)
+	}
+	sess.openFilesMu.Unlock()
+
+	return 0
+}
+
+//export GocryptfsMkdir
+func GocryptfsMkdir(sessionID C.int, dirPath *C.char) C.int {
+	sess := getSession(int(sessionID))
+	if sess == nil {
+		return -1
+	}
+
+	dirRel := C.GoString(dirPath)
+
+	cipherDirPath := sess.resolveCipherPath(filepath.Dir(dirRel))
+	plainName := filepath.Base(dirRel)
+
+	var cipherName string
+	if sess.plaintextNames {
+		cipherName = plainName
+	} else {
+		var dirIV []byte
+		if sess.useDirIV {
+			var err error
+			dirIV, err = readDirIV(cipherDirPath)
+			if err != nil {
+				return -2
+			}
+		}
+		var err error
+		cipherName, err = sess.nameTransform.EncryptAndHashName(plainName, dirIV)
+		if err != nil {
+			return -3
+		}
+	}
+
+	newCipherDir := filepath.Join(cipherDirPath, cipherName)
+	if err := os.Mkdir(newCipherDir, 0700); err != nil {
+		return -4
+	}
+
+	// Write diriv for the new directory
+	if !sess.plaintextNames && sess.useDirIV {
+		newDirIV := make([]byte, nametransform.DirIVLen)
+		if _, err := rand.Read(newDirIV); err != nil {
+			_ = os.Remove(newCipherDir)
+			return -5
+		}
+		ivPath := filepath.Join(newCipherDir, nametransform.DirIVFilename)
+		if err := os.WriteFile(ivPath, newDirIV, 0400); err != nil {
+			_ = os.Remove(newCipherDir)
+			return -5
+		}
+	}
+
+	return 0
+}
+
+//export GocryptfsDeleteFile
+func GocryptfsDeleteFile(sessionID C.int, filePath *C.char) C.int {
+	sess := getSession(int(sessionID))
+	if sess == nil {
+		return -1
+	}
+
+	relPath := C.GoString(filePath)
+	cipherPath := sess.resolveCipherFilePath(relPath)
+
+	if _, err := os.Stat(cipherPath); err != nil {
+		return -2
+	}
+
+	isLong := nametransform.IsLongContent(filepath.Base(cipherPath))
+
+	// Evict from open file cache
+	sess.openFilesMu.Lock()
+	if of, ok := sess.openFiles[cipherPath]; ok {
+		of.release()
+		delete(sess.openFiles, cipherPath)
+	}
+	sess.openFilesMu.Unlock()
+
+	if err := os.Remove(cipherPath); err != nil {
+		return -3
+	}
+
+	if isLong {
+		_ = os.Remove(cipherPath + nametransform.LongNameSuffix)
+	}
+
+	return 0
+}
+
+//export GocryptfsDeleteDir
+func GocryptfsDeleteDir(sessionID C.int, dirPath *C.char) C.int {
+	sess := getSession(int(sessionID))
+	if sess == nil {
+		return -1
+	}
+
+	dirRel := C.GoString(dirPath)
+	cipherDirPath := sess.resolveCipherPath(dirRel)
+
+	if _, err := os.Stat(cipherDirPath); err != nil {
+		return -2
+	}
+
+	if err := os.RemoveAll(cipherDirPath); err != nil {
+		return -3
+	}
+
+	return 0
+}
+
+//export GocryptfsWriteFile
+func GocryptfsWriteFile(sessionID C.int, relativePath *C.char, data unsafe.Pointer, dataLen C.int) C.int {
+	sess := getSession(int(sessionID))
+	if sess == nil {
+		return -1 // invalid session
+	}
+
+	relPath := C.GoString(relativePath)
+	plainData := C.GoBytes(data, dataLen)
+
+	// Resolve the cipher path for the destination file
+	cipherPath := sess.resolveCipherFilePath(relPath)
+	cipherDir := filepath.Dir(cipherPath)
+
+	// Create parent directories if they don't exist
+	if err := os.MkdirAll(cipherDir, 0700); err != nil {
+		return -2 // failed to create parent directories
+	}
+
+	// Create a file header with a random file ID
+	header := contentenc.RandomHeader()
+	headerBytes := header.Pack()
+
+	// Encrypt the plaintext block-by-block
+	var ciphertext []byte
+	ciphertext = append(ciphertext, headerBytes...)
+
+	plainBS := int(sess.contentEnc.PlainBS())
+	var blockNo uint64
+	for off := 0; off < len(plainData); off += plainBS {
+		end := off + plainBS
+		if end > len(plainData) {
+			end = len(plainData)
+		}
+		block := plainData[off:end]
+		cipherBlock := sess.contentEnc.EncryptBlock(block, blockNo, header.ID)
+		ciphertext = append(ciphertext, cipherBlock...)
+		blockNo++
+	}
+
+	// Write atomically: write to temp file, then rename to target
+	tempPath := cipherPath + ".tmp"
+	if err := os.WriteFile(tempPath, ciphertext, 0600); err != nil {
+		return -3 // failed to write temp file
+	}
+
+	if err := os.Rename(tempPath, cipherPath); err != nil {
+		_ = os.Remove(tempPath)
+		return -4 // failed to rename temp file
+	}
+
+	// Handle long-name sidecar if the encrypted filename is long
+	if nametransform.IsLongContent(filepath.Base(cipherPath)) {
+		plainName := filepath.Base(relPath)
+		var dirIV []byte
+		if sess.useDirIV {
+			var err error
+			dirIV, err = readDirIV(cipherDir)
+			if err != nil {
+				return -5 // failed to read diriv for long-name sidecar
+			}
+		}
+		fullEncName, err := sess.nameTransform.EncryptName(plainName, dirIV)
+		if err != nil {
+			return -6 // failed to encrypt name for sidecar
+		}
+		sidecarPath := cipherPath + nametransform.LongNameSuffix
+		if err := os.WriteFile(sidecarPath, []byte(fullEncName), 0600); err != nil {
+			return -7 // failed to write long-name sidecar
+		}
+	}
+
+	// Evict from open file cache if it exists (file was just overwritten)
+	sess.openFilesMu.Lock()
+	if of, ok := sess.openFiles[cipherPath]; ok {
+		of.release()
+		delete(sess.openFiles, cipherPath)
+	}
+	sess.openFilesMu.Unlock()
+
+	// Wipe plaintext from memory
+	for i := range plainData {
+		plainData[i] = 0
+	}
+
+	return 0 // success
+}
 
 func main() {}

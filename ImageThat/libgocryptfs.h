@@ -117,6 +117,10 @@ extern int32_t GocryptfsReadRange(int sessionID, char* relativePath, int64_t off
 extern int64_t GocryptfsFileSize(int sessionID, char* relativePath);
 extern void GocryptfsFreeDecryptResult(DecryptResult result);
 extern void GocryptfsFreeListResult(ListResult result);
+extern int GocryptfsRenameFile(int sessionID, char* sourcePath, char* destDirPath);
+extern int GocryptfsMkdir(int sessionID, char* dirPath);
+extern int GocryptfsDeleteFile(int sessionID, char* filePath);
+extern int GocryptfsDeleteDir(int sessionID, char* dirPath);
 
 #ifdef __cplusplus
 }

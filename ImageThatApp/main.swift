@@ -20,9 +20,6 @@ struct ImageThatApp: App {
                     guard !hasOpenedInitialPath else { return }
                     hasOpenedInitialPath = true
 
-                    // Load saved vault passwords (triggers Touch ID if any exist)
-                    appState.loadSavedPasswords()
-
                     // Open folder from command line argument
                     let args = CommandLine.arguments
                     guard args.count > 1 else { return }

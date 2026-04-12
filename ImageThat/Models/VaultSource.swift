@@ -2,7 +2,7 @@ import AppKit
 import AVFoundation
 import ImageIO
 
-public final class VaultSource: MediaSource, @unchecked Sendable {
+public final class VaultSource: WritableMediaSource, @unchecked Sendable {
     public let bridge: GocryptfsBridge
     public private(set) var currentPath: String
 
@@ -18,6 +18,10 @@ public final class VaultSource: MediaSource, @unchecked Sendable {
     /// Create a new VaultSource pointing to a subdirectory within the same vault
     public func navigatingTo(path: String) -> VaultSource {
         VaultSource(bridge: bridge, currentPath: path)
+    }
+
+    public func source(at relativePath: String) -> any MediaSource {
+        VaultSource(bridge: bridge, currentPath: relativePath)
     }
 
     public func listMedia() async throws -> [MediaItem] {
@@ -40,8 +44,20 @@ public final class VaultSource: MediaSource, @unchecked Sendable {
         return items.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    /// List subdirectories at a given path within the vault
-    public func listSubdirectories(path: String = "") throws -> [(name: String, path: String)] {
+    /// List subdirectories at the current path
+    public func listSubdirectories() async throws -> [SubdirectoryEntry] {
+        let entries = try bridge.listDirectory(path: currentPath)
+        return entries
+            .filter { $0.isDirectory && !$0.name.hasPrefix(".") }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            .map { entry in
+                let subPath = currentPath.isEmpty ? entry.name : "\(currentPath)/\(entry.name)"
+                return SubdirectoryEntry(name: entry.name, relativePath: subPath)
+            }
+    }
+
+    /// List subdirectories at a given path within the vault (legacy method for internal use)
+    func listSubdirectories(path: String) throws -> [(name: String, path: String)] {
         let entries = try bridge.listDirectory(path: path)
         return entries
             .filter { $0.isDirectory && !$0.name.hasPrefix(".") }
@@ -67,14 +83,28 @@ public final class VaultSource: MediaSource, @unchecked Sendable {
         return try loadImageThumbnail(for: item, size: size)
     }
 
-    public func videoURL(for item: MediaItem) async throws -> URL {
-        var components = URLComponents()
-        components.scheme = "imagethat-encrypted"
-        components.path = item.url.path
-        guard let url = components.url else {
-            throw MediaError.failedToLoadVideo(item.name)
+    public func fileSize(for item: MediaItem) async throws -> Int64 {
+        try bridge.fileSize(path: item.url.path)
+    }
+
+    public func readChunks(for item: MediaItem, chunkSize: Int) -> AsyncThrowingStream<Data, Error> {
+        AsyncThrowingStream { continuation in
+            do {
+                let size = try bridge.fileSize(path: item.url.path)
+                var offset: Int64 = 0
+                while offset < size {
+                    let toRead = min(Int32(chunkSize), Int32(size - offset))
+                    let chunk = try bridge.readRange(path: item.url.path, offset: offset, length: toRead)
+                    if chunk.isEmpty { break }
+                    offset += Int64(chunk.count)
+                    continuation.yield(chunk)
+                    if chunk.count < Int(toRead) { break }
+                }
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
         }
-        return url
     }
 
     public func createPlayerItem(for item: MediaItem) throws -> AVPlayerItem {
@@ -160,5 +190,56 @@ public final class VaultSource: MediaSource, @unchecked Sendable {
         let time = CMTime(seconds: 1, preferredTimescale: 600)
         let cgImage = try generator.copyCGImage(at: time, actualTime: nil)
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    public func saveImage(_ imageData: Data, for item: MediaItem) async throws {
+        try bridge.writeFile(path: item.url.path, data: imageData)
+    }
+
+    public func saveImageCopy(_ imageData: Data, for item: MediaItem, suffix: String) async throws -> MediaItem {
+        let originalPath = item.url.path
+        let fileExtension = (originalPath as NSString).pathExtension
+        let fileName = ((originalPath as NSString).lastPathComponent as NSString).deletingPathExtension
+
+        let newFileName = fileName + suffix + "." + fileExtension
+        let newPath: String
+        if let lastSlash = originalPath.range(of: "/", options: .backwards) {
+            let directory = String(originalPath[..<lastSlash.lowerBound])
+            newPath = directory.isEmpty ? newFileName : directory + "/" + newFileName
+        } else {
+            newPath = newFileName
+        }
+
+        try bridge.writeFile(path: newPath, data: imageData)
+
+        let newURL = URL(string: newPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? newPath)!
+        return MediaItem(name: newFileName, url: newURL, mediaType: item.mediaType)
+    }
+
+    public func deleteItem(_ item: MediaItem) async throws {
+        try bridge.deleteFile(path: item.url.path)
+    }
+
+    public func moveItem(_ item: MediaItem, to destinationPath: String) async throws {
+        try bridge.moveFile(fromPath: item.url.path, toDirectory: destinationPath)
+    }
+
+    public func createDirectory(named name: String) async throws {
+        let newPath = currentPath.isEmpty ? name : "\(currentPath)/\(name)"
+        try bridge.mkdir(path: newPath)
+    }
+
+    public func deleteCurrentDirectory() async throws {
+        try bridge.deleteDirectory(path: currentPath)
+    }
+
+    public func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
+        where S.Element == Data {
+        var assembled = Data()
+        assembled.reserveCapacity(Int(totalSize))
+        for try await chunk in chunks {
+            assembled.append(chunk)
+        }
+        try bridge.writeFile(path: destinationPath, data: assembled)
     }
 }

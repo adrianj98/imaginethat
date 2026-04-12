@@ -6,6 +6,10 @@ public struct VideoPlayerView: View {
     @ObservedObject private var shortcuts = ShortcutManager.shared
     public let item: MediaItem
     @State private var player: AVPlayer?
+    @State private var showControls = true
+    @State private var hideTask: Task<Void, Never>?
+    @State private var currentTime: Double = 0
+    @State private var duration: Double = 0
 
     public init(item: MediaItem) {
         self.item = item
@@ -14,7 +18,26 @@ public struct VideoPlayerView: View {
     public var body: some View {
         Group {
             if let player {
-                VideoPlayerRepresentable(player: player)
+                ZStack(alignment: .bottom) {
+                    VideoPlayerRepresentable(player: player)
+
+                    // Mouse tracking overlay for more reliable detection
+                    MouseTrackingView(
+                        onMouseMoved: {
+                            showControls = true
+                            resetHideTimer()
+                        },
+                        onMouseExited: {
+                            scheduleHide()
+                        }
+                    )
+                    .allowsHitTesting(false)
+
+                    // Transport bar
+                    TransportBarView(player: player, currentTime: $currentTime, duration: $duration)
+                        .opacity(showControls ? 1 : 0)
+                        .animation(.easeOut(duration: 0.25), value: showControls)
+                }
             } else {
                 ProgressView()
                     .progressViewStyle(.circular)
@@ -26,9 +49,11 @@ public struct VideoPlayerView: View {
         .onDisappear {
             player?.pause()
             player = nil
+            hideTask?.cancel()
         }
         .onChange(of: item) { _, newItem in
             player?.pause()
+            hideTask?.cancel()
             loadVideo()
         }
         .focusable()
@@ -45,28 +70,47 @@ public struct VideoPlayerView: View {
     private func loadVideo() {
         guard let source = appState.mediaSource else { return }
 
-        // For encrypted vaults, use streaming resource loader (zero disk writes)
-        if let vaultSource = source as? VaultSource {
-            do {
-                let playerItem = try vaultSource.createPlayerItem(for: item)
-                let avPlayer = AVPlayer(playerItem: playerItem)
-                self.player = avPlayer
-                avPlayer.play()
-            } catch {
-                self.player = nil
-            }
-            return
+        do {
+            let playerItem = try source.createPlayerItem(for: item)
+            let avPlayer = AVPlayer(playerItem: playerItem)
+            setupTimeObserver(for: avPlayer)
+            self.player = avPlayer
+            avPlayer.play()
+        } catch {
+            self.player = nil
         }
+    }
 
-        // For plain folders, use file URL directly
-        Task {
-            do {
-                let url = try await source.videoURL(for: item)
-                let avPlayer = AVPlayer(url: url)
-                self.player = avPlayer
-                avPlayer.play()
-            } catch {
-                self.player = nil
+    private func setupTimeObserver(for player: AVPlayer) {
+        let interval = CMTime(seconds: 0.5, preferredTimescale: 1000)
+        player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak player] time in
+            guard let player = player else { return }
+            currentTime = time.seconds
+            if let item = player.currentItem {
+                let duration = item.duration.seconds
+                if !duration.isNaN && !duration.isInfinite {
+                    self.duration = duration
+                }
+            }
+        }
+    }
+
+    private func resetHideTimer() {
+        hideTask?.cancel()
+        hideTask = Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+            if !Task.isCancelled {
+                showControls = false
+            }
+        }
+    }
+
+    private func scheduleHide() {
+        hideTask?.cancel()
+        hideTask = Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000) // 3 seconds
+            if !Task.isCancelled {
+                showControls = false
             }
         }
     }
@@ -91,12 +135,68 @@ public struct VideoPlayerRepresentable: NSViewRepresentable {
     public func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
         view.player = player
-        view.controlsStyle = .floating
-        view.showsFullScreenToggleButton = true
+        view.controlsStyle = .none
+        view.showsFullScreenToggleButton = false
         return view
     }
 
     public func updateNSView(_ nsView: AVPlayerView, context: Context) {
         nsView.player = player
+    }
+}
+
+struct MouseTrackingView: NSViewRepresentable {
+    var onMouseMoved: () -> Void
+    var onMouseExited: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = TrackingView(onMouseMoved: onMouseMoved, onMouseExited: onMouseExited)
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+class TrackingView: NSView {
+    var onMouseMoved: () -> Void
+    var onMouseExited: () -> Void
+    var trackingArea: NSTrackingArea?
+
+    init(onMouseMoved: @escaping () -> Void, onMouseExited: @escaping () -> Void) {
+        self.onMouseMoved = onMouseMoved
+        self.onMouseExited = onMouseExited
+        super.init(frame: .zero)
+        setupTracking()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func setupTracking() {
+        let trackingArea = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .inVisibleRect, .activeInKeyWindow],
+            owner: self,
+            userInfo: nil
+        )
+        self.trackingArea = trackingArea
+        addTrackingArea(trackingArea)
+    }
+
+    override func updateTrackingAreas() {
+        if let trackingArea = trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        setupTracking()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        onMouseMoved()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onMouseExited()
     }
 }

@@ -33,5 +33,10 @@ extern void GocryptfsFreeDecryptResult(DecryptResult result);
 extern void GocryptfsFreeListResult(ListResult result);
 extern DecryptResult GocryptfsEncryptData(int sessionID, void* plaintext, int plaintextLen);
 extern DecryptResult GocryptfsDecryptData(int sessionID, void* ciphertext, int ciphertextLen);
+extern int GocryptfsRenameFile(int sessionID, char* sourcePath, char* destDirPath);
+extern int GocryptfsMkdir(int sessionID, char* dirPath);
+extern int GocryptfsDeleteFile(int sessionID, char* filePath);
+extern int GocryptfsDeleteDir(int sessionID, char* dirPath);
+extern int GocryptfsWriteFile(int sessionID, char* relativePath, void* data, int dataLen);
 
 #endif
