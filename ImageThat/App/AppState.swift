@@ -353,10 +353,15 @@ public class AppState: ObservableObject {
 
     /// Import external files (from Finder) into the current media source
     public func importFiles(_ urls: [URL], into source: (any MediaSource)?) {
-        guard let dest = source as? WritableMediaSource else { return }
+        guard let dest = source as? WritableMediaSource else {
+            print("importFiles: source is not WritableMediaSource")
+            return
+        }
+        print("importFiles: importing \(urls.count) files")
         Task {
             for url in urls {
                 do {
+                    print("importFiles: processing \(url.lastPathComponent)")
                     let name = url.lastPathComponent
                     let destPath: String
                     if let vaultSource = dest as? VaultSource {
@@ -369,9 +374,12 @@ public class AppState: ObservableObject {
                     let item = MediaItem(url: url)
                     let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
                     let size = (attrs[.size] as? Int64) ?? 0
+                    print("importFiles: copying \(name) (\(size) bytes) to \(destPath)")
                     let chunks = localSource.readChunks(for: item, chunkSize: 262_144)
                     try await dest.writeChunks(chunks, to: destPath, totalSize: size)
+                    print("importFiles: successfully copied \(name)")
                 } catch {
+                    print("importFiles: error - \(error)")
                     self.errorMessage = error.localizedDescription
                 }
             }

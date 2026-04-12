@@ -33,15 +33,21 @@ public struct BrowserView: View {
                 .padding()
             }
             .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+                guard appState.mediaSource is WritableMediaSource else { return false }
                 Task {
                     var urls: [URL] = []
                     for provider in providers {
-                        if let data = try? await provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) as? URL {
-                            urls.append(data)
+                        // Try to load as URL directly
+                        if let url = try? await provider.loadItem(forTypeIdentifier: "public.url", options: nil) as? URL {
+                            urls.append(url)
+                        } else if let data = try? await provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) as? Data,
+                                  let url = URL(dataRepresentation: data, relativeTo: nil) {
+                            urls.append(url)
                         }
                     }
-                    guard appState.mediaSource is WritableMediaSource else { return }
-                    appState.importFiles(urls, into: appState.mediaSource)
+                    if !urls.isEmpty {
+                        appState.importFiles(urls, into: appState.mediaSource)
+                    }
                 }
                 return true
             }
