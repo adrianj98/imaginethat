@@ -240,6 +240,7 @@ public final class VaultSource: WritableMediaSource, @unchecked Sendable {
         let startTime = Date()
         var lastReportTime = Date()
 
+        // Accumulate chunks and report progress
         for try await chunk in chunks {
             assembled.append(chunk)
 
@@ -254,12 +255,13 @@ public final class VaultSource: WritableMediaSource, @unchecked Sendable {
             }
         }
 
-        // Final progress update before writing
+        // Final progress update before actual write
         NotificationCenter.default.post(
             name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
             object: (current: Int64(assembled.count), total: totalSize, startTime: startTime)
         )
 
+        // Now write to vault (this is fast for small files, slow for large files)
         try bridge.writeFile(path: destinationPath, data: assembled)
     }
 }

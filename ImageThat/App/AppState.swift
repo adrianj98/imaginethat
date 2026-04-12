@@ -411,14 +411,9 @@ public class AppState: ObservableObject {
                     let chunkSize = 1_048_576  // 1MB chunks
                     let sourceChunks = localSource.readChunks(for: item, chunkSize: chunkSize)
 
-                    // Pass chunks directly to destination without intermediate wrapping.
-                    // No buffering layer means read/write are synchronized by destination's backpressure.
+                    // Pass chunks directly to destination.
+                    // Destination tracks write progress and posts notifications.
                     try await dest.writeChunks(sourceChunks, to: destPath, totalSize: size)
-
-                    // Final progress update when complete
-                    await MainActor.run {
-                        self.fileTransferProgress = (size, size, startTime)
-                    }
 
                     print("importFiles: successfully copied \(name)")
                 } catch {

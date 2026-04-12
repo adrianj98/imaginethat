@@ -172,6 +172,12 @@ public final class FolderSource: WritableMediaSource, @unchecked Sendable {
 
     public func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
         where S.Element == Data {
+        // Post "writing" phase notification
+        NotificationCenter.default.post(
+            name: NSNotification.Name("com.adrianm.imagethat.fileTransferPhase"),
+            object: "writing"
+        )
+
         let dest = rootURL.appendingPathComponent(destinationPath)
         FileManager.default.createFile(atPath: dest.path, contents: nil)
         let handle = try FileHandle(forWritingTo: dest)
@@ -196,10 +202,10 @@ public final class FolderSource: WritableMediaSource, @unchecked Sendable {
             }
         }
 
-        // Final progress update
+        // Report completion
         NotificationCenter.default.post(
-            name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
-            object: (current: totalSize, total: totalSize, startTime: startTime)
+            name: NSNotification.Name("com.adrianm.imagethat.fileTransferPhase"),
+            object: nil
         )
     }
 }
