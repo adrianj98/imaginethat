@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 public struct BrowserView: View {
     @EnvironmentObject var appState: AppState
@@ -32,25 +33,11 @@ public struct BrowserView: View {
                 }
                 .padding()
             }
-            .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            .dropDestination(for: URL.self) { urls, _ in
                 guard appState.mediaSource is WritableMediaSource else { return false }
-                Task {
-                    var urls: [URL] = []
-                    for provider in providers {
-                        // Try to load as URL directly
-                        if let url = try? await provider.loadItem(forTypeIdentifier: "public.url", options: nil) as? URL {
-                            urls.append(url)
-                        } else if let data = try? await provider.loadItem(forTypeIdentifier: "public.file-url", options: nil) as? Data,
-                                  let url = URL(dataRepresentation: data, relativeTo: nil) {
-                            urls.append(url)
-                        }
-                    }
-                    if !urls.isEmpty {
-                        appState.importFiles(urls, into: appState.mediaSource)
-                    }
-                }
+                appState.importFiles(urls, into: appState.mediaSource)
                 return true
-            }
+            } isTargeted: { _ in }
             .contextMenu {
                 if appState.mediaSource is VaultSource {
                     Button("New Folder") {
