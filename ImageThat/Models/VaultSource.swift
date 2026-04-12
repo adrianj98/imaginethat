@@ -235,33 +235,44 @@ public final class VaultSource: WritableMediaSource, @unchecked Sendable {
 
     public func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
         where S.Element == Data {
-        var assembled = Data()
-        assembled.reserveCapacity(Int(totalSize))
+        // Write directly to the vault filesystem (via the mounted FUSE path)
+        // gocryptfs handles encryption transparently at the filesystem level
+        // This avoids buffering the entire file in memory
+        let vaultFilePath = bridge.vaultPath.appendingPathComponent(destinationPath)
+
+        // Create parent directories if needed
+        let parentDir = vaultFilePath.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true, attributes: nil)
+
+        // Create empty file
+        FileManager.default.createFile(atPath: vaultFilePath.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: vaultFilePath)
+        defer { try? handle.close() }
+
         let startTime = Date()
+        var totalWritten: Int64 = 0
         var lastReportTime = Date()
 
-        // Accumulate chunks and report progress
+        // Write chunks directly to the vault filesystem (encrypted by FUSE mount)
         for try await chunk in chunks {
-            assembled.append(chunk)
+            try handle.write(contentsOf: chunk)
+            totalWritten += Int64(chunk.count)
 
-            // Report progress every 0.5 seconds while accumulating
+            // Report progress every 0.5 seconds
             let now = Date()
             if now.timeIntervalSince(lastReportTime) >= 0.5 {
                 lastReportTime = now
                 NotificationCenter.default.post(
                     name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
-                    object: (current: Int64(assembled.count), total: totalSize, startTime: startTime)
+                    object: (current: totalWritten, total: totalSize, startTime: startTime)
                 )
             }
         }
 
-        // Final progress update before actual write
+        // Final progress update
         NotificationCenter.default.post(
             name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
-            object: (current: Int64(assembled.count), total: totalSize, startTime: startTime)
+            object: (current: totalSize, total: totalSize, startTime: startTime)
         )
-
-        // Now write to vault (this is fast for small files, slow for large files)
-        try bridge.writeFile(path: destinationPath, data: assembled)
     }
 }
