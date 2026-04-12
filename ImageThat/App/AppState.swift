@@ -46,6 +46,11 @@ public class AppState: ObservableObject {
     /// File to select after loading a folder (set by openFile)
     @Published private(set) var pendingSelectionName: String?
 
+    /// File transfer progress: (current bytes, total bytes)
+    @Published public var fileTransferProgress: (current: Int64, total: Int64)? = nil
+    /// Human-readable status during transfer
+    @Published public var fileTransferStatus: String? = nil
+
     public init() {
         NotificationCenter.default.addObserver(
             self,
@@ -358,7 +363,8 @@ public class AppState: ObservableObject {
             return
         }
         print("importFiles: importing \(urls.count) files")
-        Task {
+        Task.detached { [weak self] in
+            guard let self else { return }
             for url in urls {
                 do {
                     print("importFiles: processing \(url.lastPathComponent)")
@@ -374,16 +380,54 @@ public class AppState: ObservableObject {
                     let item = MediaItem(url: url)
                     let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
                     let size = (attrs[.size] as? Int64) ?? 0
+
+                    await MainActor.run {
+                        self.fileTransferStatus = "Copying \(name)..."
+                        self.fileTransferProgress = (0, size)
+                    }
+
                     print("importFiles: copying \(name) (\(size) bytes) to \(destPath)")
+
+                    // Read chunks with progress tracking
+                    var totalRead: Int64 = 0
                     let chunks = localSource.readChunks(for: item, chunkSize: 262_144)
-                    try await dest.writeChunks(chunks, to: destPath, totalSize: size)
+                    var allData = Data()
+                    allData.reserveCapacity(Int(size))
+
+                    for try await chunk in chunks {
+                        allData.append(chunk)
+                        totalRead += Int64(chunk.count)
+
+                        // Update progress on main thread — this keeps UI responsive
+                        await MainActor.run {
+                            self.fileTransferProgress = (totalRead, size)
+                        }
+                    }
+
+                    // Create stream from accumulated data
+                    let dataStream = AsyncThrowingStream<Data, Error> { continuation in
+                        continuation.yield(allData)
+                        continuation.finish()
+                    }
+
+                    // Write to destination
+                    try await dest.writeChunks(dataStream, to: destPath, totalSize: size)
+
                     print("importFiles: successfully copied \(name)")
                 } catch {
                     print("importFiles: error - \(error)")
-                    self.errorMessage = error.localizedDescription
+                    await MainActor.run {
+                        self.errorMessage = error.localizedDescription
+                        self.fileTransferStatus = nil
+                        self.fileTransferProgress = nil
+                    }
                 }
             }
-            self.loadMedia(from: source ?? dest)
+            await MainActor.run {
+                self.fileTransferStatus = nil
+                self.fileTransferProgress = nil
+                self.loadMedia(from: source ?? dest)
+            }
         }
     }
 

@@ -28,6 +28,23 @@ public struct ContentView: View {
         }
         .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 350)
         .frame(minWidth: 800, minHeight: 600)
+        .overlay(alignment: .bottom) {
+            if let progress = appState.fileTransferProgress,
+               let status = appState.fileTransferStatus {
+                VStack(spacing: 12) {
+                    Text(status)
+                        .font(.subheadline)
+                    ProgressView(value: Double(progress.current), total: Double(progress.total))
+                    Text("\(progress.current / 1_000_000) / \(progress.total / 1_000_000) MB")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding()
+                .background(Color(nsColor: .controlBackgroundColor))
+                .cornerRadius(8)
+                .padding()
+            }
+        }
         .alert("Error", isPresented: .init(
             get: { appState.errorMessage != nil },
             set: { if !$0 { appState.errorMessage = nil } }
