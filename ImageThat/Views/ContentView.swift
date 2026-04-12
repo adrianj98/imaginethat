@@ -33,6 +33,8 @@ public struct ContentView: View {
                let status = appState.fileTransferStatus {
                 let elapsed = Date().timeIntervalSince(progress.startTime)
                 let percentComplete = progress.total > 0 ? Double(progress.current) / Double(progress.total) : 0
+                let bytesPerSecond = elapsed > 0 ? Double(progress.current) / elapsed : 0
+                let mbPerSecond = bytesPerSecond / 1_000_000
 
                 VStack(spacing: 12) {
                     HStack {
@@ -49,6 +51,11 @@ public struct ContentView: View {
                     HStack {
                         Text("\(progress.current / 1_000_000) / \(progress.total / 1_000_000) MB")
                             .font(.caption)
+                        Spacer()
+                        Text(String(format: "%.1f MB/s", mbPerSecond))
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(.blue)
                         Spacer()
                         Text(String(format: "%.0fs", elapsed))
                             .font(.caption)
