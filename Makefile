@@ -25,18 +25,8 @@ app: build
 	install_name_tool -change libgocryptfs.dylib @executable_path/../Frameworks/libgocryptfs.dylib $(APP_BUNDLE)/Contents/MacOS/ImageThat
 	codesign --force --sign - $(APP_BUNDLE)/Contents/Frameworks/libgocryptfs.dylib
 	codesign --force --sign - $(APP_BUNDLE)/Contents/MacOS/ImageThat
+	cp ImageThat/Resources/Info.plist $(APP_BUNDLE)/Contents/Info.plist
 	codesign --force --sign - $(APP_BUNDLE)
-	@echo '<?xml version="1.0" encoding="UTF-8"?>\n\
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n\
-<plist version="1.0"><dict>\n\
-<key>CFBundleName</key><string>ImageThat</string>\n\
-<key>CFBundleIdentifier</key><string>com.adrianm.imagethat</string>\n\
-<key>CFBundleVersion</key><string>1.0</string>\n\
-<key>CFBundleExecutable</key><string>ImageThat</string>\n\
-<key>CFBundlePackageType</key><string>APPL</string>\n\
-<key>NSHighResolutionCapable</key><true/>\n\
-<key>LSMinimumSystemVersion</key><string>14.0</string>\n\
-</dict></plist>' > $(APP_BUNDLE)/Contents/Info.plist
 
 # Build the Go shared library
 golib:

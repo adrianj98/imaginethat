@@ -80,6 +80,15 @@ public struct DetailView: View {
                 .gesture(zoomScale > 1.0 ? nil : swipeGesture)
             }
 
+            // Top-left back button
+            Button(action: { appState.exitDetail() }) {
+                Image(systemName: "square.grid.2x2")
+            }
+            .buttonStyle(.plain)
+            .help("Back to grid")
+            .padding(12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
             // Top-right toolbar buttons
             if appState.selectedItem?.mediaType == .image {
                 HStack(spacing: 8) {
@@ -218,26 +227,45 @@ public struct DetailView: View {
             sourceCGImage = nil
             return
         }
+
+        // Use preloaded image if available for instant display
+        if let preloaded = appState.popPreloadedImage(for: item) {
+            setCurrentImage(preloaded)
+            scheduleNextPreload()
+            return
+        }
+
         isLoadingMedia = true
         sourceCGImage = nil
-        Task {
+        Task(priority: .userInitiated) {
             guard let source = appState.mediaSource else { return }
             do {
                 let image = try await source.loadImage(for: item)
-                self.currentImage = image
-                // Also capture the CGImage for editing
-                if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
-                    self.sourceCGImage = cgImage
-                } else if let tiffData = image.tiffRepresentation,
-                          let bitmap = NSBitmapImageRep(data: tiffData),
-                          let cgImage = bitmap.cgImage {
-                    self.sourceCGImage = cgImage
-                }
+                setCurrentImage(image)
             } catch {
                 self.currentImage = nil
                 self.sourceCGImage = nil
             }
             isLoadingMedia = false
+            scheduleNextPreload()
+        }
+    }
+
+    private func setCurrentImage(_ image: NSImage) {
+        self.currentImage = image
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            self.sourceCGImage = cgImage
+        } else if let tiffData = image.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: tiffData),
+                  let cgImage = bitmap.cgImage {
+            self.sourceCGImage = cgImage
+        }
+    }
+
+    private func scheduleNextPreload() {
+        guard let next = appState.nextItem else { return }
+        Task(priority: .background) {
+            await appState.preloadImage(for: next)
         }
     }
 

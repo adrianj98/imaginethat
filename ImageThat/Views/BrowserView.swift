@@ -18,7 +18,7 @@ public struct BrowserView: View {
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 12) {
                     ForEach(Array(appState.mediaItems.enumerated()), id: \.element.id) { index, item in
-                        ThumbnailCell(item: item, isInVault: appState.mediaSource is VaultSource)
+                        ThumbnailCell(item: item, index: index, isInVault: appState.mediaSource is VaultSource)
                             .onTapGesture(count: 2) {
                                 appState.enterDetail(at: index)
                             }
@@ -68,11 +68,16 @@ public struct BrowserView: View {
 public struct ThumbnailCell: View {
     @EnvironmentObject var appState: AppState
     public let item: MediaItem
+    public let index: Int
     public let isInVault: Bool
     @State private var thumbnail: NSImage?
+    @State private var lastItemID: MediaItem.ID?
 
-    public init(item: MediaItem, isInVault: Bool = false) {
+    private var isSelected: Bool { appState.selectedIndex == index }
+
+    public init(item: MediaItem, index: Int = 0, isInVault: Bool = false) {
         self.item = item
+        self.index = index
         self.isInVault = isInVault
     }
 
@@ -124,9 +129,14 @@ public struct ThumbnailCell: View {
                 cellContent
             }
         }
-        .task(id: item.id) {
-            thumbnail = nil
-            thumbnail = await appState.loadThumbnail(for: item, size: CGSize(width: 200, height: 200))
+        .task(id: "\(item.id)-\(isSelected)", priority: isSelected ? .userInitiated : .utility) {
+            if item.id != lastItemID {
+                thumbnail = nil
+                lastItemID = item.id
+            }
+            if thumbnail == nil {
+                thumbnail = await appState.loadThumbnail(for: item, size: CGSize(width: 200, height: 200))
+            }
         }
     }
 }

@@ -8,6 +8,10 @@ struct ImageThatApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(appState)
+                .onAppear { appState.restoreSession() }
+                .onOpenURL { url in
+                    appState.openFile(url: url)
+                }
         }
         .commands {
             CommandGroup(replacing: .newItem) {

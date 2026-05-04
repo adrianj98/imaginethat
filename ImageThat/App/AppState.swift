@@ -32,6 +32,11 @@ public class AppState: ObservableObject {
     private var loadGeneration = 0
     private var currentLoadTask: Task<Void, Never>?
 
+    /// Preloaded full images for instant navigation (next item only, evicted on navigation)
+    private var imagePreloadCache: [MediaItem.ID: NSImage] = [:]
+
+    private static let lastFolderKey = "lastOpenedFolderURL"
+
     /// Navigation history for going back/up
     @Published public var navigationStack: [URL] = []
 
@@ -42,6 +47,10 @@ public class AppState: ObservableObject {
 
     /// Vault bridges keyed by vault path — kept alive for the session
     private var vaultBridges: [String: GocryptfsBridge] = [:]
+
+    // Favorites
+    @Published public var favorites: [SidebarItem] = []
+    private static let favoritesKey = "favoritesFolderPaths"
 
     /// File to select after loading a folder (set by openFile)
     @Published private(set) var pendingSelectionName: String?
@@ -77,6 +86,41 @@ public class AppState: ObservableObject {
     @objc private func handleFileTransferProgress(_ notification: Notification) {
         guard let tuple = notification.object as? (current: Int64, total: Int64, startTime: Date) else { return }
         self.fileTransferProgress = tuple
+    }
+
+    public func addFavorite(url: URL) {
+        guard !favorites.contains(where: { $0.url == url }) else { return }
+        favorites.append(SidebarItem(name: url.lastPathComponent, url: url, children: []))
+        saveFavorites()
+    }
+
+    public func removeFavorite(_ item: SidebarItem) {
+        favorites.removeAll { $0.url == item.url }
+        saveFavorites()
+    }
+
+    private func saveFavorites() {
+        UserDefaults.standard.set(favorites.map { $0.url.path }, forKey: Self.favoritesKey)
+    }
+
+    private func loadFavorites() {
+        let paths = UserDefaults.standard.stringArray(forKey: Self.favoritesKey) ?? []
+        favorites = paths
+            .filter { FileManager.default.fileExists(atPath: $0) }
+            .map { SidebarItem(name: URL(fileURLWithPath: $0).lastPathComponent, url: URL(fileURLWithPath: $0), children: []) }
+    }
+
+    /// Called on launch: open path from CLI args, else restore last folder.
+    public func restoreSession() {
+        loadFavorites()
+        loadSavedPasswords()
+        let args = CommandLine.arguments
+        if args.count > 1 {
+            let url = URL(fileURLWithPath: args[1])
+            openDirectory(url: url)
+        } else if let url = UserDefaults.standard.url(forKey: Self.lastFolderKey) {
+            openDirectory(url: url)
+        }
     }
 
     /// Load all saved vault passwords on app launch. Triggers Touch ID if passwords exist.
@@ -116,6 +160,22 @@ public class AppState: ObservableObject {
     public var selectedItem: MediaItem? {
         guard mediaItems.indices.contains(selectedIndex) else { return nil }
         return mediaItems[selectedIndex]
+    }
+
+    public var nextItem: MediaItem? {
+        guard selectedIndex + 1 < mediaItems.count else { return nil }
+        return mediaItems[selectedIndex + 1]
+    }
+
+    public func preloadImage(for item: MediaItem) async {
+        guard imagePreloadCache[item.id] == nil, item.mediaType == .image,
+              let source = mediaSource else { return }
+        guard let image = try? await source.loadImage(for: item) else { return }
+        imagePreloadCache[item.id] = image
+    }
+
+    public func popPreloadedImage(for item: MediaItem) -> NSImage? {
+        imagePreloadCache.removeValue(forKey: item.id)
     }
 
     public var currentItemLabel: String {
@@ -601,6 +661,7 @@ public class AppState: ObservableObject {
     }
 
     private func loadFolder(url: URL, rebuildSidebar: Bool) {
+        UserDefaults.standard.set(url, forKey: Self.lastFolderKey)
         let source = FolderSource(rootURL: url)
         self.mediaSource = source
         self.viewMode = .grid

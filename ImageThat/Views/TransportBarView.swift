@@ -5,7 +5,8 @@ public struct TransportBarView: View {
     var player: AVPlayer
     @Binding var currentTime: Double
     @Binding var duration: Double
-    @State private var lastSeekTime: Double = 0
+    @State private var isScrubbing = false
+    @State private var scrubPosition: Double = 0
 
     public init(player: AVPlayer, currentTime: Binding<Double>, duration: Binding<Double>) {
         self.player = player
@@ -25,15 +26,25 @@ public struct TransportBarView: View {
                 }
                 .buttonStyle(.plain)
 
-                // Scrubber slider - detect large jumps as seeks
-                Slider(value: $currentTime, in: 0...max(duration, 0.1))
-                    .onChange(of: currentTime) { oldValue, newValue in
-                        // If jump is > 0.5 seconds, it's likely a user-initiated seek
-                        if abs(newValue - oldValue) > 0.5 {
-                            player.seek(to: CMTime(seconds: newValue, preferredTimescale: 1000))
-                            lastSeekTime = newValue
+                // Scrubber slider - only seek on explicit user drag
+                Slider(
+                    value: Binding(
+                        get: { isScrubbing ? scrubPosition : currentTime },
+                        set: { newValue in
+                            if isScrubbing { scrubPosition = newValue }
                         }
+                    ),
+                    in: 0...max(duration, 0.1)
+                ) { editing in
+                    if editing {
+                        isScrubbing = true
+                        scrubPosition = currentTime
+                    } else {
+                        isScrubbing = false
+                        player.seek(to: CMTime(seconds: scrubPosition, preferredTimescale: 1000))
+                        currentTime = scrubPosition
                     }
+                }
 
                 // Time display
                 Text("\(formatTime(currentTime)) / \(formatTime(duration))")
