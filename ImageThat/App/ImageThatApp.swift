@@ -24,6 +24,12 @@ struct ImageThatApp: App {
                     appState.openVault()
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
+
+                Divider()
+
+                Button("Connect Google Drive...") {
+                    appState.showGoogleDriveSetup = true
+                }
             }
         }
     }

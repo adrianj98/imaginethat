@@ -23,12 +23,26 @@ typedef struct {
     char* error;
 } DecryptResult;
 
+// VFS callback types — Swift implements these for Drive-backed vaults.
+// All paths are vault-relative cipher paths.
+typedef int64_t (*VFSReadAtFn)(void* ctx, const char* path, int64_t offset, int64_t length,
+                               uint8_t* buf, int64_t bufSize);
+typedef int64_t (*VFSFileSizeFn)(void* ctx, const char* path);
+typedef ListResult (*VFSListDirFn)(void* ctx, const char* path);
+
 extern int GocryptfsOpen(char* vaultPath, char* password);
+// Open a vault from in-memory config bytes with VFS callbacks (for Drive-backed vaults).
+extern int GocryptfsOpenVFS(char* configData, int configDataLen, char* password,
+                             VFSReadAtFn readAtFn, VFSFileSizeFn fileSizeFn, VFSListDirFn listDirFn,
+                             void* ctx);
 extern void GocryptfsClose(int sessionID);
 extern ListResult GocryptfsListDir(int sessionID, char* relativePath);
 extern DecryptResult GocryptfsDecryptFile(int sessionID, char* relativePath);
 extern int32_t GocryptfsReadRange(int sessionID, char* relativePath, int64_t offset, int32_t length, void* outBuf);
 extern int64_t GocryptfsFileSize(int sessionID, char* relativePath);
+// Encrypt a filename for the given cipher directory path (needed to upload to Drive with correct name).
+// Caller must free the returned string.
+extern char* GocryptfsEncryptFileName(int sessionID, char* cipherDirPath, char* plainName);
 extern void GocryptfsFreeDecryptResult(DecryptResult result);
 extern void GocryptfsFreeListResult(ListResult result);
 extern DecryptResult GocryptfsEncryptData(int sessionID, void* plaintext, int plaintextLen);
@@ -38,5 +52,8 @@ extern int GocryptfsMkdir(int sessionID, char* dirPath);
 extern int GocryptfsDeleteFile(int sessionID, char* filePath);
 extern int GocryptfsDeleteDir(int sessionID, char* dirPath);
 extern int GocryptfsWriteFile(int sessionID, char* relativePath, void* data, int dataLen);
+// Resolve a plaintext vault path to its cipher equivalent. isDir=1 for directories.
+// Caller must free the returned string.
+extern char* GocryptfsResolveCipherPath(int sessionID, char* plainRelPath, int isDir);
 
 #endif

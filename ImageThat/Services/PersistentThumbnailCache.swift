@@ -2,6 +2,15 @@ import AppKit
 import CryptoKit
 import Foundation
 
+public protocol VaultCryptoBridge {
+    func encryptData(_ plaintext: Data) throws -> Data
+    func decryptData(_ ciphertext: Data) throws -> Data
+    func fileSize(path: String) throws -> Int64
+}
+
+extension GocryptfsBridge: VaultCryptoBridge {}
+extension DriveVaultBridge: VaultCryptoBridge {}
+
 /// On-disk thumbnail cache. Vault thumbnails are encrypted using the vault's
 /// own gocryptfs content encryption — same crypto as the source files.
 public final class PersistentThumbnailCache: @unchecked Sendable {
@@ -18,7 +27,7 @@ public final class PersistentThumbnailCache: @unchecked Sendable {
     // MARK: - Public API
 
     /// Get a cached thumbnail. Returns nil on miss or if source file changed (size mismatch).
-    public func get(vaultPath: String, filePath: String, expectedSize: Int64, bridge: GocryptfsBridge) -> NSImage? {
+    public func get(vaultPath: String, filePath: String, expectedSize: Int64, bridge: any VaultCryptoBridge) -> NSImage? {
         let fileURL = cacheFileURL(vaultPath: vaultPath, filePath: filePath)
         guard let data = try? Data(contentsOf: fileURL) else { return nil }
 
@@ -43,7 +52,7 @@ public final class PersistentThumbnailCache: @unchecked Sendable {
     }
 
     /// Save a thumbnail encrypted with the vault's encryption.
-    public func set(_ image: NSImage, vaultPath: String, filePath: String, fileSize: Int64, bridge: GocryptfsBridge) {
+    public func set(_ image: NSImage, vaultPath: String, filePath: String, fileSize: Int64, bridge: any VaultCryptoBridge) {
         guard let jpegData = jpegData(from: image) else { return }
         guard let encrypted = try? bridge.encryptData(jpegData) else { return }
 

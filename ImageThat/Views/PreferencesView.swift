@@ -14,6 +14,10 @@ public struct PreferencesView: View {
                 .tabItem {
                     Label("Security", systemImage: "lock.shield")
                 }
+            GoogleDriveTab()
+                .tabItem {
+                    Label("Google Drive", systemImage: "externaldrive.badge.icloud")
+                }
         }
         .frame(width: 450, height: 400)
     }
@@ -165,6 +169,65 @@ public struct SecurityTab: View {
 
     private func updateCacheSize() {
         cacheBytes = PersistentThumbnailCache.shared.cacheSize()
+    }
+}
+
+// MARK: - Google Drive Tab
+
+public struct GoogleDriveTab: View {
+    private let limitOptions: [(label: String, bytes: Int64)] = [
+        ("1 GB", 1_073_741_824),
+        ("10 GB", 10_737_418_240),
+        ("50 GB", 53_687_091_200),
+        ("200 GB", 214_748_364_800),
+        ("Unlimited", 0),
+    ]
+
+    @State private var selectedLimit: Int64 = DriveCache.maxBytes
+    @State private var cacheBytes: Int64 = 0
+
+    public init() {}
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Drive Cache")
+                .font(.headline)
+
+            Picker("Maximum cache size", selection: $selectedLimit) {
+                ForEach(limitOptions, id: \.bytes) { option in
+                    Text(option.label).tag(option.bytes)
+                }
+            }
+            .onChange(of: selectedLimit) { _, newValue in
+                DriveCache.maxBytes = newValue
+            }
+
+            HStack {
+                Text(cacheLabel)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Clear Cache") {
+                    Task {
+                        await DriveCache.shared.clear()
+                        cacheBytes = await DriveCache.shared.currentSize()
+                    }
+                }
+            }
+
+            Spacer()
+        }
+        .padding()
+        .task {
+            selectedLimit = DriveCache.maxBytes
+            cacheBytes = await DriveCache.shared.currentSize()
+        }
+    }
+
+    private var cacheLabel: String {
+        if cacheBytes == 0 { return "No files cached" }
+        let f = ByteCountFormatter()
+        f.countStyle = .file
+        return "Cache: \(f.string(fromByteCount: cacheBytes))"
     }
 }
 

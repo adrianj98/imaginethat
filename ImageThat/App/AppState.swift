@@ -28,6 +28,12 @@ public class AppState: ObservableObject {
     @Published public var sidebarItems: [SidebarItem] = []
     @Published public var selectedSidebarItem: SidebarItem?
 
+    // Google Drive state
+    @Published public var googleDriveConnected = false
+    @Published public var googleDriveSidebarItems: [SidebarItem] = []
+    @Published public var showGoogleDriveSetup = false
+    @Published public var isConnectingGoogleDrive = false
+
     private let thumbnailCache = ThumbnailCache()
     private var loadGeneration = 0
     private var currentLoadTask: Task<Void, Never>?
@@ -47,6 +53,8 @@ public class AppState: ObservableObject {
 
     /// Vault bridges keyed by vault path — kept alive for the session
     private var vaultBridges: [String: GocryptfsBridge] = [:]
+    /// Drive vault bridges keyed by Drive folder ID
+    private var driveVaultBridges: [String: DriveVaultBridge] = [:]
 
     // Favorites
     @Published public var favorites: [SidebarItem] = []
@@ -114,6 +122,7 @@ public class AppState: ObservableObject {
     public func restoreSession() {
         loadFavorites()
         loadSavedPasswords()
+        restoreGoogleDriveSession()
         let args = CommandLine.arguments
         if args.count > 1 {
             let url = URL(fileURLWithPath: args[1])
@@ -198,7 +207,9 @@ public class AppState: ObservableObject {
 
     /// Called from Cmd+O or toolbar — this is the only place that rebuilds the sidebar.
     public func openDirectory(url: URL) {
-        if isVault(url) {
+        if url.scheme == "gdrive" {
+            navigateToGoogleDriveFolder(folderId: url.host ?? "root")
+        } else if isVault(url) {
             tryUnlockVault(url: url, rebuildSidebar: true)
         } else {
             loadFolder(url: url, rebuildSidebar: true)
@@ -214,6 +225,12 @@ public class AppState: ObservableObject {
 
     /// Called from sidebar selection — never rebuilds the sidebar, but lazily expands children.
     public func navigateToSidebarItem(_ item: SidebarItem) {
+        if item.url.scheme == "gdrive" {
+            expandGoogleDriveSidebarItem(item)
+            navigateToGoogleDriveFolder(folderId: item.url.host ?? "root")
+            return
+        }
+
         // Lazily expand children in the sidebar if not yet loaded
         expandSidebarItem(item)
 
@@ -359,6 +376,10 @@ public class AppState: ObservableObject {
         let rebuild = pendingVaultRebuildSidebar
         pendingVaultURL = nil
         pendingVaultRebuildSidebar = false
+        if url.scheme == "gdrive", let folderId = url.host {
+            Task { await self.unlockDriveVault(folderId: folderId, password: password, saveToKeychain: saveToKeychain) }
+            return
+        }
         unlockVault(url: url, password: password, rebuildSidebar: rebuild, saveToKeychain: saveToKeychain)
     }
 
@@ -389,6 +410,8 @@ public class AppState: ObservableObject {
                     let children = Self.subfolders(of: folderSource.rootURL, maxDepth: 1)
                     let rootItem = SidebarItem(name: rootName, url: folderSource.rootURL, children: children)
                     self.sidebarItems = [rootItem]
+                } else if source is GoogleDriveSource {
+                    await self.buildGoogleDriveSidebar()
                 }
             } catch {
                 self.errorMessage = error.localizedDescription
@@ -607,7 +630,12 @@ public class AppState: ObservableObject {
 
         // 2. Persistent disk cache (vault sources only)
         if let vaultSource = source as? VaultSource {
-            if let thumb = loadFromPersistentCache(item: item, bridge: vaultSource.bridge) {
+            if let thumb = loadFromPersistentCache(item: item, vaultId: vaultSource.bridge.vaultPath.path, bridge: vaultSource.bridge) {
+                thumbnailCache.set(thumb, for: item.id)
+                return thumb
+            }
+        } else if let dvSource = source as? DriveVaultSource {
+            if let thumb = loadFromPersistentCache(item: item, vaultId: "gdrive://\(dvSource.bridge.folderId)", bridge: dvSource.bridge) {
                 thumbnailCache.set(thumb, for: item.id)
                 return thumb
             }
@@ -618,9 +646,10 @@ public class AppState: ObservableObject {
             let thumb = try await source.loadThumbnail(for: item, size: size)
             thumbnailCache.set(thumb, for: item.id)
 
-            // Save to persistent cache for vault sources
             if let vaultSource = source as? VaultSource {
-                saveToPersistentCache(thumb, item: item, bridge: vaultSource.bridge)
+                saveToPersistentCache(thumb, item: item, vaultId: vaultSource.bridge.vaultPath.path, bridge: vaultSource.bridge)
+            } else if let dvSource = source as? DriveVaultSource {
+                saveToPersistentCache(thumb, item: item, vaultId: "gdrive://\(dvSource.bridge.folderId)", bridge: dvSource.bridge)
             }
 
             return thumb
@@ -629,21 +658,21 @@ public class AppState: ObservableObject {
         }
     }
 
-    private func loadFromPersistentCache(item: MediaItem, bridge: GocryptfsBridge) -> NSImage? {
+    private func loadFromPersistentCache(item: MediaItem, vaultId: String, bridge: any VaultCryptoBridge) -> NSImage? {
         guard let fileSize = try? bridge.fileSize(path: item.url.path) else { return nil }
         return PersistentThumbnailCache.shared.get(
-            vaultPath: bridge.vaultPath.path,
+            vaultPath: vaultId,
             filePath: item.url.path,
             expectedSize: fileSize,
             bridge: bridge
         )
     }
 
-    private func saveToPersistentCache(_ image: NSImage, item: MediaItem, bridge: GocryptfsBridge) {
+    private func saveToPersistentCache(_ image: NSImage, item: MediaItem, vaultId: String, bridge: any VaultCryptoBridge) {
         guard let fileSize = try? bridge.fileSize(path: item.url.path) else { return }
         PersistentThumbnailCache.shared.set(
             image,
-            vaultPath: bridge.vaultPath.path,
+            vaultPath: vaultId,
             filePath: item.url.path,
             fileSize: fileSize,
             bridge: bridge
@@ -811,9 +840,10 @@ public class AppState: ObservableObject {
         Task.detached { [weak self] in
             let children = Self.vaultSubfolders(bridge: bridge, path: "", maxDepth: 3)
             let rootItem = SidebarItem(name: rootName, url: vaultURL, vaultPath: "", children: children)
-            await MainActor.run {
-                self?.sidebarItems = [rootItem]
-                self?.selectedSidebarItem = rootItem
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                self.sidebarItems = [rootItem]
+                self.selectedSidebarItem = rootItem
             }
         }
     }
@@ -829,6 +859,195 @@ public class AppState: ObservableObject {
                 vaultPath: dir.path,
                 children: vaultSubfolders(bridge: bridge, path: dir.path, maxDepth: maxDepth - 1)
             )
+        }
+    }
+
+    // MARK: - Google Drive
+
+    private func restoreGoogleDriveSession() {
+        Task {
+            await GoogleDriveService.shared.loadSavedCredentials()
+            guard await GoogleDriveService.shared.isConnected else { return }
+            googleDriveConnected = true
+            await buildGoogleDriveSidebar()
+        }
+    }
+
+    public func connectGoogleDrive(clientId: String, clientSecret: String) {
+        isConnectingGoogleDrive = true
+        Task {
+            do {
+                try await GoogleDriveService.shared.authorize(clientId: clientId, clientSecret: clientSecret)
+                googleDriveConnected = true
+                showGoogleDriveSetup = false
+                await buildGoogleDriveSidebar()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isConnectingGoogleDrive = false
+        }
+    }
+
+    public func disconnectGoogleDrive() {
+        Task { await GoogleDriveService.shared.disconnect() }
+        googleDriveConnected = false
+        googleDriveSidebarItems = []
+        if mediaSource is GoogleDriveSource {
+            mediaSource = nil
+            mediaItems = []
+        }
+    }
+
+    func navigateToGoogleDriveFolder(folderId: String) {
+        Task {
+            let hasConf = (try? await GoogleDriveService.shared.fileExists(name: "gocryptfs.conf", in: folderId)) ?? false
+            if hasConf {
+                self.tryUnlockDriveVault(folderId: folderId)
+                return
+            }
+            let source = GoogleDriveSource(folderId: folderId)
+            self.mediaSource = source
+            self.viewMode = .grid
+            self.selectedIndex = 0
+            self.loadMedia(from: source)
+        }
+    }
+
+    private func buildGoogleDriveSidebar() async {
+        do {
+            let folders = try await GoogleDriveService.shared.listFolders(in: "root")
+            let children = folders.map { folder in
+                SidebarItem(name: folder.name, url: URL(string: "gdrive://\(folder.id)")!, children: [])
+            }
+            let root = SidebarItem(name: "My Drive", url: URL(string: "gdrive://root")!, children: children)
+            googleDriveSidebarItems = [root]
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func expandGoogleDriveSidebarItem(_ item: SidebarItem) {
+        guard item.children.isEmpty, let folderId = item.url.host else { return }
+        let itemID = item.id
+        Task {
+            do {
+                let folders = try await GoogleDriveService.shared.listFolders(in: folderId)
+                let children = folders.map { folder in
+                    SidebarItem(name: folder.name, url: URL(string: "gdrive://\(folder.id)")!, children: [])
+                }
+                updateGoogleDriveSidebarChildren(parentID: itemID, children: children)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func updateGoogleDriveSidebarChildren(parentID: UUID, children: [SidebarItem]) {
+        func update(_ items: [SidebarItem]) -> [SidebarItem] {
+            items.map { item in
+                guard item.id == parentID else {
+                    var copy = item
+                    copy.children = update(item.children)
+                    return copy
+                }
+                var copy = item
+                copy.children = children
+                return copy
+            }
+        }
+        googleDriveSidebarItems = update(googleDriveSidebarItems)
+    }
+
+    public func deleteGoogleDriveSidebarFolder(_ item: SidebarItem) {
+        guard let folderId = item.url.host else { return }
+        Task {
+            do {
+                try await GoogleDriveService.shared.deleteFile(fileId: folderId)
+                await buildGoogleDriveSidebar()
+                if let driveSource = mediaSource as? GoogleDriveSource, driveSource.folderId == folderId {
+                    navigateToGoogleDriveFolder(folderId: "root")
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    // MARK: - Drive Vault unlock
+
+    private func tryUnlockDriveVault(folderId: String) {
+        let cacheKey = "gdrive://\(folderId)"
+
+        // 1. Session cache
+        if let password = vaultPasswords[cacheKey] {
+            Task { await self.unlockDriveVault(folderId: folderId, password: password, saveToKeychain: false) }
+            return
+        }
+
+        // 2. Try saved passwords
+        if PasswordStore.shared.hasPasswords {
+            Task {
+                do {
+                    var saved: [String: String] = [:]
+                    if PasswordStore.encryptionDisabled {
+                        saved = try PasswordStore.shared.loadAll(masterKey: nil)
+                    } else if KeychainManager.shared.hasMasterKey() {
+                        guard let key = try KeychainManager.shared.getMasterKey() else {
+                            await MainActor.run {
+                                self.pendingVaultURL = URL(string: cacheKey)!
+                                self.showVaultUnlock = true
+                            }
+                            return
+                        }
+                        self.masterKey = key
+                        saved = try PasswordStore.shared.loadAll(masterKey: key)
+                    }
+                    for (path, password) in saved { self.vaultPasswords[path] = password }
+                    if let password = saved[cacheKey] {
+                        await self.unlockDriveVault(folderId: folderId, password: password, saveToKeychain: false)
+                    } else {
+                        await MainActor.run {
+                            self.pendingVaultURL = URL(string: cacheKey)!
+                            self.showVaultUnlock = true
+                        }
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.pendingVaultURL = URL(string: cacheKey)!
+                        self.showVaultUnlock = true
+                    }
+                }
+            }
+            return
+        }
+
+        // 3. No saved passwords — show prompt
+        pendingVaultURL = URL(string: cacheKey)!
+        showVaultUnlock = true
+    }
+
+    private func unlockDriveVault(folderId: String, password: String, saveToKeychain: Bool = true) async {
+        isLoading = true
+        do {
+            let bridge = try await DriveVaultBridge(folderId: folderId, password: password)
+            let cacheKey = "gdrive://\(folderId)"
+            vaultPasswords[cacheKey] = password
+            if saveToKeychain {
+                if PasswordStore.encryptionDisabled {
+                    try? PasswordStore.shared.save(password: password, forVault: cacheKey, masterKey: nil)
+                } else if let key = try? getOrCreateMasterKey() {
+                    try? PasswordStore.shared.save(password: password, forVault: cacheKey, masterKey: key)
+                }
+            }
+            driveVaultBridges[folderId] = bridge
+            let source = DriveVaultSource(bridge: bridge, currentPath: "")
+            self.mediaSource = source
+            self.viewMode = .grid
+            self.selectedIndex = 0
+            loadMedia(from: source)
+        } catch {
+            self.errorMessage = error.localizedDescription
+            self.isLoading = false
         }
     }
 }
