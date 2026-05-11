@@ -22,20 +22,17 @@ public actor DriveCache {
 
     public static var maxBytes: Int64 {
         get {
-            let v = UserDefaults.standard.object(forKey: maxBytesKey) as? Int64 ?? 0
+            let v = AppSettings.shared.int64(forKey: maxBytesKey) ?? 0
             return v > 0 ? v : defaultMaxBytes
         }
-        set { UserDefaults.standard.set(newValue, forKey: maxBytesKey) }
+        set { AppSettings.shared.set(newValue, forKey: maxBytesKey) }
     }
 
     private init() {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let base = caches.appendingPathComponent("ImageThat/GoogleDrive")
-        let fd = base.appendingPathComponent("files")
-        let iu = base.appendingPathComponent("index.json")
+        let fd = AppPaths.driveFilesCache
+        let iu = AppPaths.driveFilesIndex
         fileDir = fd
         indexURL = iu
-        try? FileManager.default.createDirectory(at: fd, withIntermediateDirectories: true)
         index = Self.loadIndexSync(fileDir: fd, indexURL: iu)
     }
 

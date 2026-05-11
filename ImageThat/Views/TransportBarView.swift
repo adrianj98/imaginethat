@@ -17,6 +17,16 @@ public struct TransportBarView: View {
     public var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
+                // Skip back 10s
+                Button(action: { seekBy(-10) }) {
+                    Image(systemName: "gobackward.10")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.white)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("Back 10 seconds")
+
                 // Play/pause button
                 Button(action: togglePlayPause) {
                     Image(systemName: player.rate > 0 ? "pause.fill" : "play.fill")
@@ -25,6 +35,16 @@ public struct TransportBarView: View {
                         .frame(width: 24, height: 24)
                 }
                 .buttonStyle(.plain)
+
+                // Skip forward 10s
+                Button(action: { seekBy(10) }) {
+                    Image(systemName: "goforward.10")
+                        .font(.system(size: 14))
+                        .foregroundStyle(.white)
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .help("Forward 10 seconds")
 
                 // Scrubber slider - only seek on explicit user drag
                 Slider(
@@ -65,6 +85,12 @@ public struct TransportBarView: View {
         } else {
             player.play()
         }
+    }
+
+    private func seekBy(_ delta: Double) {
+        let target = max(0, min(duration, currentTime + delta))
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 1000))
+        currentTime = target
     }
 
     private func formatTime(_ seconds: Double) -> String {

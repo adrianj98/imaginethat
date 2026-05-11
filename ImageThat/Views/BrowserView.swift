@@ -71,6 +71,7 @@ public struct ThumbnailCell: View {
     public let index: Int
     public let isInVault: Bool
     @State private var thumbnail: NSImage?
+    @State private var thumbnailLoadFailed = false
     @State private var lastItemID: MediaItem.ID?
 
     private var isSelected: Bool { appState.selectedIndex == index }
@@ -94,6 +95,10 @@ public struct ThumbnailCell: View {
                         .aspectRatio(contentMode: .fill)
                         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else if thumbnailLoadFailed {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
                 } else {
                     ProgressView()
                 }
@@ -132,10 +137,16 @@ public struct ThumbnailCell: View {
         .task(id: "\(item.id)-\(isSelected)", priority: isSelected ? .userInitiated : .utility) {
             if item.id != lastItemID {
                 thumbnail = nil
+                thumbnailLoadFailed = false
                 lastItemID = item.id
             }
-            if thumbnail == nil {
-                thumbnail = await appState.loadThumbnail(for: item, size: CGSize(width: 200, height: 200))
+            if thumbnail == nil && !thumbnailLoadFailed {
+                let result = await appState.loadThumbnail(for: item, size: CGSize(width: 200, height: 200))
+                if let result {
+                    thumbnail = result
+                } else {
+                    thumbnailLoadFailed = true
+                }
             }
         }
     }

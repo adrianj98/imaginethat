@@ -26,6 +26,10 @@ public struct DetailView: View {
     @State private var isAnalyzing = false
     @State private var visionService = VisionAnalysisService()
 
+    // Auto-hide arrows on mouse idle.
+    @State private var showArrows = true
+    @State private var arrowHideTask: Task<Void, Never>?
+
     public init() {}
 
     public var body: some View {
@@ -65,17 +69,31 @@ public struct DetailView: View {
                         }
                     }
 
-                    // Navigation arrows
+                    // Navigation arrows (auto-hide on mouse idle, but stay
+                    // visible while the mouse is hovering over either button)
                     HStack {
                         navButton(systemName: "chevron.left", enabled: appState.selectedIndex > 0) {
                             appState.navigatePrevious()
                         }
+                        .onHover { hovering in handleArrowHover(hovering) }
                         Spacer()
                         navButton(systemName: "chevron.right", enabled: appState.selectedIndex < appState.mediaItems.count - 1) {
                             appState.navigateNext()
                         }
+                        .onHover { hovering in handleArrowHover(hovering) }
                     }
                     .padding(.horizontal, 8)
+                    .opacity(showArrows ? 1 : 0)
+                    .animation(.easeOut(duration: 0.25), value: showArrows)
+
+                    MouseTrackingView(
+                        onMouseMoved: {
+                            showArrows = true
+                            scheduleArrowHide()
+                        },
+                        onMouseExited: { scheduleArrowHide() }
+                    )
+                    .allowsHitTesting(false)
                 }
                 .gesture(zoomScale > 1.0 ? nil : swipeGesture)
             }
@@ -175,7 +193,9 @@ public struct DetailView: View {
         }
         .onAppear {
             loadCurrentImage()
+            scheduleArrowHide()
         }
+        .onDisappear { arrowHideTask?.cancel() }
     }
 
     @ViewBuilder
@@ -219,6 +239,26 @@ public struct DetailView: View {
         .buttonStyle(.plain)
         .opacity(enabled ? 1 : 0.3)
         .disabled(!enabled)
+    }
+
+    private func scheduleArrowHide() {
+        arrowHideTask?.cancel()
+        arrowHideTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(2))
+            if !Task.isCancelled {
+                showArrows = false
+            }
+        }
+    }
+
+    private func handleArrowHover(_ hovering: Bool) {
+        if hovering {
+            // Mouse is over a nav button — keep the arrows visible until it leaves.
+            arrowHideTask?.cancel()
+            showArrows = true
+        } else {
+            scheduleArrowHide()
+        }
     }
 
     private func loadCurrentImage() {

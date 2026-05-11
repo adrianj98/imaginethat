@@ -22,7 +22,7 @@ public enum ShortcutAction: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The UserDefaults key prefix for this action.
+    /// The settings key prefix for this action.
     fileprivate var defaultsPrefix: String { "shortcut_\(rawValue)" }
 }
 
@@ -78,7 +78,7 @@ public class ShortcutManager: ObservableObject {
     private init() {
         var loaded: [ShortcutAction: KeyBinding] = [:]
         for action in ShortcutAction.allCases {
-            if let data = UserDefaults.standard.data(forKey: action.defaultsPrefix),
+            if let data = AppSettings.shared.data(forKey: action.defaultsPrefix),
                let binding = try? JSONDecoder().decode(KeyBinding.self, from: data) {
                 loaded[action] = binding
             } else {
@@ -106,7 +106,7 @@ public class ShortcutManager: ObservableObject {
     public func updateBinding(for action: ShortcutAction, to binding: KeyBinding) {
         bindings[action] = binding
         if let data = try? JSONEncoder().encode(binding) {
-            UserDefaults.standard.set(data, forKey: action.defaultsPrefix)
+            AppSettings.shared.set(data, forKey: action.defaultsPrefix)
         }
     }
 
@@ -114,7 +114,7 @@ public class ShortcutManager: ObservableObject {
         for action in ShortcutAction.allCases {
             let binding = Self.defaultBinding(for: action)
             bindings[action] = binding
-            UserDefaults.standard.removeObject(forKey: action.defaultsPrefix)
+            AppSettings.shared.removeObject(forKey: action.defaultsPrefix)
         }
     }
 

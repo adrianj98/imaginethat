@@ -53,7 +53,7 @@ public final class KeychainManager: @unchecked Sendable {
         guard status == errSecSuccess else {
             throw KeychainError.saveFailed(status)
         }
-        UserDefaults.standard.set(true, forKey: hasKeyFlag)
+        AppSettings.shared.set(true, forKey: hasKeyFlag)
     }
 
     /// Retrieve the master key. Authenticates with Touch ID first, then reads from Keychain.
@@ -110,7 +110,7 @@ public final class KeychainManager: @unchecked Sendable {
         case errSecSuccess:
             return result as? Data
         case errSecItemNotFound:
-            UserDefaults.standard.removeObject(forKey: hasKeyFlag)
+            AppSettings.shared.removeObject(forKey: hasKeyFlag)
             return nil
         default:
             throw KeychainError.retrievalFailed(status)
@@ -119,7 +119,7 @@ public final class KeychainManager: @unchecked Sendable {
 
     /// Check if a master key exists without triggering any prompt.
     public func hasMasterKey() -> Bool {
-        UserDefaults.standard.bool(forKey: hasKeyFlag)
+        AppSettings.shared.bool(forKey: hasKeyFlag)
     }
 
     /// Delete the master key from Keychain.
@@ -130,7 +130,7 @@ public final class KeychainManager: @unchecked Sendable {
             kSecAttrAccount as String: account
         ]
         SecItemDelete(query as CFDictionary)
-        UserDefaults.standard.removeObject(forKey: hasKeyFlag)
+        AppSettings.shared.removeObject(forKey: hasKeyFlag)
     }
 
     /// Check if biometrics (Touch ID / Face ID) are available.

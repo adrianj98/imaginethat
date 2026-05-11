@@ -85,8 +85,13 @@ final class DriveVaultFS: @unchecked Sendable {
     // MARK: - Sync VFS callbacks (called from Go goroutine threads)
 
     // Files under this threshold are fully downloaded and cached on first access.
-    // Larger files (videos) use range-reads without caching.
-    private static let cacheThreshold: Int64 = 50 * 1_048_576  // 50 MB
+    // Larger files (videos) use range-reads with prefetched windows.
+    private static let cacheThreshold: Int64 = 50 * 1_048_576   // 50 MB
+    // On a range-cache miss we fetch a much larger window than gocryptfs asked for
+    // in a single Drive HTTP request, so subsequent ciphertext-block reads (which
+    // gocryptfs issues one ~4 KB block at a time) hit the cache instead of the
+    // network. Without this, a 1 GB video would generate ~250k Drive round-trips.
+    private static let prefetchWindow: Int64 = 8 * 1_048_576    // 8 MB
 
     func syncReadAt(cPath: UnsafePointer<CChar>, offset: Int64, length: Int64,
                     buf: UnsafeMutablePointer<UInt8>, bufSize: Int64) -> Int64 {
@@ -97,44 +102,64 @@ final class DriveVaultFS: @unchecked Sendable {
         let toRead = Int(min(length, bufSize))
         guard toRead > 0 else { return 0 }
 
-        // Cache hit — serve from disk cache.
-        if let cached = cacheGet(fileId: entry.id, modifiedTime: entry.modifiedTime) {
-            return copyFromData(cached, offset: offset, toRead: toRead, into: buf)
-        }
-
-        // Small files: download the whole file, cache it, then serve the requested range.
+        // Small files: download the whole file once and serve from the actor cache.
+        // The whole-file `DriveCache` is only consulted on this path — for large
+        // files we skip it entirely so we don't pay an actor-hop + semaphore wait
+        // on every single 4 KB ciphertext-block read (which happens hundreds of
+        // thousands of times for a multi-GB video).
         if entry.size > 0 && entry.size <= Self.cacheThreshold {
+            if let cached = cacheGet(fileId: entry.id, modifiedTime: entry.modifiedTime) {
+                return copyFromData(cached, offset: offset, toRead: toRead, into: buf)
+            }
             if let data = downloadAndCache(fileId: entry.id, modifiedTime: entry.modifiedTime) {
                 return copyFromData(data, offset: offset, toRead: toRead, into: buf)
             }
             return -1
         }
 
-        // Large files: check range cache first (synchronous — no Task hop needed).
+        // Large files: check the synchronous range cache first.
         if let cached = DriveRangeCache.shared.read(fileId: entry.id, modifiedTime: entry.modifiedTime, offset: offset, length: toRead) {
             return copyFromData(cached, offset: 0, toRead: toRead, into: buf)
         }
 
-        // Range-read from Drive, then cache asynchronously.
+        // Range-cache miss: fetch a prefetch window aligned to `prefetchWindow`,
+        // populate the range cache from it, and serve the request out of memory.
+        let totalSize = entry.size
+        let alignedOffset = (offset / Self.prefetchWindow) * Self.prefetchWindow
+        let windowEnd = min(alignedOffset + Self.prefetchWindow, totalSize)
+        // The aligned window may not cover the full request (e.g. a read that
+        // straddles a window boundary). Extend just enough to satisfy the caller.
+        let requestEnd = min(offset + Int64(toRead), totalSize)
+        let fetchEnd = max(windowEnd, requestEnd)
+        let fetchLength = Int(fetchEnd - alignedOffset)
+        guard fetchLength > 0 else { return 0 }
+
         let sema = DispatchSemaphore(value: 0)
         nonisolated(unsafe) var result: Data? = nil
         let svc = service
         let fileId = entry.id
         let modTime = entry.modifiedTime
-        let totalSize = entry.size
         Task.detached {
-            result = try? await svc.downloadRange(fileId: fileId, offset: offset, length: toRead)
+            result = try? await svc.downloadRange(fileId: fileId, offset: alignedOffset, length: fetchLength)
             sema.signal()
         }
         sema.wait()
 
         guard let data = result, !data.isEmpty else { return -1 }
-        let dataToCache = data
-        Task.detached {
-            await DriveRangeCache.shared.write(fileId: fileId, modifiedTime: modTime,
-                                               totalSize: totalSize, offset: offset, data: dataToCache)
+
+        // Synchronous cache write so the next ciphertext-block read hits the cache.
+        DriveRangeCache.shared.write(fileId: fileId, modifiedTime: modTime,
+                                     totalSize: totalSize, offset: alignedOffset, data: data)
+
+        let bytesIntoWindow = Int(offset - alignedOffset)
+        let availableInWindow = data.count - bytesIntoWindow
+        guard availableInWindow > 0 else { return 0 }
+        let bytesToCopy = min(toRead, availableInWindow)
+        data.withUnsafeBytes { ptr in
+            let src = ptr.baseAddress!.advanced(by: bytesIntoWindow)
+            buf.update(from: src.bindMemory(to: UInt8.self, capacity: bytesToCopy), count: bytesToCopy)
         }
-        return copyFromData(data, offset: 0, toRead: min(data.count, toRead), into: buf)
+        return Int64(bytesToCopy)
     }
 
     func syncFileSize(cPath: UnsafePointer<CChar>) -> Int64 {

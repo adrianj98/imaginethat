@@ -23,6 +23,9 @@ public class AppState: ObservableObject {
     @Published public var showVaultUnlock = false
     @Published public var pendingVaultURL: URL?
     private var pendingVaultRebuildSidebar = false
+    /// When auto-routing through a vault root for a deep folder click, this
+    /// holds the plain-text path within the vault to land on after unlock.
+    private var pendingVaultSubpath: String?
 
     // Sidebar state
     @Published public var sidebarItems: [SidebarItem] = []
@@ -108,11 +111,11 @@ public class AppState: ObservableObject {
     }
 
     private func saveFavorites() {
-        UserDefaults.standard.set(favorites.map { $0.url.path }, forKey: Self.favoritesKey)
+        AppSettings.shared.set(favorites.map { $0.url.path }, forKey: Self.favoritesKey)
     }
 
     private func loadFavorites() {
-        let paths = UserDefaults.standard.stringArray(forKey: Self.favoritesKey) ?? []
+        let paths = AppSettings.shared.stringArray(forKey: Self.favoritesKey) ?? []
         favorites = paths
             .filter { FileManager.default.fileExists(atPath: $0) }
             .map { SidebarItem(name: URL(fileURLWithPath: $0).lastPathComponent, url: URL(fileURLWithPath: $0), children: []) }
@@ -127,14 +130,28 @@ public class AppState: ObservableObject {
         if args.count > 1 {
             let url = URL(fileURLWithPath: args[1])
             openDirectory(url: url)
-        } else if let url = UserDefaults.standard.url(forKey: Self.lastFolderKey) {
+        } else if let url = AppSettings.shared.url(forKey: Self.lastFolderKey) {
             openDirectory(url: url)
         }
     }
 
-    /// Load all saved vault passwords on app launch. Triggers Touch ID if passwords exist.
+    /// Load all saved vault passwords on app launch.
+    /// - Plaintext mode: reads the JSON file directly, no Touch ID prompt.
+    /// - Encrypted mode: fetches the master key from Keychain (triggers Touch ID).
     public func loadSavedPasswords() {
-        guard KeychainManager.shared.hasMasterKey(), PasswordStore.shared.hasPasswords else { return }
+        guard PasswordStore.shared.hasPasswords else { return }
+
+        if PasswordStore.encryptionDisabled {
+            // No encryption, no biometric — just read the file.
+            if let saved = try? PasswordStore.shared.loadAll() {
+                for (path, password) in saved {
+                    self.vaultPasswords[path] = password
+                }
+            }
+            return
+        }
+
+        guard KeychainManager.shared.hasMasterKey() else { return }
         Task {
             do {
                 guard let key = try KeychainManager.shared.getMasterKey() else { return }
@@ -374,10 +391,12 @@ public class AppState: ObservableObject {
     public func unlockVault(password: String, saveToKeychain: Bool = true) {
         guard let url = pendingVaultURL else { return }
         let rebuild = pendingVaultRebuildSidebar
+        let subpath = pendingVaultSubpath
         pendingVaultURL = nil
         pendingVaultRebuildSidebar = false
+        pendingVaultSubpath = nil
         if url.scheme == "gdrive", let folderId = url.host {
-            Task { await self.unlockDriveVault(folderId: folderId, password: password, saveToKeychain: saveToKeychain) }
+            Task { await self.unlockDriveVault(folderId: folderId, password: password, saveToKeychain: saveToKeychain, subpath: subpath) }
             return
         }
         unlockVault(url: url, password: password, rebuildSidebar: rebuild, saveToKeychain: saveToKeychain)
@@ -690,7 +709,7 @@ public class AppState: ObservableObject {
     }
 
     private func loadFolder(url: URL, rebuildSidebar: Bool) {
-        UserDefaults.standard.set(url, forKey: Self.lastFolderKey)
+        AppSettings.shared.setURL(url, forKey: Self.lastFolderKey)
         let source = FolderSource(rootURL: url)
         self.mediaSource = source
         self.viewMode = .grid
@@ -865,11 +884,17 @@ public class AppState: ObservableObject {
     // MARK: - Google Drive
 
     private func restoreGoogleDriveSession() {
-        Task {
+        // Use Task.detached so the restore doesn't sit behind a busy MainActor
+        // (e.g. while the sidebar/detail are still building). With a plain
+        // `Task { ... }` the inherited @MainActor isolation made restore stall
+        // for many seconds at app launch, leaving the Drive section stuck on
+        // "Connect Google Drive" even when a refresh token was saved.
+        Task.detached { [weak self] in
             await GoogleDriveService.shared.loadSavedCredentials()
             guard await GoogleDriveService.shared.isConnected else { return }
-            googleDriveConnected = true
-            await buildGoogleDriveSidebar()
+            guard let self else { return }
+            await MainActor.run { self.googleDriveConnected = true }
+            await self.buildGoogleDriveSidebar()
         }
     }
 
@@ -881,11 +906,17 @@ public class AppState: ObservableObject {
                 googleDriveConnected = true
                 showGoogleDriveSetup = false
                 await buildGoogleDriveSidebar()
+            } catch GoogleDriveError.authCancelled {
+                // User-initiated cancel — silent, no error banner.
             } catch {
                 errorMessage = error.localizedDescription
             }
             isConnectingGoogleDrive = false
         }
+    }
+
+    public func cancelConnectGoogleDrive() {
+        GoogleDriveAuthManager.shared.cancelAuth()
     }
 
     public func disconnectGoogleDrive() {
@@ -902,7 +933,15 @@ public class AppState: ObservableObject {
         Task {
             let hasConf = (try? await GoogleDriveService.shared.fileExists(name: "gocryptfs.conf", in: folderId)) ?? false
             if hasConf {
-                self.tryUnlockDriveVault(folderId: folderId)
+                self.tryUnlockDriveVault(folderId: folderId, navigateToSubpath: nil)
+                return
+            }
+            // Folder isn't a vault itself — see if it's INSIDE one. If yes,
+            // unlock the vault root and land directly at the sub-path the user
+            // clicked (so they see *their* photos, not the vault root).
+            if let match = await GoogleDriveService.shared.findVaultRoot(forDescendant: folderId) {
+                let subpath = match.descendantPath.joined(separator: "/")
+                self.tryUnlockDriveVault(folderId: match.rootFolderId, navigateToSubpath: subpath)
                 return
             }
             let source = GoogleDriveSource(folderId: folderId)
@@ -975,12 +1014,13 @@ public class AppState: ObservableObject {
 
     // MARK: - Drive Vault unlock
 
-    private func tryUnlockDriveVault(folderId: String) {
+    private func tryUnlockDriveVault(folderId: String, navigateToSubpath: String? = nil) {
         let cacheKey = "gdrive://\(folderId)"
+        self.pendingVaultSubpath = navigateToSubpath
 
         // 1. Session cache
         if let password = vaultPasswords[cacheKey] {
-            Task { await self.unlockDriveVault(folderId: folderId, password: password, saveToKeychain: false) }
+            Task { await self.unlockDriveVault(folderId: folderId, password: password, saveToKeychain: false, subpath: navigateToSubpath) }
             return
         }
 
@@ -1004,7 +1044,7 @@ public class AppState: ObservableObject {
                     }
                     for (path, password) in saved { self.vaultPasswords[path] = password }
                     if let password = saved[cacheKey] {
-                        await self.unlockDriveVault(folderId: folderId, password: password, saveToKeychain: false)
+                        await self.unlockDriveVault(folderId: folderId, password: password, saveToKeychain: false, subpath: navigateToSubpath)
                     } else {
                         await MainActor.run {
                             self.pendingVaultURL = URL(string: cacheKey)!
@@ -1026,7 +1066,7 @@ public class AppState: ObservableObject {
         showVaultUnlock = true
     }
 
-    private func unlockDriveVault(folderId: String, password: String, saveToKeychain: Bool = true) async {
+    private func unlockDriveVault(folderId: String, password: String, saveToKeychain: Bool = true, subpath: String? = nil) async {
         isLoading = true
         do {
             let bridge = try await DriveVaultBridge(folderId: folderId, password: password)
@@ -1040,7 +1080,7 @@ public class AppState: ObservableObject {
                 }
             }
             driveVaultBridges[folderId] = bridge
-            let source = DriveVaultSource(bridge: bridge, currentPath: "")
+            let source = DriveVaultSource(bridge: bridge, currentPath: subpath ?? "")
             self.mediaSource = source
             self.viewMode = .grid
             self.selectedIndex = 0

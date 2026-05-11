@@ -5,6 +5,7 @@ import AppKit
 public enum GoogleDriveError: LocalizedError {
     case notConnected
     case authFailed(String)
+    case authCancelled
     case httpError(Int, String)
     case invalidResponse
     case uploadFailed(String)
@@ -13,6 +14,7 @@ public enum GoogleDriveError: LocalizedError {
         switch self {
         case .notConnected: return "Not connected to Google Drive"
         case .authFailed(let msg): return "Google Drive authentication failed: \(msg)"
+        case .authCancelled: return "Connection cancelled"
         case .httpError(let code, let msg): return "HTTP \(code): \(msg)"
         case .invalidResponse: return "Invalid response from Google Drive"
         case .uploadFailed(let msg): return "Upload failed: \(msg)"
@@ -81,6 +83,13 @@ final class GoogleDriveAuthManager {
 
         return (code: code, redirectURI: redirectURI)
     }
+
+    /// Cancel an in-flight `startAuth` call. The pending continuation throws
+    /// `GoogleDriveError.authCancelled`.
+    func cancelAuth() {
+        server?.cancel()
+        server = nil
+    }
 }
 
 // MARK: - Google Drive Service
@@ -94,7 +103,6 @@ public actor GoogleDriveService {
     private var tokenExpiry: Date = .distantPast
     private var refreshToken: String?
 
-    private static let keychainService = "com.adrianm.imagethat.gdrive"
     private static let udClientId     = "gdrive.clientId"
     private static let udClientSecret = "gdrive.clientSecret"
     private static let udRefreshToken = "gdrive.refreshToken"
@@ -106,15 +114,10 @@ public actor GoogleDriveService {
     public var isConnected: Bool { refreshToken != nil }
 
     public func loadSavedCredentials() {
-        // Load from UserDefaults (build-stable); fall back to legacy Keychain entries.
-        let ud = UserDefaults.standard
-        clientId     = ud.string(forKey: Self.udClientId)     ?? keychainLoad(account: "client-id")
-        clientSecret = ud.string(forKey: Self.udClientSecret) ?? keychainLoad(account: "client-secret")
-        refreshToken = ud.string(forKey: Self.udRefreshToken) ?? keychainLoad(account: "refresh-token")
-        // Migrate any keychain values to UserDefaults on first load.
-        if let id = clientId     { ud.set(id, forKey: Self.udClientId) }
-        if let cs = clientSecret { ud.set(cs, forKey: Self.udClientSecret) }
-        if let rt = refreshToken { ud.set(rt, forKey: Self.udRefreshToken) }
+        let s = AppSettings.shared
+        clientId     = s.string(forKey: Self.udClientId)
+        clientSecret = s.string(forKey: Self.udClientSecret)
+        refreshToken = s.string(forKey: Self.udRefreshToken)
     }
 
     public func disconnect() {
@@ -123,13 +126,10 @@ public actor GoogleDriveService {
         clientId = nil
         clientSecret = nil
         tokenExpiry = .distantPast
-        let ud = UserDefaults.standard
-        ud.removeObject(forKey: Self.udClientId)
-        ud.removeObject(forKey: Self.udClientSecret)
-        ud.removeObject(forKey: Self.udRefreshToken)
-        keychainDelete(account: "refresh-token")
-        keychainDelete(account: "client-id")
-        keychainDelete(account: "client-secret")
+        let s = AppSettings.shared
+        s.removeObject(forKey: Self.udClientId)
+        s.removeObject(forKey: Self.udClientSecret)
+        s.removeObject(forKey: Self.udRefreshToken)
     }
 
     // MARK: - OAuth
@@ -137,9 +137,9 @@ public actor GoogleDriveService {
     public func authorize(clientId: String, clientSecret: String) async throws {
         self.clientId = clientId
         self.clientSecret = clientSecret
-        let ud = UserDefaults.standard
-        ud.set(clientId, forKey: Self.udClientId)
-        ud.set(clientSecret, forKey: Self.udClientSecret)
+        let s = AppSettings.shared
+        s.set(clientId, forKey: Self.udClientId)
+        s.set(clientSecret, forKey: Self.udClientSecret)
 
         // Opens the system browser; local server catches the redirect on http://127.0.0.1:PORT
         let result = try await GoogleDriveAuthManager.shared.startAuth(clientId: clientId)
@@ -171,7 +171,7 @@ public actor GoogleDriveService {
         accessToken = newAccessToken
         tokenExpiry = Date().addingTimeInterval(TimeInterval(expiresIn - 60))
         refreshToken = newRefreshToken
-        UserDefaults.standard.set(newRefreshToken, forKey: Self.udRefreshToken)
+        AppSettings.shared.set(newRefreshToken, forKey: Self.udRefreshToken)
     }
 
     // MARK: - Token management
@@ -211,6 +211,52 @@ public actor GoogleDriveService {
     }
 
     // MARK: - Drive API: reads
+
+    public struct VaultRootMatch: Sendable {
+        public let rootFolderId: String
+        /// Folder names from the vault root down to (and including) the originally
+        /// requested descendant. Empty if the descendant *is* the vault root.
+        public let descendantPath: [String]
+    }
+
+    /// Walks up the parent chain from `folderId`, returning the first ancestor
+    /// that contains `gocryptfs.conf` along with the chain of plaintext folder
+    /// names from that ancestor down to `folderId`. Returns nil if no ancestor
+    /// is a vault root (stops at My Drive).
+    public func findVaultRoot(forDescendant folderId: String, maxDepth: Int = 8) async -> VaultRootMatch? {
+        var current = folderId
+        var pathComponents: [String] = []
+        for _ in 0..<maxDepth {
+            guard let info = try? await folderInfo(of: current),
+                  let parent = info.parents.first else { return nil }
+            pathComponents.insert(info.name, at: 0)
+            if let hasConf = try? await fileExists(name: "gocryptfs.conf", in: parent), hasConf {
+                return VaultRootMatch(rootFolderId: parent, descendantPath: pathComponents)
+            }
+            current = parent
+        }
+        return nil
+    }
+
+    private struct FolderInfo: Sendable {
+        let name: String
+        let parents: [String]
+    }
+
+    private func folderInfo(of folderId: String) async throws -> FolderInfo {
+        let token = try await validAccessToken()
+        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files/\(folderId)")!
+        components.queryItems = [URLQueryItem(name: "fields", value: "name,parents")]
+        var request = URLRequest(url: components.url!)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try checkHTTP(response, data: data)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+        return FolderInfo(
+            name: json["name"] as? String ?? "",
+            parents: json["parents"] as? [String] ?? []
+        )
+    }
 
     public func fileExists(name: String, in folderId: String) async throws -> Bool {
         let token = try await validAccessToken()
@@ -506,44 +552,5 @@ public actor GoogleDriveService {
         params.map { k, v in
             "\(k)=\(v.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? v)"
         }.joined(separator: "&").data(using: .utf8) ?? Data()
-    }
-
-    // MARK: - Keychain
-
-    private func keychainSave(_ value: String, account: String) throws {
-        let data = Data(value.utf8)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: account,
-        ]
-        SecItemDelete(query as CFDictionary)
-        var add = query
-        add[kSecValueData as String] = data
-        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(add as CFDictionary, nil)
-        guard status == errSecSuccess else { throw KeychainError.saveFailed(status) }
-    }
-
-    private func keychainLoad(account: String) -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-        ]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    private func keychainDelete(account: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.keychainService,
-            kSecAttrAccount as String: account,
-        ]
-        SecItemDelete(query as CFDictionary)
     }
 }

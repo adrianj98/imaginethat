@@ -6,6 +6,12 @@ public struct ContentView: View {
     public init() {}
 
     public var body: some View {
+        innerBody
+            .task { appState.restoreSession() }
+    }
+
+    @ViewBuilder
+    private var innerBody: some View {
         NavigationSplitView {
             SidebarView()
         } detail: {

@@ -132,16 +132,52 @@ public struct VideoPlayerRepresentable: NSViewRepresentable {
         self.player = player
     }
 
-    public func makeNSView(context: Context) -> AVPlayerView {
-        let view = AVPlayerView()
+    public func makeNSView(context: Context) -> PlayerLayerView {
+        let view = PlayerLayerView()
         view.player = player
-        view.controlsStyle = .none
-        view.showsFullScreenToggleButton = false
         return view
     }
 
-    public func updateNSView(_ nsView: AVPlayerView, context: Context) {
+    public func updateNSView(_ nsView: PlayerLayerView, context: Context) {
         nsView.player = player
+    }
+}
+
+/// `AVPlayerLayer` host that uses the standard window background color outside the
+/// video frame, instead of `AVPlayerView`'s opaque black letterbox.
+public final class PlayerLayerView: NSView {
+    private let playerLayer = AVPlayerLayer()
+
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configure()
+    }
+
+    @available(*, unavailable)
+    public required init?(coder: NSCoder) { fatalError() }
+
+    private func configure() {
+        wantsLayer = true
+        let host = CALayer()
+        host.backgroundColor = nil
+        host.isOpaque = false
+        layer = host
+        playerLayer.videoGravity = .resizeAspect
+        playerLayer.backgroundColor = nil
+        playerLayer.isOpaque = false
+        host.addSublayer(playerLayer)
+    }
+
+    public override var isOpaque: Bool { false }
+
+    public var player: AVPlayer? {
+        get { playerLayer.player }
+        set { playerLayer.player = newValue }
+    }
+
+    public override func layout() {
+        super.layout()
+        playerLayer.frame = bounds
     }
 }
 

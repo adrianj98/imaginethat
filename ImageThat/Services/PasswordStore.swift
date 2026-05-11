@@ -13,14 +13,12 @@ public final class PasswordStore: @unchecked Sendable {
     /// When true, passwords are stored as plain JSON (no encryption, no Touch ID needed).
     /// Set via Preferences → Security → "Store passwords without encryption".
     public static var encryptionDisabled: Bool {
-        get { UserDefaults.standard.bool(forKey: "imagethat_passwords_plaintext") }
-        set { UserDefaults.standard.set(newValue, forKey: "imagethat_passwords_plaintext") }
+        get { AppSettings.shared.bool(forKey: "imagethat_passwords_plaintext") }
+        set { AppSettings.shared.set(newValue, forKey: "imagethat_passwords_plaintext") }
     }
 
     private init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let dir = appSupport.appendingPathComponent("com.adrianm.imagethat", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = AppPaths.passwordsDir
         encryptedFileURL = dir.appendingPathComponent("vault-passwords.enc")
         plaintextFileURL = dir.appendingPathComponent("vault-passwords.json")
     }

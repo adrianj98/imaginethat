@@ -19,9 +19,7 @@ public final class PersistentThumbnailCache: @unchecked Sendable {
     private let cacheRoot: URL
 
     private init() {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        cacheRoot = caches.appendingPathComponent("com.adrianm.imagethat/thumbnails", isDirectory: true)
-        try? FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        cacheRoot = AppPaths.thumbnailCache
     }
 
     // MARK: - Public API

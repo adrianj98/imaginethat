@@ -42,18 +42,16 @@ final class DriveRangeCache: @unchecked Sendable {
 
     static var maxBytes: Int64 {
         get {
-            let v = UserDefaults.standard.object(forKey: maxBytesKey) as? Int64 ?? 0
+            let v = AppSettings.shared.int64(forKey: maxBytesKey) ?? 0
             return v > 0 ? v : defaultMaxBytes
         }
-        set { UserDefaults.standard.set(newValue, forKey: maxBytesKey) }
+        set { AppSettings.shared.set(newValue, forKey: maxBytesKey) }
     }
 
     private init() {
-        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let base = caches.appendingPathComponent("ImageThat/GoogleDrive/ranges")
+        let base = AppPaths.driveRangesCache
         dataDir = base
-        indexURL = caches.appendingPathComponent("ImageThat/GoogleDrive/ranges-index.json")
-        try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        indexURL = AppPaths.driveRangesIndex
         if let data = try? Data(contentsOf: indexURL),
            let entries = try? JSONDecoder().decode([Entry].self, from: data) {
             for e in entries where FileManager.default.fileExists(atPath: base.appendingPathComponent(e.fileId).path) {

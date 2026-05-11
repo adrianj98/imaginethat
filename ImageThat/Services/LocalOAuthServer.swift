@@ -64,6 +64,16 @@ final class LocalOAuthServer: @unchecked Sendable {
         listener = nil
     }
 
+    /// Aborts a pending `waitForCallback` by failing it with `authCancelled`.
+    func cancel() {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume(throwing: GoogleDriveError.authCancelled)
+        stop()
+    }
+
     // MARK: - Connection handler
 
     private func handleConnection(_ connection: NWConnection) {
