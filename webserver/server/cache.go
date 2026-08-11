@@ -155,15 +155,18 @@ func (c *blobCache) Put(key string, value []byte) {
 	if el, ok := c.entries[key]; ok {
 		e := el.Value.(*blobEntry)
 		c.cost -= int64(len(e.sealed))
+		// Replace the slice header rather than writing into the old backing
+		// array — Get may still be decrypting it outside the lock.
 		e.sealed = sealed
 		c.cost += int64(len(sealed))
 		c.order.MoveToFront(el)
-		return
+		// Falls through to eviction: replacing entries with larger ones would
+		// otherwise grow the cache past its budget indefinitely.
+	} else {
+		el := c.order.PushFront(&blobEntry{key: key, sealed: sealed})
+		c.entries[key] = el
+		c.cost += int64(len(sealed))
 	}
-
-	el := c.order.PushFront(&blobEntry{key: key, sealed: sealed})
-	c.entries[key] = el
-	c.cost += int64(len(sealed))
 
 	for c.cost > c.maxCost {
 		oldest := c.order.Back()
