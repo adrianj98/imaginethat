@@ -10,48 +10,18 @@ import (
 	"testing"
 )
 
-// copyFixtureVault copies the read-only test vault into a temp dir so a test
-// can write to it without disturbing testdata.
-func copyFixtureVault(t *testing.T) string {
-	t.Helper()
-	if _, err := os.Stat(filepath.Join(fixtureDir, "gocryptfs.conf")); err != nil {
-		t.Skipf("test vault missing at %s (see fixture_test.go)", fixtureDir)
-	}
-	dst := t.TempDir()
-	err := filepath.Walk(fixtureDir, func(p string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(fixtureDir, p)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, 0o700)
-		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, 0o600)
-	})
-	if err != nil {
-		t.Fatalf("copy fixture vault: %v", err)
-	}
-	return dst
-}
-
-// openWritable unlocks a private, writable copy of the test vault.
+// openWritable unlocks a private, writable copy of the main test vault, so a
+// test can mutate it without disturbing testdata.
 func openWritable(t *testing.T) (*Session, string) {
 	t.Helper()
-	dir := copyFixtureVault(t)
-	s, err := OpenLocal(dir, fixturePassword)
-	if err != nil {
-		t.Fatalf("OpenLocal: %v", err)
-	}
-	t.Cleanup(func() { s.Close() })
-	return s, dir
+	return openWritableVault(t, fixtureDir)
+}
+
+// copyFixtureVault copies the main test vault into a temp dir, without
+// unlocking it.
+func copyFixtureVault(t *testing.T) string {
+	t.Helper()
+	return copyVaultTree(t, fixtureDir)
 }
 
 func TestCreateAndReadBack(t *testing.T) {

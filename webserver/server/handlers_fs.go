@@ -39,12 +39,15 @@ func (s *Server) routes() {
 }
 
 // handleListVaults reports the discovered vaults and which are unlocked.
+//
+// It deliberately does not create a session. Minting one per cookie-less
+// request would let anyone who can reach the port allocate unbounded
+// server-side state, and with -idle-timeout=0 nothing would ever reap it.
+// Sessions are created only by /unlock, which is rate limited.
 func (s *Server) handleListVaults(w http.ResponseWriter, r *http.Request) {
-	b, err := s.session(w, r)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "could not start a session")
-		return
-	}
+	b, _ := s.existingSession(r)
+	// b is nil when there is no session yet; listVaults then reports every
+	// vault as locked, which is exactly right for a first visit.
 	writeJSON(w, http.StatusOK, map[string]any{"vaults": s.listVaults(b)})
 }
 
@@ -100,6 +103,11 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+
+	// Opt in to the vault's diagnostics. They name plaintext paths, so the
+	// package leaves the choice to the embedder; here they go to the server
+	// log alongside everything else.
+	sess.Logf = s.cfg.Logger.Printf
 
 	thumbs, err := newBlobCache(s.cfg.ThumbCacheBytes)
 	if err != nil {

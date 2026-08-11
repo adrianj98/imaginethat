@@ -45,20 +45,60 @@ func (s *Session) ListDir(plainPath string) ([]Entry, error) {
 		return nil, err
 	}
 
-	var dirIV []byte
-	if !s.plaintextNames && s.useDirIV {
-		if dirIV, err = s.readDirIV(cipherDir); err != nil {
+	out, skipped, err := s.decryptEntries(cipherDir, raw)
+	if err != nil {
+		return nil, err
+	}
+
+	// A directory's IV is fixed for its lifetime, so we cache it — but another
+	// process (a second browser session, or the macOS app) can delete and
+	// recreate the directory, leaving us with a stale IV under which no name
+	// decrypts. If everything failed, drop the cached IV and try once more
+	// before believing the directory is unreadable.
+	if len(out) == 0 && skipped > 0 {
+		s.forgetDirIV(cipherDir)
+		out, skipped, err = s.decryptEntries(cipherDir, raw)
+		if err != nil {
 			return nil, err
 		}
 	}
+	if skipped > 0 && s.Logf != nil {
+		// Not fatal — one unreadable name should not make a folder
+		// unbrowsable — but silently returning fewer entries is exactly the
+		// kind of thing that is impossible to diagnose later.
+		s.Logf("vault: %q: skipped %d undecryptable entries of %d",
+			plainPath, skipped, len(raw))
+	}
 
-	out := make([]Entry, 0, len(raw))
+	// Directories first, then case-insensitive by name — the order the app's
+	// browser presents.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].IsDir != out[j].IsDir {
+			return out[i].IsDir
+		}
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out, nil
+}
+
+// decryptEntries turns raw ciphertext entries into plaintext ones, returning
+// how many had to be skipped because their names would not decrypt.
+func (s *Session) decryptEntries(cipherDir string, raw []DirEntry) (out []Entry, skipped int, err error) {
+	var dirIV []byte
+	if !s.plaintextNames && s.useDirIV {
+		if dirIV, err = s.readDirIV(cipherDir); err != nil {
+			return nil, 0, err
+		}
+	}
+
+	out = make([]Entry, 0, len(raw))
 	for _, e := range raw {
 		if isSpecialFile(e.Name) {
 			continue
 		}
 		name, err := s.decryptEntryName(cipherDir, e.Name, dirIV)
 		if err != nil {
+			skipped++
 			continue
 		}
 		if isHiddenName(name) {
@@ -71,16 +111,7 @@ func (s *Session) ListDir(plainPath string) ([]Entry, error) {
 		}
 		out = append(out, entry)
 	}
-
-	// Directories first, then case-insensitive by name — the order the app's
-	// browser presents.
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].IsDir != out[j].IsDir {
-			return out[i].IsDir
-		}
-		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
-	})
-	return out, nil
+	return out, skipped, nil
 }
 
 // isHiddenName filters dotfiles and macOS AppleDouble sidecars (which are

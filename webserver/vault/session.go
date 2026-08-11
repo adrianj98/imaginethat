@@ -56,11 +56,23 @@ type Session struct {
 	longNames      bool
 	useDirIV       bool
 
+	// Logf, if set, receives diagnostics that would otherwise be swallowed —
+	// currently only undecryptable directory entries, which are the reason a
+	// folder can render as unexpectedly empty.
+	//
+	// It is opt-in and nil by default because the messages name plaintext
+	// vault paths. Emitting those to a default logger is exactly what makes
+	// gocryptfs-lib's unconditional /tmp/gocryptfs.log a liability; whether
+	// they are worth writing down is the embedder's call, not this package's.
+	Logf func(format string, args ...any)
+
 	mu     sync.RWMutex
 	closed bool
 	// dirIV caches per-directory IVs, keyed by ciphertext directory path.
 	// A directory's IV is fixed for its lifetime, so this is safe; write
-	// operations that create or destroy directories invalidate it.
+	// operations that create or destroy directories invalidate it, and a name
+	// that fails to decrypt drops the entry in case another process recreated
+	// the directory underneath us.
 	dirIV map[string][]byte
 }
 
@@ -101,7 +113,18 @@ func newSession(cf *configfile.ConfFile, password string, fs VFS) (*Session, err
 	}
 
 	useHKDF := cf.IsFeatureFlagSet(configfile.FlagHKDF)
-	cc := cryptocore.New(masterkey, algo, contentenc.DefaultIVBits, useHKDF)
+	// The IV length is a property of the cipher, not a constant: AES-GCM and
+	// AES-SIV use 128-bit IVs but XChaCha20-Poly1305 needs 192-bit ones, and
+	// cryptocore.New panics on a mismatch — so passing DefaultIVBits
+	// unconditionally makes an XChaCha vault impossible to open at all.
+	// gocryptfs-lib/main.go has the same bug.
+	//
+	// Deriving it from the backend is exact here because configfile.Validate
+	// rejects every other combination: AES-GCM and AES-SIV both require the
+	// GCMIV128 flag, and XChaCha conflicts with it.
+	ivBits := algo.NonceSize * 8
+
+	cc := cryptocore.New(masterkey, algo, ivBits, useHKDF)
 	ce := contentenc.New(cc, contentenc.DefaultBS)
 
 	plaintextNames := cf.IsFeatureFlagSet(configfile.FlagPlaintextNames)

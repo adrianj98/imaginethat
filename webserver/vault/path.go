@@ -101,6 +101,16 @@ func (s *Session) forgetDirIVs() {
 	}
 }
 
+// forgetDirIV drops one directory's cached IV, so the next read picks up an IV
+// written by another process.
+func (s *Session) forgetDirIV(cipherDir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dirIV != nil {
+		delete(s.dirIV, cipherDir)
+	}
+}
+
 // encryptName encrypts a single path component inside the given ciphertext
 // directory, hashing it to a gocryptfs.longname.* name when it is too long.
 func (s *Session) encryptName(cipherDir, plainName string) (string, error) {
