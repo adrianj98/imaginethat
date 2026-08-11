@@ -1,4 +1,5 @@
-.PHONY: build run golib clean app test test-logic test-e2e
+.PHONY: build run golib clean app test test-logic test-e2e \
+        web-build web-all web-run web-test
 
 BIN_DIR = .build/arm64-apple-macosx/debug
 APP_BUNDLE = build/ImageThat.app
@@ -33,6 +34,27 @@ golib:
 	cd gocryptfs-lib && CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 		go build -tags without_openssl -buildmode=c-shared \
 		-o ../build/libgocryptfs.dylib .
+
+# --- Go webserver ---------------------------------------------------------
+# A standalone HTTP server that browses the same gocryptfs vaults from a
+# browser. It is a separate Go module under webserver/ and shares no build
+# state with the macOS app.
+
+# Build the webserver binary (webserver/bin/imagethat-web)
+web-build:
+	$(MAKE) -C webserver build
+
+# Build the browser UI, then the binary that embeds it
+web-all:
+	$(MAKE) -C webserver web build
+
+# Run the webserver. Usage: make web-run ROOT=/path/to/vaults
+web-run:
+	$(MAKE) -C webserver run ROOT="$(ROOT)"
+
+# Run the webserver's Go tests
+web-test:
+	$(MAKE) -C webserver test
 
 # Run all tests
 test: test-logic test-e2e
