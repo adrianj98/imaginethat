@@ -164,12 +164,17 @@ func (f *File) ReadAt(p []byte, off int64) (int, error) {
 	for blockNo := firstBlock; blockNo <= lastBlock; blockNo++ {
 		cipherOff := int64(contentenc.HeaderLen) + int64(blockNo*cipherBS)
 		n, readErr := f.readCipherAt(blockBuf, cipherOff)
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			// A genuine backend failure must not be reported as a clean end of
+			// file — that would hand the client a silently truncated download.
+			return int(written), fmt.Errorf("read %s: %w", f.cipherPath, readErr)
+		}
 		if n == 0 {
 			// Short ciphertext: the file is smaller than its size implied.
 			break
 		}
 
-		plain, err := f.sess.contentEnc.DecryptBlock(blockBuf[:n], blockNo, f.header.ID)
+		plain, err := f.sess.decryptBlock(blockBuf[:n], blockNo, f.header.ID)
 		if err != nil {
 			return int(written), fmt.Errorf("decrypt block %d of %s: %w", blockNo, f.cipherPath, err)
 		}

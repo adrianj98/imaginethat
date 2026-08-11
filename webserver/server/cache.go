@@ -117,15 +117,20 @@ func newBlobCache(maxCost int64) (*blobCache, error) {
 func (c *blobCache) Get(key string) ([]byte, bool) {
 	c.mu.Lock()
 	el, ok := c.entries[key]
+	// Read the sealed bytes under the lock: Put replaces this field in place
+	// when it refreshes an existing key, so reading it afterwards would race a
+	// concurrent request for the same key.
+	var sealed []byte
 	if ok {
 		c.order.MoveToFront(el)
+		sealed = el.Value.(*blobEntry).sealed
 	}
 	c.mu.Unlock()
 	if !ok {
 		return nil, false
 	}
 
-	plain, err := c.crypt.open(el.Value.(*blobEntry).sealed)
+	plain, err := c.crypt.open(sealed)
 	if err != nil {
 		// The key was wiped or the entry is corrupt; drop it.
 		c.remove(key)

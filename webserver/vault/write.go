@@ -115,7 +115,10 @@ func (s *Session) encryptStream(w io.Writer, r io.Reader) (int64, error) {
 				}
 				headerOut = true
 			}
-			block := s.contentEnc.EncryptBlock(buf[:n], blockNo, header.ID)
+			block, err := s.encryptBlock(buf[:n], blockNo, header.ID)
+			if err != nil {
+				return total, err
+			}
 			if _, err := w.Write(block); err != nil {
 				return total, fmt.Errorf("write block %d: %w", blockNo, err)
 			}
