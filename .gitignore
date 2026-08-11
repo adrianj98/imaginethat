@@ -15,8 +15,11 @@ gocryptfs-lib/go.sum
 webserver/internal/gocryptfs/
 webserver/bin/
 webserver/web/node_modules/
-webserver/web/dist/
-!webserver/web/dist/.gitkeep
+webserver/web/*.tsbuildinfo
+# The SPA builds into server/dist so go:embed can reach it. Only .gitkeep is
+# committed, which is enough for `go:embed all:dist` to work without Node.
+webserver/server/dist/*
+!webserver/server/dist/.gitkeep
 
 # macOS
 .DS_Store

@@ -1,0 +1,148 @@
+name: webserver release
+
+# Tag the commit you want to ship, e.g.
+#   git tag webserver-v0.1.0 && git push origin webserver-v0.1.0
+#
+# The prefix keeps webserver releases distinct from any tagging scheme the
+# macOS app uses.
+on:
+  push:
+    tags:
+      - 'webserver-v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. v0.1.0) — produces a draft release'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Needed so the release notes can reference the full history.
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+            draft=true
+          else
+            version="${GITHUB_REF_NAME#webserver-}"
+            draft=false
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "draft=$draft" >> "$GITHUB_OUTPUT"
+          echo "Building $version (draft=$draft)"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: webserver/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webserver/web/package-lock.json
+
+      - name: Sync gocryptfs internal packages
+        run: make sync
+        working-directory: webserver
+
+      # The SPA is compiled into the binary, so it has to exist before any
+      # Go build. Building it once keeps every platform's bundle identical.
+      - name: Build web UI
+        run: |
+          npm ci
+          npm run build
+        working-directory: webserver/web
+
+      - name: Run tests
+        run: make test-short
+        working-directory: webserver
+
+      # Pure Go with CGO disabled, so every target cross-compiles from one
+      # runner. Windows is absent because gocryptfs' syscallcompat is
+      # POSIX-only.
+      - name: Build release binaries
+        working-directory: webserver
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            name="imagethat-web_${VERSION}_${goos}_${goarch}"
+            echo "Building $name"
+
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -tags without_openssl \
+                -trimpath \
+                -ldflags "-s -w -X main.version=${VERSION}" \
+                -o "dist/${name}/imagethat-web" \
+                ./cmd/imagethat-web
+
+            cp README.md "dist/${name}/" 2>/dev/null || true
+            tar -czf "dist/${name}.tar.gz" -C dist "$name"
+            rm -rf "dist/${name:?}"
+          done
+
+          cd dist
+          sha256sum ./*.tar.gz > SHA256SUMS
+          ls -la
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          DRAFT: ${{ steps.version.outputs.draft }}
+        working-directory: webserver
+        run: |
+          set -euo pipefail
+          notes=$(cat <<'EOF'
+          ## imagethat-web
+
+          A standalone HTTP server that browses gocryptfs vaults: file browser,
+          image viewer and range-streamed video, from any browser.
+
+          ### Install
+
+          Download the archive for your platform, verify it against
+          `SHA256SUMS`, extract it, and run:
+
+          ```
+          ./imagethat-web -root /path/to/your/vaults
+          ```
+
+          Then open http://127.0.0.1:8347 and unlock a vault with its password.
+
+          By default the server binds loopback only. To reach it from another
+          machine, supply `-tls-cert`/`-tls-key`; it refuses to serve decrypted
+          vault contents unencrypted over a network unless you pass
+          `-insecure`.
+
+          Vault keys are held in memory only, decrypted content is never
+          written to disk, and cached thumbnails are encrypted under a key that
+          is destroyed when the vault locks.
+          EOF
+          )
+
+          args=(--title "imagethat-web ${VERSION}" --notes "$notes")
+          if [ "$DRAFT" = "true" ]; then
+            args+=(--draft)
+          fi
+
+          gh release create "webserver-${VERSION}" \
+            dist/*.tar.gz dist/SHA256SUMS \
+            "${args[@]}"
