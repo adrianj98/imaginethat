@@ -137,13 +137,42 @@ func (s *Session) Close() error {
 	}
 	s.closed = true
 	s.dirIV = nil
-	if s.contentEnc != nil {
+	// ContentEnc.Wipe() wipes the CryptoCore it holds and then drops its
+	// reference to it, so this must not be followed by a second
+	// cryptoCore.Wipe(): for the AES-SIV and OpenSSL backends that second call
+	// type-asserts an already-nil AEADCipher and panics.
+	switch {
+	case s.contentEnc != nil:
 		s.contentEnc.Wipe()
-	}
-	if s.cryptoCore != nil {
+	case s.cryptoCore != nil:
 		s.cryptoCore.Wipe()
 	}
 	return nil
+}
+
+// decryptBlock decrypts one ciphertext block under the session lock.
+//
+// The lock matters: Close() wipes the ContentEnc's CryptoCore reference, and an
+// in-flight read that had already passed checkOpen() would otherwise dereference
+// a nil pointer inside DecryptBlock. Taking the read lock here makes locking a
+// vault mid-stream return ErrClosed instead of panicking.
+func (s *Session) decryptBlock(ciphertext []byte, blockNo uint64, fileID []byte) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, ErrClosed
+	}
+	return s.contentEnc.DecryptBlock(ciphertext, blockNo, fileID)
+}
+
+// encryptBlock is the write-side counterpart of decryptBlock.
+func (s *Session) encryptBlock(plaintext []byte, blockNo uint64, fileID []byte) ([]byte, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.closed {
+		return nil, ErrClosed
+	}
+	return s.contentEnc.EncryptBlock(plaintext, blockNo, fileID), nil
 }
 
 // checkOpen returns ErrClosed once the session has been closed.

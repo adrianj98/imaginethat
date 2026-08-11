@@ -10,9 +10,15 @@ interface Props {
 }
 
 interface UploadState {
+  // id, not name: two uploads of the same file name can be in flight at once
+  // (two drops, or a drop of same-named files from different folders), and
+  // keying progress rows on the name makes them collide.
+  id: number
   name: string
   fraction: number
 }
+
+let nextUploadID = 0
 
 /** Directory browser: breadcrumb, folders, media grid, and write actions. */
 export default function Browser({ vault, onSessionLost }: Props) {
@@ -56,15 +62,16 @@ export default function Browser({ vault, onSessionLost }: Props) {
   async function handleFiles(files: FileList | File[]) {
     const list = Array.from(files)
     for (const file of list) {
-      setUploads((u) => [...u, { name: file.name, fraction: 0 }])
+      const id = nextUploadID++
+      setUploads((u) => [...u, { id, name: file.name, fraction: 0 }])
       try {
         await api.upload(vault.id, path, file, (fraction) => {
-          setUploads((u) => u.map((x) => (x.name === file.name ? { ...x, fraction } : x)))
+          setUploads((u) => u.map((x) => (x.id === id ? { ...x, fraction } : x)))
         })
       } catch (e) {
         setError(`${file.name}: ${e instanceof Error ? e.message : String(e)}`)
       } finally {
-        setUploads((u) => u.filter((x) => x.name !== file.name))
+        setUploads((u) => u.filter((x) => x.id !== id))
       }
     }
     await refresh()
@@ -164,7 +171,7 @@ export default function Browser({ vault, onSessionLost }: Props) {
       {uploads.length > 0 && (
         <div className="uploads">
           {uploads.map((u) => (
-            <div key={u.name} className="upload-row">
+            <div key={u.id} className="upload-row">
               <span className="upload-name">{u.name}</span>
               <progress value={u.fraction} max={1} />
               <span className="muted">{Math.round(u.fraction * 100)}%</span>
@@ -179,8 +186,14 @@ export default function Browser({ vault, onSessionLost }: Props) {
         <p className="muted centered">This folder is empty. Drop files here to upload.</p>
       ) : (
         <div className="grid">
+          {/* Tiles are keyed on the full path, not the bare name: keying on the
+              name lets React reuse a tile (and its Thumbnail's loaded/failed
+              state) for a same-named entry in a different folder. */}
           {entries.map((entry) => (
-            <div key={entry.name} className={`tile${entry.isDir ? ' folder' : ''}`}>
+            <div
+              key={api.joinPath(path, entry.name)}
+              className={`tile${entry.isDir ? ' folder' : ''}`}
+            >
               <button
                 className="tile-main"
                 type="button"

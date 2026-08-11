@@ -83,10 +83,10 @@ func (s *Session) ListDir(plainPath string) ([]Entry, error) {
 	return out, nil
 }
 
-// isHiddenName filters dotfiles and macOS AppleDouble sidecars, as
-// VaultSource.swift:33 does.
+// isHiddenName filters dotfiles and macOS AppleDouble sidecars (which are
+// dotfiles too, "._name"), as VaultSource.swift:33 does.
 func isHiddenName(name string) bool {
-	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "._")
+	return strings.HasPrefix(name, ".")
 }
 
 // Stat returns metadata for a single plaintext path.
@@ -149,8 +149,12 @@ func (s *Session) ReadFile(plainPath string) ([]byte, error) {
 	}
 	defer f.Close()
 	buf := make([]byte, f.Size())
-	if _, err := io.ReadFull(f, buf); err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+	n, err := io.ReadFull(f, buf)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return nil, err
 	}
-	return buf, nil
+	// A short read means the ciphertext is shorter than its size implied.
+	// Return the bytes that decrypted rather than a zero-padded buffer, which
+	// would look like valid trailing content to the caller.
+	return buf[:n], nil
 }
