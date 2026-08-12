@@ -1,42 +1,34 @@
 name: webserver release
 
-# Two kinds of release:
+# Every merge to main that touches the webserver cuts a release, bumping the
+# patch version: v0.0.1, v0.0.2, v0.0.3...
 #
-#   merge to main  -> refreshes the rolling "webserver-latest" pre-release
-#   webserver-v*   -> cuts a permanent, versioned stable release
-#
-# The webserver- prefix keeps these distinct from any tagging the macOS app
-# uses.
-#
-# Note there is deliberately no `paths:` filter here. A paths filter applies to
-# the whole push block, and a tag push carries no changed files, so adding one
-# would silently stop tag releases from ever running. The "Should this build
-# release?" step below scopes main pushes to webserver/ changes instead.
+# There is no tag trigger. The workflow creates the tag itself, so a tag push
+# would only ever duplicate a release this job already made. Keeping the
+# trigger to branch pushes is also what lets `paths:` work — a filter applies
+# to the whole push block, and tag pushes carry no changed files, so mixing the
+# two would silently break one of them.
 on:
   push:
     branches:
       - main
-    tags:
-      - 'webserver-v*'
+    paths:
+      - 'webserver/**'
+      - '.github/workflows/webserver-release.yml'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to build (e.g. v0.1.0)'
-        required: true
-        type: string
-      draft:
-        description: 'Create as a draft (drafts are not visible on the Releases page)'
+        description: 'Version to release, without the v (e.g. 0.1.0). Leave blank to bump the patch.'
         required: false
-        default: true
-        type: boolean
+        type: string
 
 permissions:
   contents: write
 
-# Merges in quick succession must queue, not race: a cancelled run could leave
-# the rolling release with half its assets replaced.
+# Merges in quick succession must queue, not race: two runs bumping from the
+# same latest tag would both pick the same version number.
 concurrency:
-  group: webserver-release-${{ github.ref }}
+  group: webserver-release
   cancel-in-progress: false
 
 jobs:
@@ -46,158 +38,95 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The version derivation needs tags and history.
+          # Needed for the tag list the version bump reads.
           fetch-depth: 0
 
-      - name: Should this build release?
-        id: gate
-        env:
-          BEFORE: ${{ github.event.before }}
-        run: |
-          set -euo pipefail
-
-          # Tag pushes and manual runs always release.
-          if [ "$GITHUB_EVENT_NAME" != "push" ] || [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # A branch being created or force-pushed has no usable "before" SHA.
-          # Fail open: releasing a build we did not need beats skipping one we
-          # did.
-          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            echo "No usable before-SHA; releasing."
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
-            echo "before-SHA $BEFORE not in history; releasing."
-            echo "release=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          changed="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" -- \
-            webserver .github/workflows/webserver-release.yml)"
-
-          if [ -n "$changed" ]; then
-            echo "Webserver files changed:"
-            echo "$changed" | sed 's/^/  /'
-            echo "release=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "No webserver changes in this push; skipping the release."
-            echo "release=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Resolve version and release mode
+      - name: Work out the next version
         id: version
-        if: steps.gate.outputs.release == 'true'
         run: |
           set -euo pipefail
 
-          # git describe fails outright ("fatal: No names found") when no
-          # matching tag exists, which is the state of a repo that has never
-          # cut a stable release. --always is not a substitute: it returns a
-          # bare SHA with no v-prefix.
-          if described="$(git describe --tags --match 'webserver-v*' 2>/dev/null)"; then
-            version="${described#webserver-}"
+          override="${{ inputs.version }}"
+          if [ -n "$override" ]; then
+            version="${override#v}"
+            echo "Using the version given to the manual run: $version"
           else
-            version="v0.0.0-$(git rev-list --count HEAD)-g$(git rev-parse --short HEAD)"
+            # Highest existing release, ignoring anything that is not a plain
+            # x.y.z — sort -V orders 0.0.10 after 0.0.9, which a lexical sort
+            # would not.
+            #
+            # The `|| true` is load-bearing: grep exits 1 when nothing matches,
+            # and under `set -o pipefail` that would kill the step on the very
+            # first release instead of falling through to the default below.
+            latest="$(git tag -l 'webserver-v*' \
+              | sed 's|^webserver-v||' \
+              | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V | tail -1 || true)"
+
+            if [ -z "$latest" ]; then
+              version=0.0.1
+              echo "No previous release; starting at $version"
+            else
+              IFS=. read -r major minor patch <<< "$latest"
+              version="${major}.${minor}.$((patch + 1))"
+              echo "Bumping $latest -> $version"
+            fi
           fi
 
-          case "$GITHUB_EVENT_NAME" in
-            workflow_dispatch)
-              version="${{ inputs.version }}"
-              mode=stable
-              draft="${{ inputs.draft }}"
-              tag="webserver-${version}"
-              ;;
-            *)
-              if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-                version="${GITHUB_REF_NAME#webserver-}"
-                mode=stable
-                draft=false
-                tag="$GITHUB_REF_NAME"
-              else
-                mode=rolling
-                draft=false
-                tag=webserver-latest
-              fi
-              ;;
-          esac
+          if git rev-parse -q --verify "refs/tags/webserver-v${version}" > /dev/null; then
+            echo "::error::webserver-v${version} already exists"
+            exit 1
+          fi
 
-          {
-            echo "version=$version"
-            echo "mode=$mode"
-            echo "draft=$draft"
-            echo "tag=$tag"
-          } >> "$GITHUB_OUTPUT"
-          echo "Building $version as a $mode release (tag=$tag, draft=$draft)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-go@v5
-        if: steps.gate.outputs.release == 'true'
         with:
           go-version: '1.24'
           cache-dependency-path: webserver/go.sum
 
       - uses: actions/setup-node@v4
-        if: steps.gate.outputs.release == 'true'
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: webserver/web/package-lock.json
 
       - name: Sync gocryptfs internal packages
-        if: steps.gate.outputs.release == 'true'
         run: make sync
         working-directory: webserver
 
       # The SPA is compiled into the binary, so it has to exist before any Go
       # build. Building it once keeps every platform's bundle identical.
       - name: Build web UI
-        if: steps.gate.outputs.release == 'true'
         run: |
           npm ci
           npm run build
         working-directory: webserver/web
 
-      # No test step here: webserver-ci.yml runs the whole suite on this same
-      # commit, so re-running it would only duplicate work. Note this does not
-      # gate the release on CI being green — the two workflows are
-      # independent — but re-running the tests would not have gated it either.
+      # No test step: webserver-ci.yml runs the whole suite on this same
+      # commit, so re-running it here would only duplicate work.
       #
       # Pure Go with CGO disabled, so every target cross-compiles from one
       # runner. Windows is absent because gocryptfs' syscallcompat is
       # POSIX-only.
       - name: Build release binaries
-        if: steps.gate.outputs.release == 'true'
         working-directory: webserver
         env:
           VERSION: ${{ steps.version.outputs.version }}
-          MODE: ${{ steps.version.outputs.mode }}
         run: |
           set -euo pipefail
           mkdir -p dist
 
-          # Rolling assets omit the version from the filename so that
-          # `gh release upload --clobber` replaces exactly the right asset
-          # instead of accumulating one per build — and so the download URL
-          # stays stable. Stable releases keep the version in the name.
-          slug=""
-          if [ "$MODE" = "stable" ]; then
-            slug="_${VERSION}"
-          fi
-
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             goos="${target%/*}"
             goarch="${target#*/}"
-            name="imagethat-web${slug}_${goos}_${goarch}"
-            echo "Building $name (version $VERSION)"
+            name="imagethat-web_v${VERSION}_${goos}_${goarch}"
+            echo "Building $name"
 
             CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
               go build -tags without_openssl \
                 -trimpath \
-                -ldflags "-s -w -X main.version=${VERSION}" \
+                -ldflags "-s -w -X main.version=v${VERSION}" \
                 -o "dist/${name}/imagethat-web" \
                 ./cmd/imagethat-web
 
@@ -211,20 +140,15 @@ jobs:
           ls -la
 
       - name: Publish release
-        if: steps.gate.outputs.release == 'true'
         working-directory: webserver
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
-          MODE: ${{ steps.version.outputs.mode }}
-          DRAFT: ${{ steps.version.outputs.draft }}
-          TAG: ${{ steps.version.outputs.tag }}
           TARGET_SHA: ${{ github.sha }}
-          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
 
-          common_notes=$(cat <<'EOF'
+          notes=$(cat <<'EOF'
           ## imagethat-web
 
           A standalone HTTP server that browses gocryptfs vaults: file browser,
@@ -252,46 +176,12 @@ jobs:
           EOF
           )
 
-          if [ "$MODE" = "rolling" ]; then
-            title="latest (${VERSION})"
-            notes=$(cat <<EOF
-          **Rolling development build** — rebuilt on every merge to \`main\`,
-          from commit \`${TARGET_SHA}\`. For a fixed version, use a
-          \`webserver-v*\` release instead.
+          # gh creates the tag at --target, so the workflow never has to push
+          # a ref itself.
+          gh release create "webserver-v${VERSION}" \
+            dist/*.tar.gz dist/SHA256SUMS \
+            --target "$TARGET_SHA" \
+            --title "imagethat-web v${VERSION}" \
+            --notes "$notes"
 
-          Asset names have no version in them, so these URLs always point at
-          the newest build:
-
-          \`\`\`
-          https://github.com/${REPO}/releases/download/webserver-latest/imagethat-web_linux_amd64.tar.gz
-          \`\`\`
-
-          ${common_notes}
-          EOF
-          )
-          else
-            title="imagethat-web ${VERSION}"
-            notes="$common_notes"
-          fi
-
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            echo "Release $TAG exists; refreshing it"
-            # gh release edit --target only moves draft releases, so the tag
-            # ref itself has to be repointed at this commit.
-            gh api -X PATCH "repos/${REPO}/git/refs/tags/${TAG}" \
-              -f sha="$TARGET_SHA" -F force=true > /dev/null
-            gh release edit "$TAG" --title "$title" --notes "$notes"
-            gh release upload "$TAG" dist/*.tar.gz dist/SHA256SUMS --clobber
-          else
-            args=(--title "$title" --notes "$notes" --target "$TARGET_SHA")
-            if [ "$MODE" = "rolling" ]; then
-              args+=(--prerelease)
-            fi
-            if [ "$DRAFT" = "true" ]; then
-              args+=(--draft)
-              echo "NOTE: creating a DRAFT release — it will not appear on the Releases page until published."
-            fi
-            gh release create "$TAG" dist/*.tar.gz dist/SHA256SUMS "${args[@]}"
-          fi
-
-          echo "Published: $(gh release view "$TAG" --json url --jq .url)"
+          echo "Published: $(gh release view "webserver-v${VERSION}" --json url --jq .url)"
