@@ -56,44 +56,25 @@ From the repository root, `make web-all` does both steps.
 
 ## Releasing
 
-`.github/workflows/webserver-release.yml` publishes two kinds of build.
-
-**Every merge to `main` refreshes `latest`.** A single pre-release named
-`webserver-latest` is rebuilt and overwritten, so there is always a current
-download without the Releases page growing an entry per merge. Its assets have
-no version in their names, which makes the URLs stable:
-
-```
-https://github.com/adrianj98/imaginethat/releases/download/webserver-latest/imagethat-web_linux_amd64.tar.gz
-```
-
-The version is still recorded — `imagethat-web -version` reports something
-like `v0.1.0-7-g1a2b3c4`, so any rolling binary traces back to its commit.
+Every merge to `main` that touches `webserver/` cuts a release and bumps the
+patch version: `webserver-v0.0.1`, `webserver-v0.0.2`, and so on. There is
+nothing to tag by hand — `.github/workflows/webserver-release.yml` reads the
+highest existing `webserver-v*` tag, adds one to the patch, and creates the new
+tag along with the release. The `webserver-` prefix keeps these separate from
+any tagging the macOS app uses.
 
 Merges that don't touch `webserver/` are skipped, so a change to the macOS app
 alone won't republish identical binaries.
 
-**Pushing a tag cuts a permanent, versioned release:**
+To jump to a different version — a minor or major bump — run the workflow by
+hand from the Actions tab and give it a version (e.g. `0.1.0`). Leave the field
+blank and it bumps the patch as usual. The next automatic release continues
+from whatever the highest tag is, so a manual `0.1.0` is followed by `0.1.1`.
 
-```
-git tag webserver-v0.1.0
-git push origin webserver-v0.1.0
-```
-
-Those keep the version in the asset filenames and are not marked pre-release.
-The `webserver-` prefix keeps them separate from any tagging the macOS app
-uses.
-
-Either way the job builds the UI once, then cross-compiles linux and darwin on
-amd64/arm64 from a single runner, since everything is pure Go with
-`CGO_ENABLED=0`. Windows is not built: gocryptfs' `syscallcompat` is
-POSIX-only. Tests are not re-run here — `webserver-ci.yml` covers the same
-commit.
-
-The workflow can also be run by hand from the Actions tab, which asks for a
-version. **That path defaults to creating a draft**, which does not appear on
-the Releases page until you publish it — untick `draft` if you want it live
-immediately.
+The job builds the UI once, then cross-compiles linux and darwin on amd64/arm64
+from a single runner, since everything is pure Go with `CGO_ENABLED=0`. Windows
+is not built: gocryptfs' `syscallcompat` is POSIX-only. Tests are not re-run
+here — `webserver-ci.yml` covers the same commit.
 
 ## Security model
 
