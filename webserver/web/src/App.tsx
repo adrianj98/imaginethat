@@ -3,21 +3,57 @@ import * as api from './api'
 import type { Vault } from './api'
 import VaultList from './components/VaultList'
 import Browser from './components/Browser'
+import { clearVideoThumbs } from './videoThumbs'
+
+// The URL hash is the single source of truth for where the user is:
+// #/v/<vaultId>/<path> inside a vault, anything else is the vault list.
+// Hash routing (rather than the History API) keeps the embedded SPA free of
+// server-side fallback routes, and every hash change gets a history entry, so
+// the browser's back/forward buttons walk the folder trail naturally.
+interface Route {
+  vaultId: string | null
+  path: string
+}
+
+function parseHash(): Route {
+  const m = /^#\/v\/([^/]+)(?:\/(.+))?$/.exec(window.location.hash)
+  if (!m) return { vaultId: null, path: '' }
+  // Each segment is encoded separately so file names containing '/' -alikes
+  // ('%2F') cannot masquerade as deeper folders.
+  const path = m[2] ? m[2].split('/').map(decodeURIComponent).join('/') : ''
+  return { vaultId: m[1], path }
+}
+
+function hashFor(vaultId: string | null, path: string): string {
+  if (!vaultId) return '#/'
+  const suffix = path ? '/' + path.split('/').map(encodeURIComponent).join('/') : ''
+  return `#/v/${vaultId}${suffix}`
+}
 
 export default function App() {
   const [vaults, setVaults] = useState<Vault[] | null>(null)
-  const [activeId, setActiveId] = useState<string | null>(null)
+  const [route, setRoute] = useState<Route>(parseHash)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const onHashChange = () => setRoute(parseHash())
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  const navigate = useCallback((vaultId: string | null, path = '') => {
+    const target = hashFor(vaultId, path)
+    if (window.location.hash === target) return
+    // Assigning location.hash pushes a history entry and fires hashchange,
+    // which is what updates `route` — the URL stays the source of truth.
+    window.location.hash = target
+  }, [])
 
   const refresh = useCallback(async () => {
     try {
       const { vaults } = await api.listVaults()
       setVaults(vaults)
       setError(null)
-      // If the active vault got locked out from under us, go back to the list.
-      setActiveId((current) =>
-        current && vaults.some((v) => v.id === current && v.unlocked) ? current : null,
-      )
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
@@ -30,20 +66,26 @@ export default function App() {
   const handleLock = useCallback(
     async (id: string) => {
       await api.lockVault(id)
-      setActiveId(null)
+      // Captured video frames derive from vault content; drop them with the
+      // vault, mirroring the server's per-vault thumbnail LRU dying on lock.
+      clearVideoThumbs()
+      navigate(null)
       await refresh()
     },
-    [refresh],
+    [navigate, refresh],
   )
 
-  const active = vaults?.find((v) => v.id === activeId && v.unlocked) ?? null
+  // The route may name a vault that is locked or gone (deep link, expired
+  // session): show the vault list then, and keep the hash so unlocking the
+  // vault drops the user right back where the link pointed.
+  const active = vaults?.find((v) => v.id === route.vaultId && v.unlocked) ?? null
 
   return (
     <div className="app">
       <header className="topbar">
         <button
           className="brand"
-          onClick={() => setActiveId(null)}
+          onClick={() => navigate(null)}
           title="Back to vaults"
           type="button"
         >
@@ -63,12 +105,18 @@ export default function App() {
 
       <main>
         {active ? (
-          <Browser vault={active} onSessionLost={() => void refresh()} />
+          <Browser
+            vault={active}
+            path={route.path}
+            onNavigate={(path) => navigate(active.id, path)}
+            onSessionLost={() => void refresh()}
+          />
         ) : (
           <VaultList
             vaults={vaults}
             onOpened={(id) => {
-              setActiveId(id)
+              // Unlocking the vault a deep link points at keeps its path.
+              navigate(id, route.vaultId === id ? route.path : '')
               void refresh()
             }}
             onRefresh={refresh}

@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 	"time"
@@ -36,6 +37,7 @@ func main() {
 		tlsCert     = flag.String("tls-cert", "", "TLS certificate file (enables HTTPS)")
 		tlsKey      = flag.String("tls-key", "", "TLS key file")
 		insecure    = flag.Bool("insecure", false, "allow binding a non-loopback address without TLS")
+		ffmpegFlag  = flag.String("ffmpeg", "auto", "ffmpeg binary for server-side video thumbnails: 'auto' searches PATH, 'off' disables, or an explicit path")
 	)
 	flag.Parse()
 
@@ -54,12 +56,15 @@ func main() {
 		fatal(logger, err.Error())
 	}
 
+	ffmpegPath := resolveFFmpeg(*ffmpegFlag, logger)
+
 	srv, err := server.New(server.Config{
 		Root:            *root,
 		ScanDepth:       *scanDepth,
 		IdleTimeout:     *idleTimeout,
 		ThumbCacheBytes: *thumbCache << 20,
 		TLS:             useTLS,
+		FFmpegPath:      ffmpegPath,
 		Logger:          logger,
 	})
 	if err != nil {
@@ -139,6 +144,31 @@ func checkExposure(addr string, useTLS, insecure bool) error {
 	return fmt.Errorf("-addr %q is not loopback and TLS is off; this would serve decrypted "+
 		"vault contents unencrypted over the network. Pass -tls-cert/-tls-key, or -insecure "+
 		"to override", addr)
+}
+
+// resolveFFmpeg turns the -ffmpeg flag into a binary path, or "" when video
+// thumbnails should stay browser-side.
+func resolveFFmpeg(value string, logger *log.Logger) string {
+	switch value {
+	case "off", "none", "":
+		logger.Printf("video thumbnails: server-side disabled (-ffmpeg=%s)", value)
+		return ""
+	case "auto":
+		p, err := exec.LookPath("ffmpeg")
+		if err != nil {
+			logger.Printf("video thumbnails: no ffmpeg on PATH, falling back to in-browser capture")
+			return ""
+		}
+		logger.Printf("video thumbnails: using ffmpeg at %s", p)
+		return p
+	default:
+		p, err := exec.LookPath(value)
+		if err != nil {
+			fatal(logger, fmt.Sprintf("-ffmpeg %q: %v", value, err))
+		}
+		logger.Printf("video thumbnails: using ffmpeg at %s", p)
+		return p
+	}
 }
 
 func fatal(logger *log.Logger, msg string) {

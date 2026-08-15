@@ -31,6 +31,9 @@ type Config struct {
 	ThumbCacheBytes int64
 	// TLS marks the server as HTTPS so cookies can be flagged Secure.
 	TLS bool
+	// FFmpegPath enables server-side video thumbnails via this ffmpeg binary.
+	// Empty disables them; the browser then captures frames itself.
+	FFmpegPath string
 	// Logger receives request and error output.
 	Logger *log.Logger
 }
@@ -50,6 +53,8 @@ type Server struct {
 	cfg      Config
 	sessions *sessionStore
 	limiter  *rateLimiter
+	// videoThumbs is nil when no ffmpeg is available.
+	videoThumbs *videoThumbnailer
 
 	mu     sync.RWMutex
 	vaults map[string]string // vault ID -> absolute path
@@ -87,6 +92,9 @@ func New(cfg Config) (*Server, error) {
 		sessions: newSessionStore(cfg.IdleTimeout),
 		limiter:  newRateLimiter(10, time.Minute),
 		stop:     make(chan struct{}),
+	}
+	if cfg.FFmpegPath != "" {
+		s.videoThumbs = newVideoThumbnailer(cfg.FFmpegPath)
 	}
 	if err := s.Rescan(); err != nil {
 		return nil, err
@@ -211,7 +219,28 @@ func (s *Server) listVaults(b *browserSession) []Vault {
 
 // ServeHTTP implements http.Handler.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	if !strings.HasPrefix(r.URL.Path, "/api/") {
+		s.mux.ServeHTTP(w, r)
+		return
+	}
+	// API requests get a log line with the outcome. The query string names
+	// plaintext vault paths, which this log deliberately includes — it goes to
+	// the same place as Session.Logf diagnostics, which already do.
+	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+	start := time.Now()
+	s.mux.ServeHTTP(rec, r)
+	s.cfg.Logger.Printf("%s %s -> %d (%s)", r.Method, r.URL.RequestURI(), rec.status, time.Since(start).Round(time.Millisecond))
+}
+
+// statusRecorder captures the response status for request logging.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
 }
 
 // writeJSON sends a JSON response with caching disabled.

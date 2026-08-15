@@ -6,6 +6,10 @@ import Lightbox from './Lightbox'
 
 interface Props {
   vault: Vault
+  /** Current folder within the vault; owned by the URL, not this component. */
+  path: string
+  /** Requests navigation to another folder (updates the URL). */
+  onNavigate: (path: string) => void
   onSessionLost: () => void
 }
 
@@ -21,8 +25,7 @@ interface UploadState {
 let nextUploadID = 0
 
 /** Directory browser: breadcrumb, folders, media grid, and write actions. */
-export default function Browser({ vault, onSessionLost }: Props) {
-  const [path, setPath] = useState('')
+export default function Browser({ vault, path, onNavigate, onSessionLost }: Props) {
   const [listing, setListing] = useState<Listing | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [viewerIndex, setViewerIndex] = useState<number | null>(null)
@@ -48,6 +51,9 @@ export default function Browser({ vault, onSessionLost }: Props) {
 
   useEffect(() => {
     void load(path)
+    // The viewer indexes into the previous folder's entries; navigation
+    // (including the browser's back button) must not carry it over.
+    setViewerIndex(null)
   }, [load, path])
 
   const entries = listing?.entries ?? []
@@ -130,7 +136,7 @@ export default function Browser({ vault, onSessionLost }: Props) {
     >
       <div className="toolbar">
         <nav className="breadcrumb" aria-label="Breadcrumb">
-          <button className="crumb" type="button" onClick={() => setPath('')}>
+          <button className="crumb" type="button" onClick={() => onNavigate('')}>
             {vault.name}
           </button>
           {crumbs.map((part, i) => (
@@ -139,7 +145,7 @@ export default function Browser({ vault, onSessionLost }: Props) {
               <button
                 className="crumb"
                 type="button"
-                onClick={() => setPath(crumbs.slice(0, i + 1).join('/'))}
+                onClick={() => onNavigate(crumbs.slice(0, i + 1).join('/'))}
               >
                 {part}
               </button>
@@ -199,7 +205,7 @@ export default function Browser({ vault, onSessionLost }: Props) {
                 type="button"
                 onClick={() => {
                   if (entry.isDir) {
-                    setPath(api.joinPath(path, entry.name))
+                    onNavigate(api.joinPath(path, entry.name))
                   } else {
                     const idx = viewable.findIndex((v) => v.name === entry.name)
                     if (idx >= 0) setViewerIndex(idx)

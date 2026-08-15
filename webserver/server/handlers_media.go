@@ -88,8 +88,13 @@ func (s *Server) handleThumb(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !vault.IsBrowserDecodableImage(path.Base(p)) {
-		// HEIC, RAW and video need decoders the server does not have; the UI
-		// draws a placeholder instead.
+		if s.videoThumbs != nil && vault.ClassifyMedia(path.Base(p)) == vault.MediaVideo {
+			s.serveVideoThumb(w, r, u, p, size)
+			return
+		}
+		// HEIC and RAW need decoders the server does not have, and without
+		// ffmpeg the same goes for video; the UI then draws a placeholder or
+		// captures a frame itself.
 		noStore(w)
 		w.WriteHeader(http.StatusNoContent)
 		return
@@ -128,6 +133,43 @@ func (s *Server) handleThumb(w http.ResponseWriter, r *http.Request) {
 		src[i] = 0
 	}
 	if err != nil {
+		noStore(w)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	u.thumbs.Put(key, jpegBytes)
+	s.writeThumb(w, jpegBytes)
+}
+
+// serveVideoThumb answers a thumbnail request for a video by running ffmpeg
+// over the decrypted stream. Failures degrade to 204 so the browser falls
+// back to capturing a frame itself.
+func (s *Server) serveVideoThumb(w http.ResponseWriter, r *http.Request, u *unlockedVault, p string, size int) {
+	plainSize, err := u.sess.FileSize(p)
+	if err != nil {
+		s.writeVaultError(w, err, "video thumbnail")
+		return
+	}
+	// The "video|" prefix keeps these keys from ever colliding with image
+	// thumbnails of the same path and size.
+	key := "video|" + p + "|" + strconv.Itoa(size) + "|" + strconv.FormatInt(plainSize, 10)
+
+	if cached, hit := u.thumbs.Get(key); hit {
+		s.writeThumb(w, cached)
+		return
+	}
+
+	f, err := u.sess.Open(p)
+	if err != nil {
+		s.writeVaultError(w, err, "video thumbnail")
+		return
+	}
+	defer f.Close()
+
+	jpegBytes, err := s.videoThumbs.capture(r.Context(), f, path.Base(p), size)
+	if err != nil {
+		s.cfg.Logger.Printf("video thumbnail %q: %v", p, err)
 		noStore(w)
 		w.WriteHeader(http.StatusNoContent)
 		return

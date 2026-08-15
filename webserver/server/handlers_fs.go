@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
@@ -92,13 +93,15 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 
 	sess, err := vault.OpenLocal(vaultDir, req.Password)
 	if err != nil {
+		s.cfg.Logger.Printf("unlock %s: %v", id, err)
 		switch {
 		case errors.Is(err, vault.ErrWrongPassword):
 			writeError(w, http.StatusUnauthorized, "wrong password")
 		case errors.Is(err, vault.ErrNoConfig):
 			writeError(w, http.StatusNotFound, "not a gocryptfs vault")
+		case errors.Is(err, vault.ErrPermission):
+			writeError(w, http.StatusForbidden, "the server's OS user cannot read this vault (permission denied)")
 		default:
-			s.cfg.Logger.Printf("unlock %s: %v", id, err)
 			writeError(w, http.StatusInternalServerError, "could not unlock the vault")
 		}
 		return
@@ -326,6 +329,10 @@ func requestPath(w http.ResponseWriter, r *http.Request) (string, bool) {
 // writeVaultError maps a vault error onto an HTTP status without leaking
 // filesystem detail to the client.
 func (s *Server) writeVaultError(w http.ResponseWriter, err error, op string) {
+	// The client only sees the mapped message, but the server log gets the
+	// full error — mapped failures are exactly the ones worth diagnosing when
+	// a folder refuses to open.
+	s.cfg.Logger.Printf("%s: %v", op, err)
 	switch {
 	case errors.Is(err, vault.ErrNotFound):
 		writeError(w, http.StatusNotFound, "not found")
@@ -337,8 +344,9 @@ func (s *Server) writeVaultError(w http.ResponseWriter, err error, op string) {
 		writeError(w, http.StatusUnauthorized, "vault is locked")
 	case errors.Is(err, vault.ErrReadOnlyBackend):
 		writeError(w, http.StatusForbidden, "vault is read-only")
+	case errors.Is(err, vault.ErrPermission), errors.Is(err, fs.ErrPermission):
+		writeError(w, http.StatusForbidden, "permission denied on the backend")
 	default:
-		s.cfg.Logger.Printf("%s: %v", op, err)
 		writeError(w, http.StatusInternalServerError, op+" failed")
 	}
 }

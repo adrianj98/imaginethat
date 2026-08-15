@@ -14,6 +14,7 @@ package vault
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
@@ -42,6 +43,9 @@ var (
 	ErrExists = errors.New("vault: destination already exists")
 	// ErrInvalidPath means the path escapes the vault or is otherwise illegal.
 	ErrInvalidPath = errors.New("vault: invalid path")
+	// ErrPermission means the backend denied access to the ciphertext — the
+	// vault exists but the server's OS user cannot read it.
+	ErrPermission = errors.New("vault: permission denied on the backend")
 )
 
 // Session is an unlocked vault. It is safe for concurrent use.
@@ -89,10 +93,20 @@ func IsVault(dir string) bool {
 func OpenLocal(vaultPath, password string) (*Session, error) {
 	confPath := filepath.Join(vaultPath, configfile.ConfDefaultName)
 	if _, err := os.Stat(confPath); err != nil {
+		// A conf we cannot even stat because of permissions is a different
+		// problem than a directory that simply is not a vault, and reporting
+		// it as "not a vault" sends whoever is debugging in the wrong
+		// direction entirely.
+		if errors.Is(err, fs.ErrPermission) {
+			return nil, fmt.Errorf("%w: %v", ErrPermission, err)
+		}
 		return nil, ErrNoConfig
 	}
 	cf, err := configfile.Load(confPath)
 	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return nil, fmt.Errorf("%w: %v", ErrPermission, err)
+		}
 		return nil, fmt.Errorf("%w: %v", ErrNoConfig, err)
 	}
 	return newSession(cf, password, NewLocalFS(vaultPath))
