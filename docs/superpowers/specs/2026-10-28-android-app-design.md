@@ -16,7 +16,9 @@ Status: draft, awaiting review
   manage (mkdir, move, delete).
 - Saved copies are for offline viewing inside the app only — never exported to
   the gallery or shared storage.
-- Offline copies unlock with biometrics via the Android Keystore.
+- The built-in offline vault has its own password, set by the user. Fingerprint
+  or face is a shortcut to it, never the only way in: changing biometrics must
+  never lock the user out.
 - Local vaults: both a built-in offline vault in app-private storage and
   vaults the user picks from phone storage (SD card, synced folders).
 - An APK is built on release. Releases happen only when a `vX.Y.Z` tag is
@@ -43,7 +45,7 @@ phone:
 | Server address | Memory only, unless the user ticks "Remember this server" — then in the encrypted app store (below) |
 | Saved-for-offline files | Inside the built-in gocryptfs vault (ciphertext only) |
 | Local vault passwords | Never stored, unless "Unlock with biometrics" is chosen — then wrapped by a biometric-gated Keystore key |
-| Built-in vault password | 32 random bytes, wrapped by a biometric-gated Keystore key |
+| Built-in vault password | Chosen by the user when the vault is created; never stored, unless the biometric shortcut is on — then wrapped by a biometric-gated Keystore key |
 | Temp files during writes | gocryptfs ciphertext only (the Go engine streams through `CreateTemp`) |
 
 Android-specific leak points closed in v1:
@@ -167,8 +169,11 @@ written.
    *New folder*.
 5. **Viewer** — swipeable full-screen images (pinch zoom) and video (Media3
    player with seek).
-6. **Unlock prompts** — password dialog with "Unlock with biometrics next
-   time" for local vaults; biometric prompt for the offline vault.
+6. **Unlock prompts** — one flow for every local vault, the built-in one
+   included: biometric prompt if the shortcut is on, otherwise (or on
+   "Use password") a password dialog with "Unlock with biometrics next time".
+   First launch asks the user to set the offline vault's password (entered
+   twice, minimum 8 characters) before anything can be saved offline.
 
 ## Errors
 
@@ -176,9 +181,13 @@ written.
 - Server unreachable/TLS mismatch → banner on the server; pinned-cert
   mismatch is a hard failure with the new fingerprint shown.
 - Remote session expired (401/locked) → back to unlock prompt for that vault.
-- Biometric enrolment changed → Keystore key invalidated → offline vault is
-  unrecoverable; the app says so and offers to create a new one. (Same
-  trade-off as the Touch ID flow on macOS.)
+- Biometric enrolment changed → Android invalidates the shortcut key → the
+  app deletes the stale wrapped password, asks for the vault password once and
+  offers to re-enable the shortcut. Nothing is lost: the password always opens
+  the vault, on the phone or, after copying the folder, with `gocryptfs` on a
+  computer.
+- Forgotten password → the vault cannot be opened (that is the point of
+  encryption); the app says so plainly when the password is set.
 - SAF permission revoked → folder shown as unavailable with "Pick again".
 - Partial save/upload failure → per-file result list; failed files are
   removed from the destination so no truncated ciphertext remains.
