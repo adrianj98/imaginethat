@@ -63,7 +63,7 @@ test: test-logic test-e2e
 test-logic: build
 	DYLD_LIBRARY_PATH=$(PWD)/build $(BIN_DIR)/IntegrationTest
 
-# Run E2E tests (requires Peekaboo: brew install steipete/tap/peekaboo)
+# Run E2E tests (needs Screen Recording permission for the terminal)
 test-e2e: app
 	bash Tests/e2e_test.sh
 

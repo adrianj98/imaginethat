@@ -17,8 +17,16 @@ fail() { echo -e "  ${RED}FAIL${NC}: $1 — $2"; FAILED=$((FAILED+1)); }
 
 kill_app() { pkill -9 ImageThat 2>/dev/null || true; sleep 1; }
 
+# Prints the CGWindowID of ImageThat's main window (empty if none)
+window_id() {
+    osascript -l JavaScript -e 'ObjC.import("CoreGraphics");
+        const l = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));
+        const w = l.find(w => w.kCGWindowOwnerName === "ImageThat" && w.kCGWindowLayer === 0);
+        w ? String(w.kCGWindowNumber) : ""' 2>/dev/null
+}
+
 has_window() {
-    peekaboo list windows --app ImageThat 2>/dev/null | grep -q 'ImageThat - ID'
+    [ -n "$(window_id)" ]
 }
 
 wait_for_window() {
@@ -75,7 +83,7 @@ if wait_for_window 10; then
     pass "App launches with --args"
     # Wait for folder to load (the .task has 1s delay)
     sleep 4
-    peekaboo image --app ImageThat --path /tmp/e2e-test2 --format png 2>/dev/null || true
+    screencapture -x -o -l "$(window_id)" /tmp/e2e-test2.png 2>/dev/null || true
     if [ -f "/tmp/e2e-test2.png" ]; then
         pass "Screenshot captured"
     else
