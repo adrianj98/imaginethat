@@ -178,4 +178,32 @@ class LocalVaultsTest {
             releaseTree(tree)
         }
     }
+
+    @Test
+    fun writeAfterRevocationIsUnavailableNotReadOnly() {
+        val tree = testTree()
+        val ctx = inst.targetContext
+        grantAndResetTree(tree)
+        val saf = LocalVaults(ctx, state, offlineDir = File(dir, "o4"))
+        val folder = SavedFolder("f3", "Test folder", tree.toString())
+        try {
+            saf.createInFolder(tree, "folder password".toCharArray())
+            val v = saf.openFolder(folder, "folder password".toCharArray())
+            ctx.contentResolver.releasePersistableUriPermission(tree, RW)
+            ctx.revokeUriPermission(ctx.packageName, tree, RW)
+
+            for (op in listOf<() -> Unit>({ v.mkdir("/newdir") }, { v.create("/b.bin").close() }, { v.list("/") })) {
+                try {
+                    op()
+                    fail("expected failure after revocation")
+                } catch (e: Exception) {
+                    assertTrue("got ${LocalError.from(e)}: ${e.message}", LocalError.from(e) is LocalError.Unavailable)
+                }
+            }
+        } finally {
+            saf.closeAll()
+            grantAndResetTree(tree)
+            releaseTree(tree)
+        }
+    }
 }

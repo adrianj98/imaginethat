@@ -57,6 +57,14 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
         try {
             return block()
         } catch (e: SecurityException) {
+            // The lookups before a write also read; tell revocation from a write-only denial.
+            try {
+                children(rootId, fresh = true)
+            } catch (probe: SecurityException) {
+                revoked = true
+                throw unavailable(probe)
+            } catch (_: Exception) {
+            }
             throw readOnly(e)
         }
     }
