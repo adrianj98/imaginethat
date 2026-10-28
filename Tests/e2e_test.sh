@@ -10,10 +10,13 @@ FAILED=0
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
+YELLOW='\033[0;33m'
 NC='\033[0m'
+SKIPPED=0
 
 pass() { echo -e "  ${GREEN}PASS${NC}: $1"; PASSED=$((PASSED+1)); }
 fail() { echo -e "  ${RED}FAIL${NC}: $1 — $2"; FAILED=$((FAILED+1)); }
+skip() { echo -e "  ${YELLOW}SKIP${NC}: $1 — $2"; SKIPPED=$((SKIPPED+1)); }
 
 kill_app() { pkill -9 ImageThat 2>/dev/null || true; sleep 1; }
 
@@ -83,11 +86,14 @@ if wait_for_window 20; then
     pass "App launches with --args"
     # Wait for folder to load (the .task has 1s delay)
     sleep 4
-    screencapture -x -o -l "$(window_id)" /tmp/e2e-test2.png 2>/dev/null || true
+    shot_err=$(screencapture -x -o -l "$(window_id)" /tmp/e2e-test2.png 2>&1 || true)
     if [ -f "/tmp/e2e-test2.png" ]; then
         pass "Screenshot captured"
+    elif [[ "$shot_err" == *"could not create image"* ]]; then
+        # macOS returns this when the terminal lacks Screen Recording permission
+        skip "Screenshot" "grant Screen Recording to your terminal to run this"
     else
-        fail "Screenshot" "file not created"
+        fail "Screenshot" "${shot_err:-file not created}"
     fi
 else
     fail "App launches with --args" "window not found after 20s"
@@ -107,7 +113,7 @@ fi
 
 # ============================================================
 echo ""
-echo "=== Results: $PASSED passed, $FAILED failed ==="
+echo "=== Results: $PASSED passed, $FAILED failed, $SKIPPED skipped ==="
 echo ""
 
 rm -rf "$TEST_DIR" /tmp/e2e-*.png
