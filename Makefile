@@ -1,5 +1,5 @@
 .PHONY: build run golib clean app test test-logic test-e2e test-fixtures golib-sync \
-        web-build web-all web-run web-test
+        web-build web-all web-run web-test android-aar android-debug android-test
 
 BIN_DIR = $(shell swift build --show-bin-path)
 APP_BUNDLE = build/ImageThat.app
@@ -65,6 +65,26 @@ web-run:
 # Run the webserver's Go tests
 web-test:
 	$(MAKE) -C webserver test
+
+# --- Android app ----------------------------------------------------------
+# Kotlin + Compose app under android/ that embeds the Go vault engine
+# (webserver/mobile) through a gomobile-built aar. Needs JDK 21, the Android
+# SDK + NDK, and gomobile (see android/vaultcore/build.sh).
+ANDROID_HOME ?= $(HOME)/Library/Android/sdk
+JAVA_HOME ?= $(shell /usr/libexec/java_home 2>/dev/null || echo /opt/homebrew/opt/openjdk@21)
+ANDROID_ENV = ANDROID_HOME=$(ANDROID_HOME) JAVA_HOME=$(JAVA_HOME)
+
+# Build android/app/libs/vaultcore.aar from the Go engine
+android-aar:
+	$(ANDROID_ENV) android/vaultcore/build.sh
+
+# Build the debug APK (android/app/build/outputs/apk/debug/app-debug.apk)
+android-debug:
+	cd android && $(ANDROID_ENV) ./gradlew :app:assembleDebug
+
+# Run the Android JVM unit tests
+android-test:
+	cd android && $(ANDROID_ENV) ./gradlew :app:testDebugUnitTest
 
 # Run all tests
 test: test-logic test-e2e

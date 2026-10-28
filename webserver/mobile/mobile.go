@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"os"
 
 	"github.com/adrianm/imagethat/webserver/vault"
 )
@@ -36,6 +37,13 @@ func wrapErr(err error) error {
 		return err
 	}
 	return fmt.Errorf("%s: %w", code, err)
+}
+
+// SetTempDir sets the directory Go uses for temporary files (TMPDIR). Android
+// does not hand the process environment to Go, so os.TempDir falls back to
+// /data/local/tmp, which apps cannot write. Call it before InitLocal.
+func SetTempDir(dir string) error {
+	return os.Setenv("TMPDIR", dir)
 }
 
 // InitLocal creates a new empty vault in dir.

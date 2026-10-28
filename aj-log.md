@@ -1,5 +1,18 @@
 # aj-log
 
+## 2026-10-28 — Android project skeleton with gomobile vault engine (Task 4)
+- `android/` (new): Gradle project (AGP 8.13.2, Kotlin 2.2.21, Gradle 8.14.6 wrapper, Compose BOM 2025.06.01, Coil 3.2.0), minSdk 29 / targetSdk+compileSdk 35, applicationId `ai.alertd.imagethat`.
+  - Why: base for the Android app; versions chosen so compileSdk 35 (the only installed platform) works. AGP 9 and newer Compose BOMs need compileSdk 36 or a build-system migration.
+- `android/vaultcore/build.sh` + Gradle task `:app:buildVaultcore` (preBuild dependency): `gomobile bind` of `webserver/mobile` into `app/libs/vaultcore.aar` (gitignored). Tool paths from env with defaults.
+  - Why: the app embeds the Go vault engine instead of reimplementing gocryptfs.
+- `AndroidManifest.xml`, `data_extraction_rules.xml`: allowBackup=false, extraction rules exclude everything for cloud-backup and device-transfer, no providers (androidx.startup InitializationProvider removed via tools:node), only INTERNET and USE_BIOMETRIC.
+  - Why: decrypted-data-never-leaves-the-device principle.
+- `MainActivity`: FLAG_SECURE before setContent. `ImageThatApp`: Coil singleton with memory cache only (diskCache null + diskCachePolicy DISABLED); sets Go TMPDIR.
+- `ManifestHardeningTest` (JVM): parses the merged manifest; `testDebugUnitTest` takes MERGED_MANIFEST as an input so the merge always runs first. `VaultcoreSmokeTest` (instrumented): init/open/create/read.
+- `webserver/mobile/mobile.go`: new `SetTempDir(dir)` (+ test). Why: the smoke test failed on device with `mkdir /data/local/tmp/vault-init-...: permission denied`; Go on Android does not see TMPDIR from the process environment, so `vault.Init`'s `os.MkdirTemp("")` fails. Kotlin must call `Mobile.setTempDir(cacheDir)` before `initLocal`.
+- `webserver/go.mod`, `go.sum`, `tools.go`: add golang.org/x/mobile (needed by `gomobile bind`); `tools.go` keeps it from being tidied away. Side effect: go directive 1.24 -> 1.26.0, x/image 0.24 -> 0.47, x/sys 0.30 -> 0.49 (required by latest x/mobile).
+- Root `Makefile`: `android-aar`, `android-debug`, `android-test`; `.gitignore`: Android build outputs.
+
 ## 2026-10-28 — Replace Peekaboo in E2E tests with built-in macOS tools
 - `Tests/e2e_test.sh`: window detection now uses `osascript` (JXA + CGWindowListCopyWindowInfo) instead of `peekaboo list windows`; screenshot uses `screencapture -l <windowID>` instead of `peekaboo image`.
   - Why: drop the Homebrew Peekaboo dependency; both tools ship with macOS.

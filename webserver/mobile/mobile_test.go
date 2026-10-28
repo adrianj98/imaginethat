@@ -282,3 +282,14 @@ func TestFixtureMatchesVault(t *testing.T) {
 		t.Fatal("fixture has no files")
 	}
 }
+
+func TestSetTempDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", "/nonexistent")
+	if err := SetTempDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.TempDir(); got != dir {
+		t.Fatalf("os.TempDir() = %q, want %q", got, dir)
+	}
+}
