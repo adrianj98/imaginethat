@@ -28,6 +28,41 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
     private val rootId: String = DocumentsContract.getTreeDocumentId(treeUri)
     private val cache = HashMap<String, Map<String, Child>>()
 
+    /** Set once a SecurityException shows the grant is gone; every later call fails as unavailable. */
+    @Volatile private var revoked = false
+
+    private fun unavailable(cause: Throwable? = null) =
+        IOException("$UNAVAILABLE: access to the picked folder was revoked or is gone", cause)
+
+    /**
+     * SecurityException cannot be told apart once it crosses gomobile (only the message
+     * survives), so it is rethrown with the stable [UNAVAILABLE] prefix.
+     */
+    private inline fun <T> guard(block: () -> T): T {
+        if (revoked) throw unavailable()
+        try {
+            return block()
+        } catch (e: SecurityException) {
+            revoked = true
+            throw unavailable(e)
+        }
+    }
+
+    companion object {
+        /** Message prefix for revoked access; LocalError.from matches it anywhere in the (Go-wrapped) message. */
+        const val UNAVAILABLE = "unavailable"
+    }
+
+    override fun readAt(path: String, offset: Long, n: Long): ByteArray = guard { doReadAt(path, offset, n) }
+    override fun fileSize(path: String): Long = guard { doFileSize(path) }
+    override fun listDir(path: String): String = guard { doListDir(path) }
+    override fun mkdir(path: String) = guard { doMkdir(path) }
+    override fun writeFile(path: String, data: ByteArray) = guard { doWriteFile(path, data) }
+    override fun openWriter(path: String): StorageWriter = guard { doOpenWriter(path) }
+    override fun remove(path: String) = guard { doRemove(path) }
+    override fun removeAll(path: String) = guard { doRemoveAll(path) }
+    override fun rename(from: String, to: String) = guard { doRename(from, to) }
+
     private fun docUri(docId: String) = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
 
     private fun notFound(path: String) = FileNotFoundException("not_found: $path")
@@ -35,9 +70,7 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
     private fun split(path: String) = path.trim('/').split('/').filter { it.isNotEmpty() }
 
     /** Throws if the tree is unreachable (permission revoked, provider gone). */
-    fun probe() {
-        children(rootId, fresh = true)
-    }
+    fun probe() = guard { children(rootId, fresh = true); Unit }
 
     private fun children(dirId: String, fresh: Boolean = false): Map<String, Child> {
         if (!fresh) synchronized(cache) { cache[dirId]?.let { return it } }
@@ -81,7 +114,7 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
         return parent to parts.last()
     }
 
-    override fun readAt(path: String, offset: Long, n: Long): ByteArray {
+    private fun doReadAt(path: String, offset: Long, n: Long): ByteArray {
         val child = require(path)
         if (child.isDir) throw IOException("is a directory: $path")
         val pfd = try {
@@ -102,14 +135,14 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
         }
     }
 
-    override fun fileSize(path: String): Long {
+    private fun doFileSize(path: String): Long {
         val child = require(path)
         child.size?.let { return it }
         val pfd = resolver.openFileDescriptor(docUri(child.docId), "r") ?: throw notFound(path)
         return pfd.use { it.statSize }
     }
 
-    override fun listDir(path: String): String {
+    private fun doListDir(path: String): String {
         val dir = require(path)
         if (!dir.isDir) throw IOException("not a directory: $path")
         val arr = JSONArray()
@@ -119,14 +152,21 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
         return arr.toString()
     }
 
+    /**
+     * Boolean across gomobile cannot carry an exception, so a revoked tree is
+     * recorded in [revoked] and reported by the next call that can throw.
+     */
     override fun exists(path: String): Boolean = try {
-        lookup(path) != null
+        !revoked && lookup(path) != null
+    } catch (e: SecurityException) {
+        revoked = true
+        false
     } catch (e: Exception) {
         false
     }
 
     @Synchronized
-    override fun mkdir(path: String) {
+    private fun doMkdir(path: String) {
         val (parent, name) = parentOf(path)
         if (children(parent.docId, fresh = true).containsKey(name)) throw IOException("exists: $path")
         try {
@@ -138,7 +178,7 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
     }
 
     @Synchronized
-    override fun writeFile(path: String, data: ByteArray) {
+    private fun doWriteFile(path: String, data: ByteArray) {
         val (parent, name) = parentOf(path)
         val existing = children(parent.docId, fresh = true)[name]
         if (existing != null) {
@@ -161,7 +201,7 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
     }
 
     @Synchronized
-    override fun openWriter(path: String): StorageWriter {
+    private fun doOpenWriter(path: String): StorageWriter {
         val (parent, name) = parentOf(path)
         return newWriter(parent, name)
     }
@@ -201,7 +241,7 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
                 out.write(p)
             } catch (e: Exception) {
                 failed = true
-                throw e
+                throw if (e is SecurityException) unavailable(e) else e
             }
         }
 
@@ -217,7 +257,7 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
             invalidate(parentId)
             if (err != null || failed) {
                 deleteQuietly(uri)
-                throw err ?: IOException("write failed; partial file removed")
+                throw (if (err is SecurityException) unavailable(err) else err) ?: IOException("write failed; partial file removed")
             }
         }
 
@@ -234,7 +274,7 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
     }
 
     @Synchronized
-    override fun remove(path: String) {
+    private fun doRemove(path: String) {
         val c = require(path)
         if (c.docId == rootId) throw IOException("invalid_path: $path")
         if (c.isDir && children(c.docId, fresh = true).isNotEmpty()) throw IOException("directory not empty: $path")
@@ -242,7 +282,7 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
     }
 
     @Synchronized
-    override fun removeAll(path: String) {
+    private fun doRemoveAll(path: String) {
         val c = lookup(path) ?: return
         if (c.docId == rootId) throw IOException("invalid_path: $path")
         delete(path, c)
@@ -259,7 +299,7 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
     }
 
     @Synchronized
-    override fun rename(from: String, to: String) {
+    private fun doRename(from: String, to: String) {
         val src = require(from)
         val (srcParent, srcName) = parentOf(from)
         val (dstParent, dstName) = parentOf(to)

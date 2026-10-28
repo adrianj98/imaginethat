@@ -29,7 +29,8 @@ sealed class LocalError(message: String, cause: Throwable? = null) : Exception(m
                 m.startsWith("not_found") -> NotFound(m, e)
                 m.startsWith("exists") -> Exists(m, e)
                 m.startsWith("invalid_path") -> InvalidPath(m, e)
-                e is SecurityException -> Unavailable(m, e)
+                // Go wraps passed-through errors, so the prefix may not be at position 0.
+                e is SecurityException || m.contains("${SafStorage.UNAVAILABLE}:") -> Unavailable(m, e)
                 else -> Other(m, e)
             }
         }

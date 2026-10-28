@@ -146,4 +146,36 @@ class LocalVaultsTest {
             releaseTree(tree)
         }
     }
+
+    @Test
+    fun revocationAfterUnlockSurfacesAsUnavailable() {
+        val tree = testTree()
+        val ctx = inst.targetContext
+        grantAndResetTree(tree)
+        val saf = LocalVaults(ctx, state, offlineDir = File(dir, "o3"))
+        val folder = SavedFolder("f2", "Test folder", tree.toString())
+        try {
+            saf.createInFolder(tree, "folder password".toCharArray())
+            val v = saf.openFolder(folder, "folder password".toCharArray())
+            v.create("/a.bin").apply { write(byteArrayOf(1, 2, 3)); close() }
+            assertEquals(3L, v.size("/a.bin"))
+
+            // Revoke everything the app holds on the tree while the vault is open.
+            ctx.contentResolver.releasePersistableUriPermission(tree, RW)
+            ctx.revokeUriPermission(ctx.packageName, tree, RW)
+
+            for (op in listOf<() -> Unit>({ v.list("/") }, { v.readRange("/a.bin", 0, 3) }, { v.size("/a.bin") })) {
+                try {
+                    op()
+                    fail("expected failure after revocation")
+                } catch (e: Exception) {
+                    assertTrue("got ${LocalError.from(e)}: ${e.message}", LocalError.from(e) is LocalError.Unavailable)
+                }
+            }
+        } finally {
+            saf.closeAll()
+            grantAndResetTree(tree)
+            releaseTree(tree)
+        }
+    }
 }
