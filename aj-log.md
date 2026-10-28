@@ -61,3 +61,9 @@
 ## 2026-10-28 — Wipe password bytes in Init and newSession
 - `webserver/vault/init.go`, `session.go`: the password is copied into a `[]byte` that is wiped after use (`Create` in Init, `DecryptMasterKey` in newSession, so Open and OpenLocal too).
   - Why: review finding; the constraint is that password bytes are wiped after key derivation.
+
+## 2026-10-28 — mobile package for local vaults (Android task 2)
+- `webserver/mobile/mobile.go`: gomobile-bindable `InitLocal`, `OpenLocal`, `Vault` (List as JSON, Size, ReadRange, Create, Mkdir, Move, Remove, Close); one `wrapErr` helper prefixes errors with `wrong_password:`, `no_config:`, `not_found:`, `exists:`, `invalid_path:`.
+- `webserver/mobile/writer.go`: `FileWriter` runs `Session.Create` in a goroutine over an `io.Pipe` (bounded memory); `Abort` closes the pipe with an error so Create never commits and cleans its temp file (it does not call `Remove`, which could delete a pre-existing file at that path).
+- `webserver/mobile/mobile_test.go`: round-trip, ReadRange block boundaries/EOF, error codes, 64 MiB bounded-heap, abort, and fixture reads compared against `vault.OpenLocal`.
+  - Why: Kotlin needs a bindable API over the Go vault package, with streaming writes that don't buffer large files.
