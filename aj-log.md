@@ -124,3 +124,4 @@
 - Added .github/workflows/android-ci.yml: Go engine tests, unit tests + assembleDebug, instrumented tests on API 34 emulator with KVM enabled.
 - release.yml: new `android` job (fails fast on empty secrets, decodes keystore to RUNNER_TEMP, assembleRelease, apksigner verify with cert SHA-256 pinned to 71:E3:...:6B, renames to imagethat-android_vX.Y.Z.apk, uploads artifact `android`); publish needs it; release notes gain an Android section.
 - README: Android section (build, release flow, key location and backup warning).
+- Task 12 fix 1: release.yml APK rename now uses ${VERSION} (a sed -i slip had turned it into a literal vX.Y.Z); release notes substitute the real APK name after the quoted heredoc. Why: second release would have collided with the first.

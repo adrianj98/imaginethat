@@ -164,7 +164,7 @@ jobs:
           fi
 
           mkdir -p dist
-          cp "$apk" "dist/imagethat-android_vX.Y.Z.apk"
+          cp "$apk" "dist/imagethat-android_v${VERSION}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -244,6 +244,10 @@ jobs:
           ```
           EOF
           )
+
+          # The heredoc is quoted so its backticks stay literal; fill in the
+          # APK's real file name afterwards.
+          notes="${notes//imagethat-android_vX.Y.Z.apk/imagethat-android_v${VERSION}.apk}"
 
           # --verify-tag attaches the release to the pushed tag and fails
           # rather than inventing a new one if it is somehow missing.
