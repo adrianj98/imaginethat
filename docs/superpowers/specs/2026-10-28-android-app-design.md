@@ -1,7 +1,7 @@
 # ImageThat for Android — design
 
 Date: 2026-10-28
-Status: draft, awaiting review
+Status: approved 2026-10-28
 
 ## Intent
 
@@ -83,7 +83,7 @@ webserver/mobile/                new: gomobile-friendly wrapper over vault/
 
 ### Go side
 
-**`vault.Init(fs WriteVFS, password string) error`** — the only addition to
+**`vault.Init(fs WriteVFS, password string) error`** and **`vault.Open(fs VFS, password string)`** — the only additions to
 `vault/`. Writes `gocryptfs.conf` and the root `gocryptfs.diriv` using
 gocryptfs' own `configfile.Create` with gocryptfs defaults (AES-256-GCM,
 encrypted names, long names, DirIV, HKDF, raw64). A test creates a vault with

@@ -48,3 +48,6 @@
 ## 2026-10-28 — Android app design spec
 - Added `docs/superpowers/specs/2026-10-28-android-app-design.md`: Kotlin/Compose app using the webserver's Go `vault/` package via gomobile for on-device gocryptfs (built-in offline vault + SAF-picked vaults), remote browsing via the webserver API, biometric Keystore keys, nothing decrypted on disk, APK built by the tag-triggered release.
   - Why: user asked for an Android client that saves nothing locally unless selected, and saves encrypted via gocryptfs.
+
+## 2026-10-28 — Android implementation plan
+- Added `docs/superpowers/plans/2026-10-28-android-app.md` (12 tasks: vault Init/Open, gomobile wrapper, Storage backend, Android skeleton, keys/state, API client, local vaults, repository, screens, no-plaintext test, CI/release/signing). Spec marked approved; spec now also lists `vault.Open` (needed to open SAF-backed vaults, since `newSession` is unexported).
