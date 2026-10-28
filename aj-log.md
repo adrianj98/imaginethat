@@ -44,3 +44,7 @@
 - Release is now `vX.Y.Z` (one tag for all components) instead of `webserver-vX.Y.Z`; `gh release create --verify-tag` attaches to the pushed tag.
 - `webserver/README.md` "Releasing" section updated.
   - Why: user wants releases only when a tag is created, and one tag to ship both webserver and Android app.
+
+## 2026-10-28 — Android app design spec
+- Added `docs/superpowers/specs/2026-10-28-android-app-design.md`: Kotlin/Compose app using the webserver's Go `vault/` package via gomobile for on-device gocryptfs (built-in offline vault + SAF-picked vaults), remote browsing via the webserver API, biometric Keystore keys, nothing decrypted on disk, APK built by the tag-triggered release.
+  - Why: user asked for an Android client that saves nothing locally unless selected, and saves encrypted via gocryptfs.
