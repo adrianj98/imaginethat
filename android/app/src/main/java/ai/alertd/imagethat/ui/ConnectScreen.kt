@@ -48,6 +48,9 @@ internal fun parseServerUrl(input: String): HttpUrl? {
     return (if ("://" in t) t else "https://$t").toHttpUrlOrNull()
 }
 
+internal const val PLAIN_HTTP_ERROR =
+    "Plain http:// connections are not allowed. Use https:// (the server can use a self-signed certificate)."
+
 internal fun fingerprintDisplay(sha256: String) = sha256.chunked(2).joinToString(":").uppercase()
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -55,12 +58,16 @@ internal fun fingerprintDisplay(sha256: String) = sha256.chunked(2).joinToString
 fun ConnectScreen(session: Session, onBack: () -> Unit, onConnected: (serverKey: String) -> Unit) {
     val scope = rememberCoroutineScope()
     var url by remember { mutableStateOf("") }
-    var remember by remember { mutableStateOf(true) }
+    var remember by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var untrusted by remember { mutableStateOf<Pair<HttpUrl, String>?>(null) }
 
     fun connect(target: HttpUrl, pin: String?) {
+        if (!target.isHttps) {
+            error = PLAIN_HTTP_ERROR
+            return
+        }
         busy = true
         error = null
         scope.launch(Dispatchers.Main) {

@@ -20,7 +20,9 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.tls.HandshakeCertificates
 import okhttp3.tls.HeldCertificate
 import org.junit.After
+import androidx.compose.ui.test.assertIsOff
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -112,6 +114,8 @@ class UnlockFlowTest {
         assertTrue(fx.keys.state().wrapped.isEmpty())
 
         rule.onNodeWithTag("unlock-password").performTextInput(TestFixture.PASSWORD)
+        // Opt-in: the offer is not pre-ticked.
+        rule.onNodeWithText("Unlock with biometrics next time").performClick()
         rule.onNodeWithTag("unlock-submit").performClick()
         waitForTag("browser-stub")
         assertTrue(fx.keys.state().wrapped.containsKey("offline"))
@@ -124,6 +128,57 @@ class UnlockFlowTest {
         rule.onNodeWithText("Offline vault").performClick()
         waitForTag("browser-stub")
         assertEquals(setOf("offline"), fx.session.openSourceIds.value)
+    }
+
+    @Test fun invalidatedOfferIsNotPreTicked() {
+        createOffline()
+        fx.keys.store().update { it.copy(wrapped = mapOf("offline" to "imagethat.bio.offline:AAAAAAAAAAAAAAAAAAAAAAAA")) }
+        launch()
+        rule.onNodeWithText("Offline vault").performClick()
+        waitForText("fingerprints changed", substring = true)
+        rule.onNodeWithTag("unlock-password").performTextInput(TestFixture.PASSWORD)
+        rule.onNodeWithTag("unlock-submit").performClick()
+        waitForTag("browser-stub")
+        assertTrue(fx.keys.state().wrapped.isEmpty())
+    }
+
+    @Test fun plainHttpIsRejectedWithASpecificMessage() {
+        createOffline()
+        launch()
+        rule.onNodeWithText("Connect…").performClick()
+        rule.onNodeWithTag("connect-url").performTextInput("http://192.168.1.5:8080")
+        rule.onNodeWithTag("connect-submit").performClick()
+        rule.onNodeWithText("Plain http:// connections are not allowed", substring = true).assertIsDisplayed()
+    }
+
+    @Test fun rememberIsUntickedByDefault() {
+        createOffline()
+        launch()
+        rule.onNodeWithText("Connect…").performClick()
+        rule.onNode(androidx.compose.ui.test.isToggleable()).assertIsOff()
+    }
+
+    @Test fun cancelledOpenNeverLeavesAnUntrackedVault() {
+        createOffline()
+        val show = androidx.compose.runtime.mutableStateOf(true)
+        rule.setContent {
+            MaterialTheme {
+                if (show.value) {
+                    LocalUnlock(
+                        fx.session,
+                        LocalTarget("offline", "Offline vault") { pw -> Thread.sleep(1500); fx.local.openOffline(pw) },
+                        null, onUnlocked = {}, onDismiss = {},
+                    )
+                }
+            }
+        }
+        rule.onNodeWithTag("unlock-password").performTextInput(TestFixture.PASSWORD)
+        rule.onNodeWithTag("unlock-submit").performClick()
+        rule.runOnUiThread { show.value = false } // the screen goes away while the vault is opening
+        rule.waitUntil(15_000) { fx.local.hasOpen() }
+        rule.waitUntil(15_000) { fx.session.openSourceIds.value.isNotEmpty() }
+        rule.runOnUiThread { fx.session.lockAll() }
+        assertFalse(fx.local.hasOpen())
     }
 
     // ---- remote --------------------------------------------------------------
@@ -156,7 +211,7 @@ class UnlockFlowTest {
         rule.onNodeWithTag("connect-submit").performClick()
         waitForText("Trust this certificate")
         rule.onNodeWithText(fingerprintDisplay(sha256Hex(cert.certificate)), substring = true).assertIsDisplayed()
-        if (!remember) rule.onNodeWithText("Remember this server").performClick()
+        if (remember) rule.onNodeWithText("Remember this server").performClick()
         rule.onNodeWithText("Trust this certificate").performClick()
         waitForText("Holiday")
     }

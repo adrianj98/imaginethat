@@ -44,6 +44,14 @@ class AutoLockTest {
         assertEquals(1, fx.imageCacheClears)
     }
 
+    @Test fun aVaultTrackedByLocalVaultsButNotRegisteredStillLocksOnIdle() {
+        fx.local.openOffline(TestFixture.PASSWORD.toCharArray())
+        assertTrue(fx.local.hasOpen())
+        fx.now += 5 * 60_000
+        session.tick()
+        assertTrue(!fx.local.hasOpen())
+    }
+
     @Test fun touchResetsTheIdleTimer() {
         openOffline()
         fx.now += 4 * 60_000

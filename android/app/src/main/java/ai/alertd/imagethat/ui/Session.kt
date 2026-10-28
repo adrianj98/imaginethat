@@ -101,7 +101,7 @@ class Session(
         val due = synchronized(this) {
             val bg = backgroundSince
             val expired = if (bg != null) now - bg >= backgroundTimeoutMs else now - lastTouch >= idleTimeoutMs
-            expired && (sources.isNotEmpty() || servers.isNotEmpty())
+            expired && (sources.isNotEmpty() || servers.isNotEmpty() || local.hasOpen())
         }
         if (due) lockAll()
     }

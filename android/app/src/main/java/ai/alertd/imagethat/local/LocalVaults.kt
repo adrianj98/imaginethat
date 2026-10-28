@@ -89,6 +89,9 @@ class LocalVaults(
     }
 
     @Synchronized
+    fun hasOpen(): Boolean = open.isNotEmpty()
+
+    @Synchronized
     fun closeAll() {
         open.forEach { runCatching { it.close() } }
         open.clear()

@@ -38,6 +38,8 @@ import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.fragment.app.FragmentActivity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import mobile.Vault
@@ -101,13 +103,12 @@ fun UnlockDialog(
     error: String? = null,
     busy: Boolean = false,
     offerBiometrics: Boolean = false,
-    biometricsDefault: Boolean = false,
     onSubmit: (password: CharArray, enableBiometrics: Boolean) -> Unit,
     onDismiss: () -> Unit,
     extraButton: @Composable (() -> Unit)? = null,
 ) {
     var password by remember { mutableStateOf("") }
-    var enable by remember { mutableStateOf(biometricsDefault) }
+    var enable by remember { mutableStateOf(false) }
     // A rejected password is cleared so the next attempt starts empty.
     LaunchedEffect(busy) { if (!busy && error != null) password = "" }
     SecureAlertDialog(
@@ -167,7 +168,6 @@ fun LocalUnlock(
     var error by remember { mutableStateOf<String?>(null) }
     var unavailable by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
-    var offerAgain by remember { mutableStateOf(false) }
 
     /** [fromShortcut]: the password came from the biometric-wrapped secret, so a failure means it is stale. */
     fun attempt(password: CharArray, enableBiometrics: Boolean, fromShortcut: Boolean) {
@@ -176,10 +176,14 @@ fun LocalUnlock(
         error = null
         scope.launch(Dispatchers.Main) {
             try {
-                val vault = withContext(Dispatchers.Default) { target.open(password) }
+                // Open and register together: a cancel in between would leave a decrypted vault the Session
+                // does not know about.
+                withContext(NonCancellable) {
+                    val vault = withContext(Dispatchers.Default) { target.open(password) }
+                    session.registerSource(target.sourceId, target.label, LocalSource(MobileVaultApi(vault)))
+                }
                 if (secret != null) runCatching { session.keys.wrap(activity, target.sourceId, secret) }
-                session.registerSource(target.sourceId, target.label, LocalSource(MobileVaultApi(vault)))
-                onUnlocked(target.sourceId)
+                if (isActive) onUnlocked(target.sourceId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -187,7 +191,6 @@ fun LocalUnlock(
                     is LocalError.WrongPassword -> if (fromShortcut) {
                         session.keys.forget(target.sourceId)
                         notice = "The saved password no longer opens this vault. Enter the password again."
-                        offerAgain = true
                     } else {
                         error = "Wrong password"
                     }
@@ -226,18 +229,17 @@ fun LocalUnlock(
                 }
                 Unwrap.Invalidated -> {
                     notice = "Your fingerprints changed, so the biometric shortcut was turned off. " +
-                        "Enter the vault password; you can turn the shortcut back on."
-                    offerAgain = true
+                        "Enter the vault password; you can tick the box below to turn the shortcut back on."
                     stage = Stage.Password
                 }
                 Unwrap.Cancelled, Unwrap.None -> stage = Stage.Password
             }
         }
         SecureAlertDialog(
-            onDismissRequest = onDismiss,
+            onDismissRequest = { if (!busy) onDismiss() },
             title = "Unlock ${target.label}",
-            confirmButton = { TextButton(onClick = { stage = Stage.Password }) { Text("Use password") } },
-            dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+            confirmButton = { TextButton(onClick = { stage = Stage.Password }, enabled = !busy) { Text("Use password") } },
+            dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
         ) {
             Text("Use your biometrics to unlock.")
             if (busy) CircularProgressIndicator(Modifier.size(24.dp))
@@ -251,7 +253,6 @@ fun LocalUnlock(
         error = error,
         busy = busy,
         offerBiometrics = session.biometricsAvailable(),
-        biometricsDefault = offerAgain,
         onSubmit = { pw, enable -> attempt(pw, enable, fromShortcut = false) },
         onDismiss = onDismiss,
         extraButton = if (unavailable && onPickAgain != null) {
