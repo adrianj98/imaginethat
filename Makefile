@@ -1,7 +1,8 @@
 .PHONY: build run golib clean app test test-logic test-e2e \
         web-build web-all web-run web-test
 
-BIN_DIR = .build/arm64-apple-macosx/debug
+# Ask SwiftPM: the output dir moved between toolchains (.build/out/Products/Debug).
+BIN_DIR = $(shell swift build --show-bin-path)
 APP_BUNDLE = build/ImageThat.app
 
 # Build everything

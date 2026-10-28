@@ -142,6 +142,9 @@ struct IntegrationTest {
             check("VaultSource operations", false, error.localizedDescription)
         }
 
+        // === Test 4: Large video over a slow drive ===
+        await SlowVideoTest.run { check($0, $1, $2) }
+
         // === Summary ===
         print("\n=== Results: \(passed) passed, \(failed) failed ===")
         if failed > 0 {
