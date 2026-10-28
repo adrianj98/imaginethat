@@ -7,6 +7,20 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// Release version comes from the tag via VERSION_NAME (x.y.z); local and CI
+// debug builds fall back to a dev version. versionCode = major*10000 +
+// minor*100 + patch, so 1.2.3 -> 10203 and it only ever grows with the tag.
+val releaseVersionName = System.getenv("VERSION_NAME")?.takeIf { it.isNotBlank() } ?: "0.0.0-dev"
+val releaseVersionCode = Regex("""^(\d+)\.(\d+)\.(\d+)""").find(releaseVersionName)
+    ?.destructured
+    ?.let { (major, minor, patch) -> major.toInt() * 10000 + minor.toInt() * 100 + patch.toInt() }
+    ?: 1
+
+// Release signing material comes only from the environment (CI secrets or a
+// local export); nothing about the key lives in the repo.
+val signingEnv = listOf("ANDROID_KEYSTORE_FILE", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_ALIAS", "ANDROID_KEY_PASSWORD")
+    .associateWith { System.getenv(it).orEmpty() }
+
 android {
     namespace = "ai.alertd.imagethat"
     compileSdk = 35
@@ -15,10 +29,25 @@ android {
         applicationId = "ai.alertd.imagethat"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = maxOf(releaseVersionCode, 1)
+        versionName = releaseVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+    }
+
+    signingConfigs {
+        create("release") {
+            if (signingEnv.values.none { it.isEmpty() }) {
+                storeFile = file(signingEnv.getValue("ANDROID_KEYSTORE_FILE"))
+                storePassword = signingEnv.getValue("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = signingEnv.getValue("ANDROID_KEY_ALIAS")
+                keyPassword = signingEnv.getValue("ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release { signingConfig = signingConfigs.getByName("release") }
     }
 
     buildFeatures { compose = true }
@@ -82,5 +111,15 @@ androidComponents {
                 systemProperty("merged.manifest", mergedManifest.get().asFile.absolutePath)
             }
         }
+    }
+}
+
+// A release build without the signing env must fail rather than ship an
+// unsigned or debug-signed APK. Debug builds and unit tests never need it.
+gradle.taskGraph.whenReady {
+    val releaseBuild = allTasks.any { it.project == project && it.name.endsWith("Release") && it.name.let { n -> n.startsWith("assemble") || n.startsWith("bundle") || n.startsWith("package") } }
+    val missing = signingEnv.filterValues { it.isEmpty() }.keys
+    if (releaseBuild && missing.isNotEmpty()) {
+        throw GradleException("Release signing is not configured; set ${missing.joinToString(", ")}")
     }
 }

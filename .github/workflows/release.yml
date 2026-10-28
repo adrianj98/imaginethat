@@ -104,9 +104,77 @@ jobs:
           path: webserver/dist/*.tar.gz
           if-no-files-found: error
 
+  android:
+    name: Build signed Android APK
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      # SHA-256 of the release signing certificate. The APK must be signed by
+      # exactly this key or users could not upgrade it in place.
+      EXPECTED_CERT_SHA256: 71:E3:53:3E:20:10:39:81:E6:1F:42:2C:3B:19:D2:DF:79:28:3B:1F:B5:AC:87:5D:E0:A8:46:14:9D:B2:19:6B
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/android-setup
+
+      # No test step: android-ci.yml has already run on the tagged commit's
+      # branch push.
+      - name: Check signing secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::secret $name is empty; the release APK cannot be signed"
+              exit 1
+            fi
+          done
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/imagethat-release.jks"
+
+      - name: Build release APK
+        working-directory: android
+        env:
+          VERSION_NAME: ${{ needs.version.outputs.version }}
+          ANDROID_KEYSTORE_FILE: ${{ runner.temp }}/imagethat-release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease
+
+      - name: Verify signature and rename
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          rm -f "$RUNNER_TEMP/imagethat-release.jks"
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          apksigner="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+
+          certs="$("$apksigner" verify --print-certs "$apk")"
+          echo "$certs"
+          got="$(echo "$certs" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | tr 'a-f' 'A-F')"
+          want="$(echo "$EXPECTED_CERT_SHA256" | tr -d ':')"
+          if [ "$got" != "$want" ]; then
+            echo "::error::APK is signed with an unexpected certificate"
+            exit 1
+          fi
+
+          mkdir -p dist
+          cp "$apk" "dist/imagethat-android_vX.Y.Z.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: dist/*.apk
+          if-no-files-found: error
+
   publish:
     name: Publish release
-    needs: [version, webserver]
+    needs: [version, webserver, android]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -150,6 +218,30 @@ jobs:
           Vault keys are held in memory only, decrypted content is never
           written to disk, and cached thumbnails are encrypted under a key that
           is destroyed when the vault locks.
+
+          ## imagethat-android
+
+          An Android app (Android 10+) that opens gocryptfs vaults from a
+          device folder and browses vaults served by `imagethat-web`.
+
+          ### Install
+
+          Download `imagethat-android_vX.Y.Z.apk` and verify it against
+          `SHA256SUMS`, then sideload it (allow installs from your browser or
+          file manager when Android asks).
+
+          Every release is signed with the same key, so updates install over
+          the previous version. Check the signature with `apksigner`:
+
+          ```
+          apksigner verify --print-certs imagethat-android_vX.Y.Z.apk
+          ```
+
+          The signer's certificate SHA-256 digest must be:
+
+          ```
+          71:E3:53:3E:20:10:39:81:E6:1F:42:2C:3B:19:D2:DF:79:28:3B:1F:B5:AC:87:5D:E0:A8:46:14:9D:B2:19:6B
+          ```
           EOF
           )
 
