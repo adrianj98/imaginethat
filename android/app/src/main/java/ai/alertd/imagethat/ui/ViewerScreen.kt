@@ -57,6 +57,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -221,6 +224,18 @@ private fun ZoomableImage(bitmap: Bitmap, description: String) {
     )
 }
 
+/** Smallest power-of-two inSampleSize that brings the long edge to at most [MAX_DECODE_EDGE]. */
+internal fun decodeSampleSize(width: Int, height: Int): Int {
+    var sample = 1
+    while (maxOf(width, height) / sample > MAX_DECODE_EDGE) sample *= 2
+    return sample
+}
+
+/** Private audio must not play on after the app leaves the foreground; playback is not resumed automatically. */
+internal fun pauseOnStop(player: Player, event: Lifecycle.Event) {
+    if (event == Lifecycle.Event.ON_STOP) player.pause()
+}
+
 /** Reads the whole (bounded) file into memory and decodes a downsampled, upright bitmap. */
 private suspend fun loadBitmap(source: VaultSource, item: Item): Bitmap = withContext(Dispatchers.IO) {
     val total = if (item.size > 0) item.size else source.size(item.path)
@@ -238,8 +253,7 @@ private suspend fun loadBitmap(source: VaultSource, item: Item): Bitmap = withCo
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
     if (bounds.outWidth <= 0) throw IOException("Not an image this device can display")
-    var sample = 1
-    while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= MAX_DECODE_EDGE) sample *= 2
+    val sample = decodeSampleSize(bounds.outWidth, bounds.outHeight)
     val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
         ?: throw IOException("Not an image this device can display")
     val degrees = runCatching {
@@ -298,6 +312,12 @@ private fun VideoPage(session: Session, sourceId: String, source: VaultSource, i
             player.removeListener(l)
             player.release()
         }
+    }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(player, lifecycleOwner) {
+        val obs = LifecycleEventObserver { _, event -> pauseOnStop(player, event) }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
     // Watching a long video is activity: keep the idle auto-lock from firing mid-playback.
     LaunchedEffect(playing) {

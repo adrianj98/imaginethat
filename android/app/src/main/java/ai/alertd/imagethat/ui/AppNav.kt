@@ -55,8 +55,11 @@ fun AppNav(session: Session, activity: FragmentActivity? = null, nav: NavHostCon
     CompositionLocalProvider(LocalTouch provides { session.touch() }) {
     NavHost(nav, startDestination = start) {
         composable(Routes.SET_OFFLINE) {
+            // First run: SET_OFFLINE is the start, replace it with Home. Reached from a browser (Save offline):
+            // go back to that browser so its state and source stay current.
             val toHome: () -> Unit = {
-                nav.navigate(Routes.HOME) { popUpTo(Routes.SET_OFFLINE) { inclusive = true } }
+                if (start == Routes.SET_OFFLINE) nav.navigate(Routes.HOME) { popUpTo(Routes.SET_OFFLINE) { inclusive = true } }
+                else nav.popBackStack()
             }
             SetOfflinePasswordScreen(session.local, onDone = toHome, onSkip = toHome)
         }

@@ -65,6 +65,8 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.PopupProperties
+import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -181,7 +183,11 @@ private fun BrowserContent(
             if (state.selection.isEmpty()) {
                 Box {
                     FloatingActionButton(onClick = { menuOpen = true }, modifier = Modifier.testTag("fab")) { Text("+") }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenu(
+                        expanded = menuOpen,
+                        onDismissRequest = { menuOpen = false },
+                        properties = PopupProperties(focusable = true, securePolicy = SecureFlagPolicy.SecureOn),
+                    ) {
                         DropdownMenuItem(text = { Text("Upload photos or videos") }, onClick = {
                             menuOpen = false
                             picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))

@@ -159,4 +159,25 @@ class BrowserFlowTest {
             collector.cancel()
         }
     }
+
+    @Test fun offlineSetupDetourReturnsToTheSameBrowser() {
+        lateinit var nav: androidx.navigation.NavHostController
+        rule.setContent {
+            nav = androidx.navigation.compose.rememberNavController()
+            MaterialTheme { AppNav(fx.session, null, nav) }
+        }
+        rule.waitUntil(20_000) { nav.currentDestination?.route == Routes.HOME }
+        rule.runOnUiThread { nav.navigate(Routes.browser("srv:v1")) }
+        waitForTag("item-pic.png")
+        rule.onNodeWithTag("item-pic.png").performTouchInput { longClick() }
+        rule.runOnUiThread { nav.navigate(Routes.SET_OFFLINE) }
+        rule.waitUntil(20_000) { nav.currentDestination?.route == Routes.SET_OFFLINE }
+        rule.onNode(hasText("Not now")).performClick()
+        rule.waitUntil(20_000) { nav.currentDestination?.route == Routes.BROWSER }
+        // Same browser with its selection; Back leads to Home, not to a second browser.
+        waitForTag("action-save-offline")
+        rule.runOnUiThread { nav.popBackStack() }
+        rule.waitUntil(20_000) { nav.currentDestination?.route == Routes.HOME }
+        rule.runOnUiThread { assertTrue(!nav.popBackStack()) }
+    }
 }
