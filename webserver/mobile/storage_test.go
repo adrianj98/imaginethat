@@ -3,6 +3,7 @@ package mobile
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -308,5 +309,74 @@ func TestStorageFixtures(t *testing.T) {
 				t.Fatal("fixture has no files")
 			}
 		})
+	}
+}
+
+// msgStorage wraps dirStorage but, like a Kotlin Storage across gomobile,
+// reports failures as plain message errors following the documented contract.
+type msgStorage struct{ dirStorage }
+
+func msgErr(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case os.IsNotExist(err):
+		return errors.New("not_found: " + err.Error())
+	case os.IsExist(err):
+		return errors.New("exists: " + err.Error())
+	}
+	return errors.New(err.Error())
+}
+
+func (m msgStorage) ReadAt(p string, o int64, n int) ([]byte, error) {
+	b, err := m.dirStorage.ReadAt(p, o, n)
+	return b, msgErr(err)
+}
+func (m msgStorage) FileSize(p string) (int64, error) {
+	n, err := m.dirStorage.FileSize(p)
+	return n, msgErr(err)
+}
+func (m msgStorage) ListDir(p string) (string, error) {
+	s, err := m.dirStorage.ListDir(p)
+	return s, msgErr(err)
+}
+func (m msgStorage) Mkdir(p string) error { return msgErr(m.dirStorage.Mkdir(p)) }
+func (m msgStorage) OpenWriter(p string) (StorageWriter, error) {
+	w, err := m.dirStorage.OpenWriter(p)
+	return w, msgErr(err)
+}
+
+func TestStorageMessageErrors(t *testing.T) {
+	dir := t.TempDir()
+	s := msgStorage{dirStorage{dir}}
+	if _, err := OpenStorage(s, "x"); err == nil || !strings.HasPrefix(err.Error(), "no_config:") {
+		t.Fatalf("no_config: %v", err)
+	}
+	if err := InitStorage(s, "pw"); err != nil {
+		t.Fatal(err)
+	}
+	v, err := OpenStorage(s, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	if _, err := v.List("nope"); err == nil || !strings.HasPrefix(err.Error(), "not_found:") {
+		t.Fatalf("List: %v", err)
+	}
+	if _, err := v.Size("nope"); err == nil || !strings.HasPrefix(err.Error(), "not_found:") {
+		t.Fatalf("Size: %v", err)
+	}
+	if _, err := v.ReadRange("nope", 0, 10); err == nil || !strings.HasPrefix(err.Error(), "not_found:") {
+		t.Fatalf("ReadRange: %v", err)
+	}
+	if err := v.Mkdir("d"); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Mkdir("d"); err == nil || !strings.HasPrefix(err.Error(), "exists:") {
+		t.Fatalf("Mkdir exists: %v", err)
+	}
+	put(t, v, "f", []byte("hi"))
+	if got, err := v.ReadRange("f", 0, 10); err != nil || string(got) != "hi" {
+		t.Fatalf("read: %q %v", got, err)
 	}
 }

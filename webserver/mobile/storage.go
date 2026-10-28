@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"io/fs"
 	"path"
 	"strings"
 
@@ -15,6 +16,16 @@ import (
 // Storage is implemented by the host (Kotlin, over Android SAF) to give the
 // vault access to ciphertext files that have no filesystem path. All paths
 // are relative to the vault root, slash separated; "" is the root.
+//
+// Error contract: errors cross gomobile as plain messages, so a missing
+// file or directory must produce an error whose message starts with
+// "not_found" (ReadAt, FileSize, ListDir and the others), and an
+// already-existing target of Mkdir/Rename/OpenWriter one starting with
+// "exists". The Go side maps these to fs.ErrNotExist / fs.ErrExist. Other
+// errors are passed through unchanged.
+//
+// OpenWriter must fail (with "exists") if the file already exists, and must
+// leave nothing behind when it fails.
 type Storage interface {
 	// ReadAt returns up to n bytes at offset; a short or empty result at
 	// end of file is not an error.
@@ -55,12 +66,27 @@ func OpenStorage(s Storage, password string) (*Vault, error) {
 // vault.FileOpener: SAF handles are reopened per read.
 type storageVFS struct{ s Storage }
 
+// conv translates the Storage error contract (message prefixes) into the
+// sentinel errors the vault checks with os.IsNotExist / errors.Is. A
+// *fs.PathError is used because os.IsNotExist does not unwrap %w chains.
+func conv(op, p string, err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case strings.HasPrefix(err.Error(), "not_found"):
+		return &fs.PathError{Op: op, Path: p, Err: fs.ErrNotExist}
+	case strings.HasPrefix(err.Error(), "exists"):
+		return &fs.PathError{Op: op, Path: p, Err: fs.ErrExist}
+	}
+	return err
+}
+
 var _ vault.WriteVFS = storageVFS{}
 
 func (v storageVFS) ReadAt(p string, offset int64, buf []byte) (int, error) {
 	b, err := v.s.ReadAt(p, offset, len(buf))
 	if err != nil {
-		return 0, err
+		return 0, conv("read", p, err)
 	}
 	if len(b) > len(buf) {
 		b = b[:len(buf)]
@@ -72,12 +98,15 @@ func (v storageVFS) ReadAt(p string, offset int64, buf []byte) (int, error) {
 	return n, nil
 }
 
-func (v storageVFS) FileSize(p string) (int64, error) { return v.s.FileSize(p) }
+func (v storageVFS) FileSize(p string) (int64, error) {
+	n, err := v.s.FileSize(p)
+	return n, conv("stat", p, err)
+}
 
 func (v storageVFS) ReadDir(p string) ([]vault.DirEntry, error) {
 	js, err := v.s.ListDir(p)
 	if err != nil {
-		return nil, err
+		return nil, conv("readdir", p, err)
 	}
 	var raw []struct {
 		Name  string `json:"name"`
@@ -97,13 +126,13 @@ func (v storageVFS) ReadDir(p string) ([]vault.DirEntry, error) {
 func (v storageVFS) ReadFile(p string) ([]byte, error) {
 	size, err := v.s.FileSize(p)
 	if err != nil {
-		return nil, err
+		return nil, conv("stat", p, err)
 	}
 	out := make([]byte, 0, size)
 	for int64(len(out)) < size {
 		b, err := v.s.ReadAt(p, int64(len(out)), int(min(size-int64(len(out)), 1<<20)))
 		if err != nil {
-			return nil, err
+			return nil, conv("read", p, err)
 		}
 		if len(b) == 0 {
 			break
@@ -156,7 +185,7 @@ func (v storageVFS) CreateTemp(dir, pattern string) (io.WriteCloser, string, err
 		}
 		w, err := v.s.OpenWriter(p)
 		if err != nil {
-			return nil, "", err
+			return nil, "", conv("create", p, err)
 		}
 		return writerAdapter{w}, p, nil
 	}

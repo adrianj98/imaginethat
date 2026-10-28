@@ -72,3 +72,8 @@
 - `webserver/mobile/storage.go`: exported `Storage`/`StorageWriter` interfaces (Kotlin implements over SAF), `InitStorage`, `OpenStorage` (returns the same `*Vault`, errors via `wrapErr`), and internal `storageVFS` implementing `vault.WriteVFS` (no `FileOpener`; `CreateTemp` makes `<dir>/<pattern with * -> random hex>`, default `.tmp-<random>`, via `OpenWriter`; short `ReadAt` returns `io.EOF` per the ReaderAt contract).
 - `webserver/mobile/storage_test.go`: test-only `dirStorage`; round trip, error codes, abort, >175-byte name, and fixtures (vault, aessiv, xchacha) compared against `vault.OpenLocal` reads.
   - Why: SAF document trees have no paths, so vaults in user-picked folders must be reachable through a host-implemented interface.
+
+## 2026-10-28 — Storage error contract (Android task 3 fix round 1)
+- `webserver/mobile/storage.go`: documented that Storage errors must start with `not_found` / `exists` (and OpenWriter must fail if the file exists and leave nothing behind); `storageVFS` converts those via `conv` into `*fs.PathError` wrapping `fs.ErrNotExist`/`fs.ErrExist` in ReadAt, FileSize, ReadDir, ReadFile and the write-side methods.
+- `webserver/mobile/storage_test.go`: `msgStorage` returns plain message errors; test proves List/Size/ReadRange on a missing path give `not_found:` and a repeated Mkdir gives `exists:`.
+  - Why: errors from Kotlin cross gomobile as bare messages and the vault's os.IsNotExist checks do not unwrap `%w`, so not_found never surfaced.
