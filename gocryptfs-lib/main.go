@@ -53,6 +53,7 @@ import "C"
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -261,7 +262,7 @@ func GocryptfsOpenVFS(
 	ctx unsafe.Pointer,
 ) C.int {
 	data := C.GoBytes(unsafe.Pointer(configData), configDataLen)
-	cf, err := configfile.LoadBytes(data)
+	cf, err := parseConfig(data)
 	if err != nil {
 		log.Printf("[GocryptfsOpenVFS] config parse error: %v", err)
 		return -1
@@ -273,6 +274,22 @@ func GocryptfsOpenVFS(
 		ctx:        ctx,
 	}
 	return openSession(cf, C.GoString(password), fs)
+}
+
+// parseConfig is configfile.Load for a gocryptfs.conf already in memory
+// (Drive vaults). Kept here so internal/ stays an unmodified upstream copy.
+func parseConfig(data []byte) (*configfile.ConfFile, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("config file is empty")
+	}
+	var cf configfile.ConfFile
+	if err := json.Unmarshal(data, &cf); err != nil {
+		return nil, err
+	}
+	if err := cf.Validate(); err != nil {
+		return nil, err
+	}
+	return &cf, nil
 }
 
 // openSession is the shared init path for both local and VFS-backed sessions.
