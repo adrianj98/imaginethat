@@ -76,6 +76,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.okhttp)
     implementation(libs.androidx.navigation.compose)
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui)
+    implementation(libs.media3.datasource.okhttp)
 
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
@@ -129,4 +132,11 @@ gradle.taskGraph.whenReady {
     if (releaseBuild && missing.isNotEmpty()) {
         throw GradleException("Release signing is not configured; set ${missing.joinToString(", ")}")
     }
+}
+
+// kotlin-stdlib-jdk7/jdk8 were merged into kotlin-stdlib in 1.8. Some transitive metadata (media3) still
+// constrains them at 1.8.0, which makes Gradle fail with "Corrupt serialized resolution result".
+configurations.configureEach {
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk7")
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib-jdk8")
 }

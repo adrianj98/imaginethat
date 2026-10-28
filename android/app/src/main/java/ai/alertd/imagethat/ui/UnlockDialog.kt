@@ -26,6 +26,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
@@ -44,6 +47,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import mobile.Vault
 
+/** Dialogs are separate windows the activity never sees touches for; they report activity through this. */
+internal val LocalTouch = staticCompositionLocalOf<() -> Unit> { {} }
+
 /** Every dialog is its own window, so FLAG_SECURE has to be set on each one. */
 internal val SecureDialogProperties = DialogProperties(securePolicy = SecureFlagPolicy.SecureOn)
 
@@ -55,6 +61,7 @@ internal fun SecureAlertDialog(
     dismissButton: @Composable (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) = AlertDialog(
+    modifier = Modifier.touchReporting(LocalTouch.current),
     onDismissRequest = onDismissRequest,
     title = { Text(title) },
     text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { content() } },
@@ -62,6 +69,15 @@ internal fun SecureAlertDialog(
     dismissButton = dismissButton,
     properties = SecureDialogProperties,
 )
+
+private fun Modifier.touchReporting(touch: () -> Unit): Modifier = pointerInput(touch) {
+    awaitPointerEventScope {
+        while (true) {
+            awaitPointerEvent(PointerEventPass.Initial)
+            touch()
+        }
+    }
+}
 
 /** Password text lives in plain (non-saveable) state: saved state can be written out in a Bundle. */
 @Composable

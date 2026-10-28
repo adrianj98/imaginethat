@@ -96,6 +96,9 @@ class ApiClient(private val baseUrl: HttpUrl, private val pinnedSha256: String?)
             json.decodeFromString<Listing>(it.body!!.string())
         }
 
+    /** The streaming URL of a file; ExoPlayer requests it through [httpClient] so the session cookie is sent. */
+    internal fun fileUrl(id: String, path: String): HttpUrl = vaultUrl(id, "file", mapOf("path" to path))
+
     /** Caller must close the returned [Response]. Error statuses throw (body already closed). */
     suspend fun openFile(id: String, path: String, range: LongRange?): Response {
         val b = Request.Builder().url(vaultUrl(id, "file", mapOf("path" to path))).get()

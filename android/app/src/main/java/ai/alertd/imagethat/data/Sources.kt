@@ -105,6 +105,10 @@ private suspend fun <T> remote(block: suspend () -> T): T = try {
 }
 
 class RemoteSource(private val api: ApiClient, private val vaultId: String) : VaultSource {
+    /** For Media3: the file's URL and the session's OkHttpClient (cookie jar, pinning, no cache). */
+    internal fun fileUrl(path: String): String = api.fileUrl(vaultId, path).toString()
+    internal val httpClient get() = api.httpClient
+
     override suspend fun list(path: String): List<Item> = remote {
         entryItems(path, api.list(vaultId, path).entries)
     }

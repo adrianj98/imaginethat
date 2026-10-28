@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <!-- Pulled in by androidx.biometric; unused with minSdk 29. -->
     <uses-permission android:name="android.permission.USE_FINGERPRINT" tools:node="remove" />
+    <!-- Pulled in by Media3; it only tunes buffering to the network type and copes without it. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
 
     <application
         android:name=".ImageThatApp"

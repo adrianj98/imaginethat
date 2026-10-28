@@ -2,6 +2,7 @@ package ai.alertd.imagethat
 
 import ai.alertd.imagethat.keys.KeyVault
 import ai.alertd.imagethat.local.LocalVaults
+import ai.alertd.imagethat.media.ThumbnailFetcher
 import ai.alertd.imagethat.ui.Session
 import android.app.Activity
 import android.app.Application
@@ -82,6 +83,7 @@ class ImageThatApp : Application(), SingletonImageLoader.Factory {
             .memoryCache { MemoryCache.Builder().maxSizePercent(context, 0.25).build() }
             .diskCache(null)
             .diskCachePolicy(CachePolicy.DISABLED)
+            .components { add(ThumbnailFetcher.Factory { container.session }) }
             .build()
 
     private companion object {

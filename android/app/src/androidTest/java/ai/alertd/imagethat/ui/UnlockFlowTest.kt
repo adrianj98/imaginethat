@@ -98,7 +98,7 @@ class UnlockFlowTest {
 
         rule.onNodeWithTag("unlock-password").performTextInput(TestFixture.PASSWORD)
         rule.onNodeWithTag("unlock-submit").performClick()
-        waitForTag("browser-stub")
+        waitForTag("browser-screen")
         assertEquals(setOf("offline"), fx.session.openSourceIds.value)
     }
 
@@ -117,7 +117,7 @@ class UnlockFlowTest {
         // Opt-in: the offer is not pre-ticked.
         rule.onNodeWithText("Unlock with biometrics next time").performClick()
         rule.onNodeWithTag("unlock-submit").performClick()
-        waitForTag("browser-stub")
+        waitForTag("browser-screen")
         assertTrue(fx.keys.state().wrapped.containsKey("offline"))
     }
 
@@ -126,7 +126,7 @@ class UnlockFlowTest {
         kotlinx.coroutines.runBlocking { fx.keys.wrap(null, "offline", TestFixture.PASSWORD.toByteArray()) }
         launch()
         rule.onNodeWithText("Offline vault").performClick()
-        waitForTag("browser-stub")
+        waitForTag("browser-screen")
         assertEquals(setOf("offline"), fx.session.openSourceIds.value)
     }
 
@@ -138,7 +138,7 @@ class UnlockFlowTest {
         waitForText("fingerprints changed", substring = true)
         rule.onNodeWithTag("unlock-password").performTextInput(TestFixture.PASSWORD)
         rule.onNodeWithTag("unlock-submit").performClick()
-        waitForTag("browser-stub")
+        waitForTag("browser-screen")
         assertTrue(fx.keys.state().wrapped.isEmpty())
     }
 
@@ -270,7 +270,7 @@ class UnlockFlowTest {
         rule.onNodeWithText("Holiday").performClick()
         rule.onNodeWithTag("unlock-password").performTextInput("right")
         rule.onNodeWithTag("unlock-submit").performClick()
-        waitForTag("browser-stub")
+        waitForTag("browser-screen")
         assertEquals(1, fx.session.openSourceIds.value.size)
     }
 

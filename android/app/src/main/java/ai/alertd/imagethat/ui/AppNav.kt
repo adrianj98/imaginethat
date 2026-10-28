@@ -1,18 +1,13 @@
 package ai.alertd.imagethat.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.testTag
 import androidx.fragment.app.FragmentActivity
 import android.net.Uri
 import androidx.navigation.NavHostController
@@ -57,6 +52,7 @@ fun AppNav(session: Session, activity: FragmentActivity? = null, nav: NavHostCon
         }
     }
 
+    CompositionLocalProvider(LocalTouch provides { session.touch() }) {
     NavHost(nav, startDestination = start) {
         composable(Routes.SET_OFFLINE) {
             val toHome: () -> Unit = {
@@ -88,15 +84,12 @@ fun AppNav(session: Session, activity: FragmentActivity? = null, nav: NavHostCon
             )
         }
         composable(Routes.BROWSER, arguments = listOf(navArgument("sourceId") { type = NavType.StringType })) { entry ->
-            BrowserStub(entry.arguments!!.getString("sourceId")!!)
+            BrowserScreen(
+                session, entry.arguments!!.getString("sourceId")!!, activity,
+                onBack = { nav.popBackStack() },
+                onSetOfflinePassword = { nav.navigate(Routes.SET_OFFLINE) },
+            )
         }
     }
-}
-
-/** Placeholder for the vault browser (Task 10 replaces this composable and keeps the route). */
-@Composable
-private fun BrowserStub(sourceId: String) {
-    Box(Modifier.fillMaxSize().testTag("browser-stub"), contentAlignment = Alignment.Center) {
-        Text("Browser: $sourceId")
     }
 }
