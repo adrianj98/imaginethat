@@ -57,3 +57,7 @@
 - `webserver/vault/session.go`: `Open(VFS, password)` opens a vault behind any VFS; `OpenLocal` now reads the conf and shares a new `parseConfig` with it (same error mapping as before).
   - Why: the gomobile wrapper must create vaults and open SAF-backed ones, and `newSession` is unexported.
 - `webserver/vault/init_test.go`: round-trip, refuse-existing, no-config and gocryptfs-binary interop tests. Interop skips without `/dev/fuse` (so it skips on macOS, like the existing interop test).
+
+## 2026-10-28 — Wipe password bytes in Init and newSession
+- `webserver/vault/init.go`, `session.go`: the password is copied into a `[]byte` that is wiped after use (`Create` in Init, `DecryptMasterKey` in newSession, so Open and OpenLocal too).
+  - Why: review finding; the constraint is that password bytes are wiped after key derivation.

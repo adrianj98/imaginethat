@@ -29,9 +29,11 @@ func Init(v WriteVFS, password string) error {
 	}
 	defer os.RemoveAll(tmp)
 	confPath := filepath.Join(tmp, configfile.ConfDefaultName)
+	pw := []byte(password)
+	defer wipe(pw)
 	err = configfile.Create(&configfile.CreateArgs{
 		Filename: confPath,
-		Password: []byte(password),
+		Password: pw,
 		LogN:     configfile.ScryptDefaultLogN,
 		Creator:  "imagethat",
 	})

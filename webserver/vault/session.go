@@ -156,7 +156,9 @@ func parseConfig(data []byte) (*configfile.ConfFile, error) {
 
 // newSession mirrors openSession() in gocryptfs-lib/main.go.
 func newSession(cf *configfile.ConfFile, password string, fs VFS) (*Session, error) {
-	masterkey, err := cf.DecryptMasterKey([]byte(password))
+	pw := []byte(password)
+	defer wipe(pw)
+	masterkey, err := cf.DecryptMasterKey(pw)
 	if err != nil {
 		return nil, ErrWrongPassword
 	}
