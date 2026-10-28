@@ -20,5 +20,10 @@
             android:authorities="ai.alertd.imagethat.test.docs.nomove"
             android:exported="true"
             android:grantUriPermissions="true" />
+        <provider
+            android:name="ai.alertd.imagethat.local.TestDocsReadOnlyProvider"
+            android:authorities="ai.alertd.imagethat.test.docs.ro"
+            android:exported="true"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

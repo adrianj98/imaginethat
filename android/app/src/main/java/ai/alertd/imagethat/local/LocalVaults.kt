@@ -17,6 +17,8 @@ sealed class LocalError(message: String, cause: Throwable? = null) : Exception(m
     class InvalidPath(m: String, c: Throwable? = null) : LocalError(m, c)
     /** The picked folder is no longer accessible (SAF permission revoked, provider gone). UI: "Pick again". */
     class Unavailable(m: String, c: Throwable? = null) : LocalError(m, c)
+    /** Writes are denied (read-only grant or provider) but reads still work. */
+    class ReadOnly(m: String, c: Throwable? = null) : LocalError(m, c)
     class Other(m: String, c: Throwable? = null) : LocalError(m, c)
 
     companion object {
@@ -29,6 +31,7 @@ sealed class LocalError(message: String, cause: Throwable? = null) : Exception(m
                 m.startsWith("not_found") -> NotFound(m, e)
                 m.startsWith("exists") -> Exists(m, e)
                 m.startsWith("invalid_path") -> InvalidPath(m, e)
+                m.contains("${SafStorage.READ_ONLY}:") -> ReadOnly(m, e)
                 // Go wraps passed-through errors, so the prefix may not be at position 0.
                 e is SecurityException || m.contains("${SafStorage.UNAVAILABLE}:") -> Unavailable(m, e)
                 else -> Other(m, e)

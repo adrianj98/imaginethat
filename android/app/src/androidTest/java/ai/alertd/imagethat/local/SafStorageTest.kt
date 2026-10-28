@@ -200,6 +200,34 @@ class SafStorageTest {
         }
     }
 
+    @Test
+    fun deniedWriteIsReadOnlyAndDoesNotBreakReads() {
+        val roTree = testTree(TestDocsReadOnlyProvider.AUTHORITY_RO)
+        val ctx = inst.targetContext
+        ctx.grantUriPermission(ctx.packageName, roTree, RW or android.content.Intent.FLAG_GRANT_PREFIX_URI_PERMISSION)
+        try {
+            val ro = SafStorage(ctx.contentResolver, roTree)
+            for (op in listOf<() -> Unit>(
+                { ro.mkdir("d") }, { ro.writeFile("x", byteArrayOf(1)) }, { ro.openWriter("y") },
+                { ro.remove("seed.bin") }, { ro.rename("seed.bin", "z") },
+            )) {
+                try {
+                    op()
+                    fail("expected write to be denied")
+                } catch (e: Exception) {
+                    assertTrue(e.message, LocalError.from(e) is LocalError.ReadOnly)
+                }
+            }
+            // Reads keep working: the denial was not treated as revocation.
+            assertEquals(listOf("seed.bin"), JSONArray(ro.listDir("")).let { a -> (0 until a.length()).map { a.getJSONObject(it).getString("name") } })
+            assertEquals(10L, ro.fileSize("seed.bin"))
+            assertArrayEquals(byteArrayOf(1, 2, 3), ro.readAt("seed.bin", 0, 3))
+            assertTrue(ro.exists("seed.bin"))
+        } finally {
+            runCatching { ctx.revokeUriPermission(ctx.packageName, roTree, RW) }
+        }
+    }
+
     private fun copyAssetToStorage(assetDir: String, vaultPath: String) {
         val am = inst.context.assets
         for (name in am.list(assetDir)!!) {

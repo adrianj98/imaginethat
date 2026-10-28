@@ -34,6 +34,15 @@ public class TestDocsProvider extends DocumentsProvider {
         return true;
     }
 
+    /** Subclasses override to model a read-only grant: writes throw SecurityException. */
+    protected boolean denyWrites() {
+        return false;
+    }
+
+    private void checkWrite() {
+        if (denyWrites()) throw new SecurityException("writes denied");
+    }
+
     protected String authority() {
         return AUTHORITY;
     }
@@ -53,6 +62,14 @@ public class TestDocsProvider extends DocumentsProvider {
         super.attachInfo(context, copy);
         base = new File(context.getCacheDir(), authority());
         base.mkdirs();
+        if (denyWrites()) {
+            // Read-only trees cannot be seeded through the API, so seed directly.
+            try (java.io.FileOutputStream o = new java.io.FileOutputStream(new File(base, "seed.bin"))) {
+                o.write(new byte[] {1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+            } catch (java.io.IOException e) {
+                throw new IllegalStateException(e);
+            }
+        }
     }
 
     private File file(String id) throws FileNotFoundException {
@@ -107,12 +124,14 @@ public class TestDocsProvider extends DocumentsProvider {
     @Override
     public ParcelFileDescriptor openDocument(String documentId, String mode, CancellationSignal signal)
             throws FileNotFoundException {
+        if (mode.contains("w") || mode.contains("a")) checkWrite();
         return ParcelFileDescriptor.open(file(documentId), ParcelFileDescriptor.parseMode(mode));
     }
 
     @Override
     public String createDocument(String parentDocumentId, String mimeType, String displayName)
             throws FileNotFoundException {
+        checkWrite();
         File f = new File(file(parentDocumentId), displayName);
         if (f.exists()) throw new IllegalStateException("exists: " + displayName);
         try {
@@ -132,11 +151,13 @@ public class TestDocsProvider extends DocumentsProvider {
 
     @Override
     public void deleteDocument(String documentId) throws FileNotFoundException {
+        checkWrite();
         if (!deleteRecursively(file(documentId))) throw new IllegalStateException("delete failed");
     }
 
     @Override
     public String renameDocument(String documentId, String displayName) throws FileNotFoundException {
+        checkWrite();
         File f = file(documentId);
         File dst = new File(f.getParentFile(), displayName);
         if (dst.exists() || !f.renameTo(dst)) throw new IllegalStateException("rename failed");
@@ -146,6 +167,7 @@ public class TestDocsProvider extends DocumentsProvider {
     @Override
     public String moveDocument(String sourceDocumentId, String sourceParentDocumentId, String targetParentDocumentId)
             throws FileNotFoundException {
+        checkWrite();
         if (!supportsMove()) throw new UnsupportedOperationException("move");
         File f = file(sourceDocumentId);
         File dst = new File(file(targetParentDocumentId), f.getName());

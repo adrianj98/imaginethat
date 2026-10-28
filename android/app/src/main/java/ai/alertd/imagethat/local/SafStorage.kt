@@ -48,7 +48,25 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
         }
     }
 
+    /**
+     * Write-side calls: a denied write is not proof the tree is gone (read-only grant or
+     * provider mode), so it is reported as [READ_ONLY] and never sets [revoked].
+     */
+    private inline fun <T> guardWrite(block: () -> T): T {
+        if (revoked) throw unavailable()
+        try {
+            return block()
+        } catch (e: SecurityException) {
+            throw readOnly(e)
+        }
+    }
+
+    private fun readOnly(cause: Throwable) = IOException("$READ_ONLY: write access to the picked folder was denied", cause)
+
     companion object {
+        /** Message prefix for a denied write; LocalError.from maps it to ReadOnly. */
+        const val READ_ONLY = "read_only"
+
         /** Message prefix for revoked access; LocalError.from matches it anywhere in the (Go-wrapped) message. */
         const val UNAVAILABLE = "unavailable"
     }
@@ -56,12 +74,12 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
     override fun readAt(path: String, offset: Long, n: Long): ByteArray = guard { doReadAt(path, offset, n) }
     override fun fileSize(path: String): Long = guard { doFileSize(path) }
     override fun listDir(path: String): String = guard { doListDir(path) }
-    override fun mkdir(path: String) = guard { doMkdir(path) }
-    override fun writeFile(path: String, data: ByteArray) = guard { doWriteFile(path, data) }
-    override fun openWriter(path: String): StorageWriter = guard { doOpenWriter(path) }
-    override fun remove(path: String) = guard { doRemove(path) }
-    override fun removeAll(path: String) = guard { doRemoveAll(path) }
-    override fun rename(from: String, to: String) = guard { doRename(from, to) }
+    override fun mkdir(path: String) = guardWrite { doMkdir(path) }
+    override fun writeFile(path: String, data: ByteArray) = guardWrite { doWriteFile(path, data) }
+    override fun openWriter(path: String): StorageWriter = guardWrite { doOpenWriter(path) }
+    override fun remove(path: String) = guardWrite { doRemove(path) }
+    override fun removeAll(path: String) = guardWrite { doRemoveAll(path) }
+    override fun rename(from: String, to: String) = guardWrite { doRename(from, to) }
 
     private fun docUri(docId: String) = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
 
@@ -241,7 +259,7 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
                 out.write(p)
             } catch (e: Exception) {
                 failed = true
-                throw if (e is SecurityException) unavailable(e) else e
+                throw if (e is SecurityException) readOnly(e) else e
             }
         }
 
@@ -257,7 +275,7 @@ class SafStorage(private val resolver: ContentResolver, private val treeUri: Uri
             invalidate(parentId)
             if (err != null || failed) {
                 deleteQuietly(uri)
-                throw (if (err is SecurityException) unavailable(err) else err) ?: IOException("write failed; partial file removed")
+                throw (if (err is SecurityException) readOnly(err) else err) ?: IOException("write failed; partial file removed")
             }
         }
 
