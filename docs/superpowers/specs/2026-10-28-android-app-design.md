@@ -208,11 +208,21 @@ keystore from repository secrets, and uploads
 `imagethat-android_vX.Y.Z.apk`. The publish job picks it up with the webserver
 archives, so it is covered by `SHA256SUMS`.
 
-Secrets needed (one-time setup by the user): `ANDROID_KEYSTORE_BASE64`,
-`ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`. If
-they are missing the android job fails rather than publishing an unsigned or
-debug-signed APK. A `make android-keystore` helper prints the commands to
-create one.
+**Signing key.** The APK is signed with a self-signed key (no CA; this is
+normal for Android). It must be the same key on every release, or Android
+refuses to install the update over the existing app and the user would have to
+uninstall — which deletes the offline vault. So the key is generated once, not
+per release:
+
+- Claude generates it during implementation on the developer's Mac with
+  `keytool -genkeypair` (RSA 4096, 30-year validity, random passwords).
+- It is uploaded with `gh secret set` as `ANDROID_KEYSTORE_BASE64`,
+  `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`.
+- The keystore file and its passwords are kept outside the repo for the user
+  to back up (losing them means the next release cannot update in place). The
+  keystore is never committed.
+- If the secrets are missing the android job fails rather than publishing an
+  unsigned or debug-signed APK.
 
 ## Out of scope for v1
 
