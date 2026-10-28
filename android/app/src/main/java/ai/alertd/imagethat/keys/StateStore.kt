@@ -4,6 +4,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import javax.crypto.AEADBadTagException
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 
 interface SecretCipher {
@@ -21,8 +23,11 @@ class StateStore(private val file: File, private val cipher: SecretCipher) {
         return try {
             json.decodeFromString(AppState.serializer(), String(cipher.decrypt(file.readBytes()), Charsets.UTF_8))
         } catch (e: Exception) {
-            // Keep the unreadable file for inspection rather than deleting it.
-            val corrupt = File(file.parentFile, file.name + ".corrupt")
+            // Only a genuinely unreadable file is quarantined. Keystore or I/O
+            // failures may be transient and the file fine, so they propagate.
+            if (e !is AEADBadTagException && e !is SerializationException && e !is IllegalArgumentException) throw e
+            // Keep the unreadable file for inspection, never overwriting an earlier one.
+            val corrupt = File(file.parentFile, file.name + ".corrupt-" + System.currentTimeMillis())
             Files.move(file.toPath(), corrupt.toPath(), StandardCopyOption.REPLACE_EXISTING)
             AppState()
         }

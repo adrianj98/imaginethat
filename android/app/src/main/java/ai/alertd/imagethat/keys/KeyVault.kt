@@ -11,6 +11,9 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 import java.io.File
 import java.security.KeyStore
+import java.security.KeyStoreException
+import java.security.UnrecoverableKeyException
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -37,7 +40,9 @@ sealed interface Unwrap {
 class KeyVault(
     private val context: Context,
     private val requireAuth: Boolean = true,
-    stateFile: File = File(context.filesDir, "state.bin"),
+    val stateFile: File = File(context.noBackupFilesDir, "state.bin"),
+    /** Test hook replacing the biometric prompt; return null to simulate cancel. */
+    private val authenticator: (suspend (FragmentActivity?, Cipher) -> Cipher?)? = null,
 ) {
     private val ks: KeyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
     private val stateCipher = GcmCipher { key(STATE_ALIAS, authRequired = false) }
@@ -50,17 +55,30 @@ class KeyVault(
     fun store(): StateStore = store
 
     suspend fun wrap(activity: FragmentActivity?, id: String, secret: ByteArray) {
-        val alias = BIO_PREFIX + id
+        // The new key goes under whichever alias the current blob is not using, so a
+        // cancelled or failed re-wrap leaves the old key and blob untouched.
+        val current = store.load().wrapped[id]?.let { split(id, it).first }
+        val alias = if (current == bioAlias(id)) bioAlias(id) + ".new" else bioAlias(id)
         ks.deleteEntry(alias)
-        val cipher = Cipher.getInstance(TRANSFORM).apply { init(Cipher.ENCRYPT_MODE, key(alias, requireAuth)) }
-        val ready = if (requireAuth) authenticate(activity, cipher) ?: return else cipher
-        val blob = ready.iv + ready.doFinal(secret)
-        store.update { it.copy(wrapped = it.wrapped + (id to Base64.encodeToString(blob, Base64.NO_WRAP))) }
+        try {
+            val cipher = Cipher.getInstance(TRANSFORM).apply { init(Cipher.ENCRYPT_MODE, key(alias, requireAuth)) }
+            val ready = prompt(activity, cipher)
+            if (ready == null) {
+                ks.deleteEntry(alias)
+                return
+            }
+            val blob = Base64.encodeToString(ready.iv + ready.doFinal(secret), Base64.NO_WRAP)
+            store.update { it.copy(wrapped = it.wrapped + (id to "$alias:$blob")) }
+        } catch (e: Exception) {
+            ks.deleteEntry(alias)
+            throw e
+        }
+        if (current != null && current != alias) ks.deleteEntry(current)
     }
 
     suspend fun unwrap(activity: FragmentActivity?, id: String): Unwrap {
-        val encoded = store.load().wrapped[id] ?: return Unwrap.None
-        val alias = BIO_PREFIX + id
+        val stored = store.load().wrapped[id] ?: return Unwrap.None
+        val (alias, encoded) = split(id, stored)
         val blob = Base64.decode(encoded, Base64.NO_WRAP)
         val cipher = Cipher.getInstance(TRANSFORM)
         try {
@@ -68,14 +86,35 @@ class KeyVault(
             cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, blob.copyOfRange(0, IV_LEN)))
         } catch (e: KeyPermanentlyInvalidatedException) {
             return invalidated(id)
+        } catch (e: UnrecoverableKeyException) {
+            return invalidated(id)
+        } catch (e: KeyStoreException) {
+            return invalidated(id)
         }
-        val ready = if (requireAuth) authenticate(activity, cipher) ?: return Unwrap.Cancelled else cipher
-        return Unwrap.Ok(ready.doFinal(blob, IV_LEN, blob.size - IV_LEN))
+        val ready = prompt(activity, cipher) ?: return Unwrap.Cancelled
+        return try {
+            Unwrap.Ok(ready.doFinal(blob, IV_LEN, blob.size - IV_LEN))
+        } catch (e: AEADBadTagException) {
+            invalidated(id)
+        }
     }
 
     fun forget(id: String) {
-        ks.deleteEntry(BIO_PREFIX + id)
+        ks.deleteEntry(bioAlias(id))
+        ks.deleteEntry(bioAlias(id) + ".new")
         if (store.load().wrapped.containsKey(id)) store.update { it.copy(wrapped = it.wrapped - id) }
+    }
+
+    private fun bioAlias(id: String) = BIO_PREFIX + id
+
+    /** Blobs are "alias:base64"; a blob without a prefix uses the canonical alias. */
+    private fun split(id: String, stored: String): Pair<String, String> =
+        if (':' in stored) stored.substringBefore(':') to stored.substringAfter(':') else bioAlias(id) to stored
+
+    private suspend fun prompt(activity: FragmentActivity?, cipher: Cipher): Cipher? = when {
+        authenticator != null -> authenticator.invoke(activity, cipher)
+        requireAuth -> authenticate(activity, cipher)
+        else -> cipher
     }
 
     private fun invalidated(id: String): Unwrap {
@@ -134,6 +173,7 @@ class KeyVault(
         }
 
         override fun decrypt(blob: ByteArray): ByteArray {
+            if (blob.size <= IV_LEN) throw AEADBadTagException("blob too short")
             val c = Cipher.getInstance(TRANSFORM)
                 .apply { init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, blob.copyOfRange(0, IV_LEN))) }
             return c.doFinal(blob, IV_LEN, blob.size - IV_LEN)

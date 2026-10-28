@@ -3,6 +3,7 @@ package ai.alertd.imagethat.keys
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -45,7 +46,7 @@ class StateStoreTest {
         file.writeBytes(byteArrayOf(1, 2, 3, 4, 5))
         assertEquals(AppState(), StateStore(file, XorCipher).load())
         assertFalse(file.exists())
-        assertTrue(File(tmp.root, "state.bin.corrupt").exists())
+        assertTrue(tmp.root.list()!!.any { it.startsWith("state.bin.corrupt") })
     }
 
     @Test fun updateLeavesNoTempFiles() {
@@ -55,5 +56,28 @@ class StateStoreTest {
         store.update { it.copy(offlineVaultCreated = false) }
         assertEquals(listOf("state.bin"), tmp.root.list()!!.toList())
         assertFalse(store.load().offlineVaultCreated)
+    }
+
+    @Test fun keystoreFailurePropagatesAndLeavesFileUntouched() {
+        val file = File(tmp.root, "state.bin")
+        StateStore(file, XorCipher).update { sample }
+        val before = file.readBytes()
+        val flaky = object : SecretCipher {
+            override fun encrypt(plain: ByteArray) = plain
+            override fun decrypt(blob: ByteArray): ByteArray = throw java.security.KeyStoreException("transient")
+        }
+        val store = StateStore(file, flaky)
+        assertThrows(java.security.KeyStoreException::class.java) { store.load() }
+        assertThrows(java.security.KeyStoreException::class.java) { store.update { it.copy(offlineVaultCreated = false) } }
+        assertTrue(before.contentEquals(file.readBytes()))
+        assertEquals(listOf("state.bin"), tmp.root.list()!!.toList())
+    }
+
+    @Test fun repeatedCorruptionKeepsEarlierQuarantine() {
+        val file = File(tmp.root, "state.bin")
+        file.writeBytes(byteArrayOf(1, 2, 3)); StateStore(file, XorCipher).load()
+        Thread.sleep(5)
+        file.writeBytes(byteArrayOf(4, 5, 6)); StateStore(file, XorCipher).load()
+        assertEquals(2, tmp.root.list()!!.count { it.startsWith("state.bin.corrupt") })
     }
 }

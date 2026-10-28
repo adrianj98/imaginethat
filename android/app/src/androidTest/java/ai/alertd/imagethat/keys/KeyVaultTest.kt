@@ -59,4 +59,38 @@ class KeyVaultTest {
         assertEquals(Unwrap.Invalidated, vault.unwrap(null, "t1"))
         assertFalse(vault.state().wrapped.containsKey("t1"))
     }
+
+    @Test fun defaultStateFileIsInNoBackupDir() {
+        val v = KeyVault(context, requireAuth = false)
+        assertEquals(context.noBackupFilesDir, v.stateFile.parentFile)
+    }
+
+    @Test fun cancelledRewrapKeepsOldSecret() = runBlocking {
+        vault.wrap(null, "t1", byteArrayOf(9, 9))
+        val cancelling = KeyVault(context, requireAuth = false, stateFile = file, authenticator = { _, _ -> null })
+        cancelling.wrap(null, "t1", byteArrayOf(1))
+        assertArrayEquals(byteArrayOf(9, 9), (vault.unwrap(null, "t1") as Unwrap.Ok).secret)
+    }
+
+    @Test fun rewrapReplacesSecretAndOldKey() = runBlocking {
+        vault.wrap(null, "t1", byteArrayOf(1))
+        vault.wrap(null, "t1", byteArrayOf(2))
+        assertArrayEquals(byteArrayOf(2), (vault.unwrap(null, "t1") as Unwrap.Ok).secret)
+        vault.wrap(null, "t1", byteArrayOf(3))
+        assertArrayEquals(byteArrayOf(3), (vault.unwrap(null, "t1") as Unwrap.Ok).secret)
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        assertEquals(1, listOf("imagethat.bio.t1", "imagethat.bio.t1.new").count { ks.containsAlias(it) })
+    }
+
+    @Test fun tamperedBlobIsInvalidated() = runBlocking {
+        vault.wrap(null, "t1", byteArrayOf(1, 2, 3))
+        vault.store().update { s ->
+            val (alias, b64) = s.wrapped["t1"]!!.split(":")
+            val raw = android.util.Base64.decode(b64, android.util.Base64.NO_WRAP)
+            raw[raw.size - 1] = (raw[raw.size - 1].toInt() xor 1).toByte()
+            s.copy(wrapped = mapOf("t1" to alias + ":" + android.util.Base64.encodeToString(raw, android.util.Base64.NO_WRAP)))
+        }
+        assertEquals(Unwrap.Invalidated, vault.unwrap(null, "t1"))
+        assertFalse(vault.state().wrapped.containsKey("t1"))
+    }
 }

@@ -102,3 +102,4 @@
 - MainActivity now extends FragmentActivity (BiometricPrompt needs it); FLAG_SECURE kept.
 - Manifest: removed USE_FINGERPRINT that androidx.biometric merges in (manifest test allows only INTERNET + USE_BIOMETRIC).
 - Tests: StateStoreTest (JVM), KeyVaultTest (instrumented, requireAuth=false hook).
+- Task 5 fix round 1: state.bin moved to noBackupFilesDir; StateStore quarantines only AEADBadTag/Serialization/IllegalArgument (Keystore/IO errors propagate, timestamped .corrupt name); wrap() swaps keys via alternate alias (old key+blob intact on cancel); unwrap maps UnrecoverableKey/KeyStore/AEADBadTag to Invalidated. Why: reviewer findings (data loss on transient errors, destroyed shortcut on cancel, backup leakage).
