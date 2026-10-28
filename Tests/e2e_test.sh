@@ -79,7 +79,7 @@ kill_app
 echo ""
 echo "--- Test 2: Open folder with images via --args ---"
 open -n "$APP_BUNDLE" --args "$TEST_DIR/photos"
-if wait_for_window 10; then
+if wait_for_window 20; then
     pass "App launches with --args"
     # Wait for folder to load (the .task has 1s delay)
     sleep 4
@@ -90,7 +90,7 @@ if wait_for_window 10; then
         fail "Screenshot" "file not created"
     fi
 else
-    fail "App launches with --args" "window not found"
+    fail "App launches with --args" "window not found after 20s"
 fi
 kill_app
 

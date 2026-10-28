@@ -1,4 +1,4 @@
-.PHONY: build run golib clean app test test-logic test-e2e \
+.PHONY: build run golib clean app test test-logic test-e2e test-fixtures \
         web-build web-all web-run web-test
 
 BIN_DIR = $(shell swift build --show-bin-path)
@@ -59,12 +59,20 @@ web-test:
 # Run all tests
 test: test-logic test-e2e
 
+# Copy the committed fixtures to the /tmp paths IntegrationTest reads.
+# The vault was made with the real gocryptfs (password: testpass123).
+test-fixtures:
+	rm -rf /tmp/imagethat-test-plain /tmp/imagethat-test
+	mkdir -p /tmp/imagethat-test
+	cp -R Tests/fixtures/plain /tmp/imagethat-test-plain
+	cp -R Tests/fixtures/vault /tmp/imagethat-test/vault
+
 # Run logic/integration tests
-test-logic: build
+test-logic: build test-fixtures
 	DYLD_LIBRARY_PATH=$(PWD)/build $(BIN_DIR)/IntegrationTest
 
 # Run E2E tests (needs Screen Recording permission for the terminal)
-test-e2e: app
+test-e2e: app test-fixtures
 	bash Tests/e2e_test.sh
 
 # Clean all build artifacts

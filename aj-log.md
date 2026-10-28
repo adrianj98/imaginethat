@@ -17,3 +17,11 @@
   - Why: Xcode 27's SwiftPM writes to `.build/out/Products/Debug`, not `.build/arm64-apple-macosx/debug`, so `make app` failed to find the binary.
 - E2E run result: window-detection tests (osascript replacement for Peekaboo) PASS. Screenshot FAIL (terminal lacks Screen Recording permission). Integration tests FAIL because their fixtures (`/tmp/imagethat-test-plain`, `/tmp/imagethat-test/vault`) are not created by anything in the repo.
 - Note: inside Claude Code's sandbox `swift build` only works with `--disable-sandbox` (nested sandbox breaks actool); Makefile left unchanged for that.
+
+## 2026-10-28 — Committed test fixtures so integration tests pass
+- `Tests/fixtures/vault`: gocryptfs vault made with the real gocryptfs v2.6.1 binary (password `testpass123`) holding `hello.txt` and `test_image.png`, the files IntegrationTest checks. `Tests/fixtures/plain`: red/green/blue PNGs.
+  - Why: IntegrationTest reads `/tmp/imagethat-test-plain` and `/tmp/imagethat-test/vault`, which nothing created; committing them (like `webserver/vault/testdata`) means no FUSE is needed at test time.
+- `Makefile`: new `test-fixtures` target copies them into /tmp; `test-logic` and `test-e2e` depend on it.
+- `Package.swift`: IntegrationTest target excludes `e2e_test.sh` and `fixtures` (silences "unhandled file" warnings).
+- `Tests/e2e_test.sh`: `--args` launch waits 20s instead of 10s (it timed out once).
+- Result: integration 21/21 pass; E2E 3/4 — screenshot needs Screen Recording permission for the terminal.
