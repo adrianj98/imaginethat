@@ -51,3 +51,9 @@
 
 ## 2026-10-28 — Android implementation plan
 - Added `docs/superpowers/plans/2026-10-28-android-app.md` (12 tasks: vault Init/Open, gomobile wrapper, Storage backend, Android skeleton, keys/state, API client, local vaults, repository, screens, no-plaintext test, CI/release/signing). Spec marked approved; spec now also lists `vault.Open` (needed to open SAF-backed vaults, since `newSession` is unexported).
+
+## 2026-10-28 — vault.Init and vault.Open (Android task 1)
+- `webserver/vault/init.go`: `Init(WriteVFS, password)` creates a new gocryptfs vault (config via `configfile.Create` in a scratch dir, then `gocryptfs.conf` + random 16-byte `gocryptfs.diriv` written through the VFS); refuses with an `fs.ErrExist`-wrapping error if a conf exists.
+- `webserver/vault/session.go`: `Open(VFS, password)` opens a vault behind any VFS; `OpenLocal` now reads the conf and shares a new `parseConfig` with it (same error mapping as before).
+  - Why: the gomobile wrapper must create vaults and open SAF-backed ones, and `newSession` is unexported.
+- `webserver/vault/init_test.go`: round-trip, refuse-existing, no-config and gocryptfs-binary interop tests. Interop skips without `/dev/fuse` (so it skips on macOS, like the existing interop test).
