@@ -94,3 +94,11 @@
 - `webserver/mobile/storage.go`: documented that Storage errors must start with `not_found` / `exists` (and OpenWriter must fail if the file exists and leave nothing behind); `storageVFS` converts those via `conv` into `*fs.PathError` wrapping `fs.ErrNotExist`/`fs.ErrExist` in ReadAt, FileSize, ReadDir, ReadFile and the write-side methods.
 - `webserver/mobile/storage_test.go`: `msgStorage` returns plain message errors; test proves List/Size/ReadRange on a missing path give `not_found:` and a repeated Mkdir gives `exists:`.
   - Why: errors from Kotlin cross gomobile as bare messages and the vault's os.IsNotExist checks do not unwrap `%w`, so not_found never surfaced.
+
+## Task 5: Keystore-wrapped secrets and encrypted state
+- Added keys/AppState.kt, StateStore.kt, KeyVault.kt: AES-GCM Keystore key `imagethat.state` (no auth) encrypts state.bin; per-secret biometric keys `imagethat.bio.<id>` (BIOMETRIC_STRONG, invalidated on enrolment). Why: remembered servers must list before auth, secrets must never be on disk unwrapped.
+- StateStore writes temp file + fsync + atomic rename; corrupt file renamed to state.bin.corrupt (kept for inspection).
+- Added androidx.biometric/fragment, kotlinx serialization+coroutines via version catalog.
+- MainActivity now extends FragmentActivity (BiometricPrompt needs it); FLAG_SECURE kept.
+- Manifest: removed USE_FINGERPRINT that androidx.biometric merges in (manifest test allows only INTERNET + USE_BIOMETRIC).
+- Tests: StateStoreTest (JVM), KeyVaultTest (instrumented, requireAuth=false hook).
