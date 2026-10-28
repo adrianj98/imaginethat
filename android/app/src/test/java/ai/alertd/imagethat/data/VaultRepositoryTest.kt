@@ -1,6 +1,7 @@
 package ai.alertd.imagethat.data
 
 import ai.alertd.imagethat.remote.ApiClient
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -278,5 +279,60 @@ class VaultRepositoryTest {
         assertEquals(listOf("s/v/x.png"), rep.saved)
         assertArrayEquals(byteArrayOf(1, 2, 3), vault.files["/s/v/x.png"])
         try { VaultRepository(src, null).saveOffline(emptyList(), "s/v"); fail() } catch (e: SourceError) { assertTrue(e is SourceError.Other) }
+    }
+
+    @Test fun saveOfflineSanitizesHostileNamesAndPrefix() = runTest {
+        val names = listOf("..", "../x", "a/b", "").let { it }
+        val data = names.associate { "/h/$it" to byteArrayOf(1) }
+        val items = names.map { Item("/h/$it", it, false, 1, MediaKind.OTHER) }
+        val vault = FakeLocalVault()
+        val report = saveOffline(FakeSource(emptyMap(), data), items, LocalSource(vault), "../evil/..")
+        // ".." and "" both become "_": the second collides and is reported, never written elsewhere.
+        assertEquals(1, report.failed.size)
+        assertEquals(3, vault.files.size)
+        for (path in vault.files.keys) {
+            assertTrue(path, path.startsWith("/_/evil/_/"))
+            assertFalse(path, path.removePrefix("/_/evil/_/").contains('/'))
+            assertFalse(path, path.split('/').contains(".."))
+        }
+    }
+
+    @Test fun saveOfflineLockedMidSaveInterruptsWithPartialReport() = runTest {
+        val data = mapOf("/a" to byteArrayOf(1), "/b" to byteArrayOf(2), "/c" to byteArrayOf(3))
+        val src = object : VaultSource by FakeSource(emptyMap(), data) {
+            override suspend fun open(path: String, range: LongRange?): InputStream =
+                if (path == "/b") throw SourceError.Locked else ByteArrayInputStream(data.getValue(path))
+        }
+        val vault = FakeLocalVault()
+        try {
+            saveOffline(src, listOf(item("/a", size = 1), item("/b", size = 1), item("/c", size = 1)), LocalSource(vault), "s/v")
+            fail()
+        } catch (e: SaveInterrupted) {
+            assertEquals(SourceError.Locked, e.reason)
+            assertEquals(listOf("s/v/a"), e.partial.saved)
+            assertTrue(e.partial.failed.isEmpty())
+        }
+        assertFalse(vault.files.containsKey("/s/v/c"))
+    }
+
+    @Test fun cancelMidCopyAbortsAndCommitsNothing() = runTest {
+        val vault = FakeLocalVault()
+        var job: kotlinx.coroutines.Job? = null
+        val input = object : InputStream() {
+            var reads = 0
+            override fun read(): Int = 0
+            override fun read(b: ByteArray, off: Int, len: Int): Int {
+                if (++reads == 2) job!!.cancel()
+                return len
+            }
+        }
+        job = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).launch {
+            LocalSource(vault).upload("/d", "f", input, Long.MAX_VALUE)
+        }
+        job.join()
+        assertTrue(job.isCancelled)
+        assertEquals(1, vault.aborted)
+        assertTrue(vault.files.isEmpty())
+        assertTrue("copy ran on after cancel: ${input.reads}", input.reads <= 3)
     }
 }

@@ -11,6 +11,9 @@ fun sanitizeSegment(s: String): String {
     return if (t.isEmpty() || t == "." || t == "..") "_" else t
 }
 
+/** Thrown when the session ends mid-save (Locked / WrongPassword); [partial] is what was done before. */
+class SaveInterrupted(val reason: SourceError, val partial: SaveReport) : Exception(reason.message, reason)
+
 fun offlinePrefix(serverLabel: String, vaultName: String) =
     "${sanitizeSegment(serverLabel)}/${sanitizeSegment(vaultName)}"
 
@@ -23,7 +26,7 @@ fun offlinePrefix(serverLabel: String, vaultName: String) =
 suspend fun saveOffline(from: VaultSource, items: List<Item>, into: LocalSource, prefix: String): SaveReport {
     val saved = ArrayList<String>()
     val failed = LinkedHashMap<String, String>()
-    val root = "/" + prefix.trim('/')
+    val root = "/" + prefix.split('/').filter { it.isNotEmpty() }.joinToString("/") { sanitizeSegment(it) }
 
     try {
         var dir = ""
@@ -34,29 +37,41 @@ suspend fun saveOffline(from: VaultSource, items: List<Item>, into: LocalSource,
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
-        for (it in items) failed["${root.trimStart('/')}/${it.name}"] = e.message ?: e.toString()
+        for (it in items) failed["${root.trimStart('/')}/${sanitizeSegment(it.name)}"] = e.message ?: e.toString()
         return SaveReport(saved, failed)
     }
 
     suspend fun copy(item: Item, destDir: String) {
-        val dest = childPath(destDir, item.name)
+        // item.path is only for reading from the (untrusted) source; the destination segment is sanitized.
+        val seg = sanitizeSegment(item.name)
+        val dest = childPath(destDir, seg)
         val key = dest.trimStart('/')
         try {
             if (item.isDir) {
                 mkdirTolerant(into, dest)
                 for (child in from.list(item.path)) copy(child, dest)
             } else {
-                from.open(item.path).use { into.upload(destDir, item.name, it, item.size) }
+                from.open(item.path).use { into.upload(destDir, seg, it, item.size) }
                 saved += key
             }
         } catch (e: CancellationException) {
+            throw e
+        } catch (e: SourceError.Locked) {
+            throw e
+        } catch (e: SourceError.WrongPassword) {
             throw e
         } catch (e: Exception) {
             failed[key] = e.message ?: e.toString()
         }
     }
 
-    for (item in items) copy(item, root)
+    try {
+        for (item in items) copy(item, root)
+    } catch (e: SourceError.Locked) {
+        throw SaveInterrupted(e, SaveReport(saved, failed))
+    } catch (e: SourceError.WrongPassword) {
+        throw SaveInterrupted(e, SaveReport(saved, failed))
+    }
     return SaveReport(saved, failed)
 }
 

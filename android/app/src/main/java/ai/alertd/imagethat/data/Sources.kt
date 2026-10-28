@@ -8,6 +8,9 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -18,6 +21,7 @@ import okio.source
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
+import kotlin.coroutines.coroutineContext
 
 enum class MediaKind { IMAGE, VIDEO, OTHER }
 
@@ -234,15 +238,17 @@ class LocalSource(
 
     override suspend fun upload(dir: String, name: String, input: InputStream, length: Long) {
         withContext(Dispatchers.IO) {
-            input.use { copyInto(it, dir, name) }
+            val job = coroutineContext.job
+            input.use { copyInto(it, dir, name, job) }
         }
     }
 
-    private fun copyInto(input: InputStream, dir: String, name: String) {
+    private fun copyInto(input: InputStream, dir: String, name: String, job: Job) {
         val w = local { vault.create(childPath(dir, name)) }
         try {
             val buf = ByteArray(CHUNK)
             while (true) {
+                job.ensureActive()
                 val n = input.read(buf)
                 if (n < 0) break
                 if (n == 0) continue
