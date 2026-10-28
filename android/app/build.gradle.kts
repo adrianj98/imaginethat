@@ -23,6 +23,9 @@ android {
 
     buildFeatures { compose = true }
 
+    // The AES-SIV fixture vault is shared with the Go tests; SafStorageTest opens it.
+    sourceSets["androidTest"].assets.srcDir(rootProject.projectDir.parentFile.resolve("webserver/vault/testdata"))
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

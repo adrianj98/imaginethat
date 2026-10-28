@@ -110,3 +110,8 @@
 - Pinning: custom X509TrustManager comparing leaf SHA-256 (lowercase hex), permissive hostname verifier only when pinned; probeCertificate does a handshake-only probe. Why: self-signed servers.
 - Errors: 401 -> Locked (WrongPassword on unlock); 403 -> OriginRejected (server messages "cross-origin request rejected"/"bad origin") else Forbidden (read-only/permission denied, NOT Locked, since server never uses 403 for locked); 404/409/429 mapped; others Http. Why: server is authoritative (handlers_fs.go, writeVaultError).
 - No Origin header sent: server accepts absent Origin (checkOrigin).
+
+## Task 7: Local vaults and SAF storage
+- Added local/SafStorage.kt (mobile.Storage over a SAF tree: path->document id by walking children, per-directory in-memory cache invalidated on own writes/renames/deletes; "not_found"/"exists" message prefixes; writers delete their half-created doc on failure; cross-directory rename uses moveDocument with a copy+delete fallback). Why: SAF folders have no filesystem path for the Go engine.
+- Added local/LocalVaults.kt (offline vault at noBackupFilesDir/offline-vault, SAF folder vaults, sealed LocalError mapped from Go prefixes; revoked/unreachable tree -> Unavailable; passwords CharArray zeroed after the call). Why: Task 7 brief.
+- Tests: androidTest LocalVaultsTest, SafStorageTest, plus a test-only DocumentsProvider (Java, two authorities: with and without move) declared in src/androidTest/AndroidManifest.xml so the main manifest stays provider-free. AES-SIV fixture reached via an androidTest assets srcDir pointing at webserver/vault/testdata. Why: exercise SafStorage against a real provider.
