@@ -1,4 +1,4 @@
-.PHONY: build run golib clean app test test-logic test-e2e test-fixtures \
+.PHONY: build run golib clean app test test-logic test-e2e test-fixtures golib-sync \
         web-build web-all web-run web-test
 
 BIN_DIR = $(shell swift build --show-bin-path)
@@ -29,8 +29,18 @@ app: build
 	cp ImageThat/Resources/Info.plist $(APP_BUNDLE)/Contents/Info.plist
 	codesign --force --sign - $(APP_BUNDLE)
 
+# Copy the gocryptfs internal/ packages into gocryptfs-lib. Required once after
+# cloning, and again whenever the pinned gocryptfs version changes.
+golib-sync:
+	./Scripts/sync-gocryptfs.sh
+
+# internal/ is generated, so make the build depend on it existing rather than
+# failing with a confusing "no required module provides package".
+gocryptfs-lib/internal:
+	./Scripts/sync-gocryptfs.sh
+
 # Build the Go shared library
-golib:
+golib: gocryptfs-lib/internal
 	cd gocryptfs-lib && CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 		go build -tags without_openssl -buildmode=c-shared \
 		-o ../build/libgocryptfs.dylib .

@@ -32,3 +32,9 @@
 - `Tests/e2e_test.sh`: screenshot test now SKIPs (instead of failing) when `screencapture` reports "could not create image", which is macOS's response when the terminal lacks Screen Recording permission. Other screencapture errors still FAIL. Results line counts skips.
   - Why: the permission can't be granted from a script, and under a launchd-started tmux there is no terminal app to grant it to.
 - Result: `make test-e2e` exits 0 — 3 passed, 0 failed, 1 skipped; integration 21/21.
+
+## 2026-10-28 — gocryptfs-lib builds from a fresh checkout
+- `Scripts/sync-gocryptfs.sh`: generates `gocryptfs-lib/internal/` from the gocryptfs v2.6.1 module cache (same approach and package list as `webserver/scripts/sync-gocryptfs.sh`).
+- `Makefile`: `golib` now depends on `gocryptfs-lib/internal`, which runs the sync when missing; `make golib-sync` regenerates on demand.
+- `.gitignore` / `gocryptfs-lib/go.sum`: go.sum is now committed (as webserver/go.sum already is).
+  - Why: both were gitignored with nothing to recreate them, so `make build` failed on any new clone.
