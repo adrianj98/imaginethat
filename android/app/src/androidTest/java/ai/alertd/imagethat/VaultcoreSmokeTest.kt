@@ -6,6 +6,7 @@ import java.io.File
 import mobile.Mobile
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -28,7 +29,7 @@ class VaultcoreSmokeTest {
 
                 assertEquals(data.size.toLong(), vault.size("/hello.bin"))
                 assertArrayEquals(data.copyOfRange(100, 164), vault.readRange("/hello.bin", 100, 64))
-                assert(vault.list("/").contains("hello.bin"))
+                assertTrue(vault.list("/").contains("hello.bin"))
             } finally {
                 vault.close()
             }

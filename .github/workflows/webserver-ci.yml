@@ -30,7 +30,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: webserver/go.mod
           cache-dependency-path: webserver/go.sum
 
       # gocryptfs' crypto lives in internal/ packages that another module
@@ -109,7 +109,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version-file: webserver/go.mod
           cache-dependency-path: webserver/go.sum
 
       - name: Sync gocryptfs internal packages
