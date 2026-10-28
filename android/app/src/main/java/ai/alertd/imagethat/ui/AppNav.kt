@@ -55,10 +55,11 @@ fun AppNav(session: Session, activity: FragmentActivity? = null, nav: NavHostCon
     CompositionLocalProvider(LocalTouch provides { session.touch() }) {
     NavHost(nav, startDestination = start) {
         composable(Routes.SET_OFFLINE) {
-            // First run: SET_OFFLINE is the start, replace it with Home. Reached from a browser (Save offline):
-            // go back to that browser so its state and source stay current.
+            // SET_OFFLINE as the back stack root (first run) is replaced by Home. Reached from a browser
+            // (Save offline), go back to it so its state and source stay current. Decided by the live back
+            // stack: "Not now" on first run leaves SET_OFFLINE as the start even when it is visited again.
             val toHome: () -> Unit = {
-                if (start == Routes.SET_OFFLINE) nav.navigate(Routes.HOME) { popUpTo(Routes.SET_OFFLINE) { inclusive = true } }
+                if (nav.previousBackStackEntry == null) nav.navigate(Routes.HOME) { popUpTo(Routes.SET_OFFLINE) { inclusive = true } }
                 else nav.popBackStack()
             }
             SetOfflinePasswordScreen(session.local, onDone = toHome, onSkip = toHome)

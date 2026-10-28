@@ -30,7 +30,7 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 
 /** A remote-like vault held in memory. */
-private class MemVault : VaultSource {
+internal class MemVault : VaultSource {
     val files = linkedMapOf<String, ByteArray>()
     var lockedList = false
     override suspend fun list(path: String): List<Item> {
