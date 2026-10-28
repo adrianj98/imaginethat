@@ -99,7 +99,7 @@ echo ""
 echo "--- Test 3: Integration tests (logic layer) ---"
 cd "$PROJECT_DIR"
 if DYLD_LIBRARY_PATH="$PROJECT_DIR/build" \
-    "$PROJECT_DIR/.build/arm64-apple-macosx/debug/IntegrationTest" 2>/dev/null; then
+    "$(swift build --show-bin-path)/IntegrationTest" 2>/dev/null; then
     pass "All integration tests pass"
 else
     fail "Integration tests" "some tests failed"

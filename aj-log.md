@@ -11,3 +11,9 @@
   - Why: `internal/` must be an unmodified upstream copy so it can be regenerated; the build failed with `undefined: configfile.LoadBytes`.
 - Locally regenerated (gitignored, not committed): `gocryptfs-lib/internal/` copied from gocryptfs v2.6.1 with import paths rewritten (same package list as `webserver/scripts/sync-gocryptfs.sh`), and `go.sum` via `go mod download all`.
 - E2E tests still not run: `swift build` needs full Xcode (only Command Line Tools installed).
+
+## 2026-10-28 — Follow SwiftPM's build output path
+- `Makefile` BIN_DIR and `Tests/e2e_test.sh` IntegrationTest path now come from `swift build --show-bin-path`.
+  - Why: Xcode 27's SwiftPM writes to `.build/out/Products/Debug`, not `.build/arm64-apple-macosx/debug`, so `make app` failed to find the binary.
+- E2E run result: window-detection tests (osascript replacement for Peekaboo) PASS. Screenshot FAIL (terminal lacks Screen Recording permission). Integration tests FAIL because their fixtures (`/tmp/imagethat-test-plain`, `/tmp/imagethat-test/vault`) are not created by anything in the repo.
+- Note: inside Claude Code's sandbox `swift build` only works with `--disable-sandbox` (nested sandbox breaks actool); Makefile left unchanged for that.
