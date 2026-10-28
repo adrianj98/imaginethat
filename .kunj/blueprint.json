@@ -1,0 +1,30 @@
+{
+  "image": "sandbox",
+  "tools": {
+    "go": "1.26",
+    "java": "21",
+    "apt": ["make", "ffmpeg"],
+    "android": ["platforms@android-35", "build-tools@35.0.0", "ndk@26.1.10909125"],
+    "gomobile": "v0.0.0-20261011034528-197770444867"
+  },
+  "setup": [
+    "make -C webserver sync",
+    "cd webserver && go mod download",
+    "cd webserver/web && npm ci && npm run build",
+    "make -C webserver build",
+    "[ ! -d android ] || (cd android && ./gradlew --no-daemon :app:assembleDebug)"
+  ],
+  "maintain": [
+    "make -C webserver sync",
+    "cd webserver && go mod download",
+    "cd webserver/web && npm install"
+  ],
+  "lockfiles": ["webserver/go.sum", "webserver/web/package-lock.json", "android/gradle/libs.versions.toml"],
+  "aliases": {
+    "wt": "make -C webserver test-short",
+    "wrun": "make -C webserver run ROOT=/workspace",
+    "apk": "cd /workspace/android && ./gradlew :app:assembleDebug",
+    "at": "cd /workspace/android && ./gradlew :app:testDebugUnitTest"
+  },
+  "notes": "Webserver (Go + Vite UI) and the Android app (Kotlin + gomobile vaultcore.aar). The macOS app needs Xcode and cannot build in the Linux sandbox. Node 22 comes from the sandbox image; ffmpeg is for video thumbnails. Android: .kunj/presets/android.sh installs the SDK into /opt/android-sdk and keeps Gradle's cache in /opt/gradle so the snapshot has it; on an arm64 host the NDK and aapt2 (x86_64-only) run through the Docker VM's x86_64 emulation, as do gomobile and gobind (built for amd64), so builds are slower than on the Mac. The android steps skip until android/ is on the default branch. Instrumented tests need an emulator with KVM and do not run here. gomobile must match golang.org/x/mobile in webserver/go.mod. Use test-short: the full webserver tests need FUSE."
+}
