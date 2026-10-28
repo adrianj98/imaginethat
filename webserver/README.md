@@ -56,22 +56,18 @@ From the repository root, `make web-all` does both steps.
 
 ## Releasing
 
-Every merge to `main` that touches `webserver/` cuts a release and bumps the
-patch version: `webserver-v0.0.1`, `webserver-v0.0.2`, and so on. There is
-nothing to tag by hand — `.github/workflows/webserver-release.yml` reads the
-highest existing `webserver-v*` tag, adds one to the patch, and creates the new
-tag along with the release. The `webserver-` prefix keeps these separate from
-any tagging the macOS app uses.
+Releases are cut only by pushing a `vX.Y.Z` tag; merges to `main` do not
+release anything:
 
-Merges that don't touch `webserver/` are skipped, so a change to the macOS app
-alone won't republish identical binaries.
+```
+git tag v0.1.0 && git push origin v0.1.0
+```
 
-To jump to a different version — a minor or major bump — run the workflow by
-hand from the Actions tab and give it a version (e.g. `0.1.0`). Leave the field
-blank and it bumps the patch as usual. The next automatic release continues
-from whatever the highest tag is, so a manual `0.1.0` is followed by `0.1.1`.
+`.github/workflows/release.yml` takes the version from the tag and publishes
+one GitHub release on it, holding the webserver binaries and `SHA256SUMS`.
+Tags that are not exactly `vX.Y.Z` are rejected.
 
-The job builds the UI once, then cross-compiles linux and darwin on amd64/arm64
+The webserver job builds the UI once, then cross-compiles linux and darwin on amd64/arm64
 from a single runner, since everything is pure Go with `CGO_ENABLED=0`. Windows
 is not built: gocryptfs' `syscallcompat` is POSIX-only. Tests are not re-run
 here — `webserver-ci.yml` covers the same commit.

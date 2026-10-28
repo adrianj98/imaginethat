@@ -1,0 +1,163 @@
+name: release
+
+# Pushing a vX.Y.Z tag cuts a release; nothing else does. The tag is the
+# version, so there is no bump logic and no manual trigger:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Each component builds in its own job and uploads its files as an artifact;
+# the publish job gathers them into one GitHub release on the pushed tag.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Read version from tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Parse tag
+        id: version
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # The trigger's glob is looser than semver (it would accept
+          # v1.2.3.4); refuse anything that is not exactly x.y.z.
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag $GITHUB_REF_NAME is not vX.Y.Z"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  webserver:
+    name: Build webserver
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: webserver/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: webserver/web/package-lock.json
+
+      - name: Sync gocryptfs internal packages
+        run: make sync
+        working-directory: webserver
+
+      # The SPA is compiled into the binary, so it has to exist before any Go
+      # build. Building it once keeps every platform's bundle identical.
+      - name: Build web UI
+        run: |
+          npm ci
+          npm run build
+        working-directory: webserver/web
+
+      # No test step: webserver-ci.yml runs the whole suite on every push to
+      # main, so the tagged commit has already been tested.
+      #
+      # Pure Go with CGO disabled, so every target cross-compiles from one
+      # runner. Windows is absent because gocryptfs' syscallcompat is
+      # POSIX-only.
+      - name: Build release binaries
+        working-directory: webserver
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            goos="${target%/*}"
+            goarch="${target#*/}"
+            name="imagethat-web_v${VERSION}_${goos}_${goarch}"
+            echo "Building $name"
+
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -tags without_openssl \
+                -trimpath \
+                -ldflags "-s -w -X main.version=v${VERSION}" \
+                -o "dist/${name}/imagethat-web" \
+                ./cmd/imagethat-web
+
+            cp README.md "dist/${name}/" 2>/dev/null || true
+            tar -czf "dist/${name}.tar.gz" -C dist "$name"
+            rm -rf "dist/${name:?}"
+          done
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webserver
+          path: webserver/dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: [version, webserver]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum ./* > SHA256SUMS
+          ls -la
+
+          notes=$(cat <<'EOF'
+          ## imagethat-web
+
+          A standalone HTTP server that browses gocryptfs vaults: file browser,
+          image viewer and range-streamed video, from any browser.
+
+          ### Install
+
+          Download the archive for your platform, verify it against
+          `SHA256SUMS`, extract it, and run:
+
+          ```
+          ./imagethat-web -root /path/to/your/vaults
+          ```
+
+          Then open http://127.0.0.1:8347 and unlock a vault with its password.
+
+          By default the server binds loopback only. To reach it from another
+          machine, supply `-tls-cert`/`-tls-key`; it refuses to serve decrypted
+          vault contents unencrypted over a network unless you pass
+          `-insecure`.
+
+          Vault keys are held in memory only, decrypted content is never
+          written to disk, and cached thumbnails are encrypted under a key that
+          is destroyed when the vault locks.
+          EOF
+          )
+
+          # --verify-tag attaches the release to the pushed tag and fails
+          # rather than inventing a new one if it is somehow missing.
+          gh release create "v${VERSION}" ./* \
+            --verify-tag \
+            --title "ImageThat v${VERSION}" \
+            --notes "$notes"
+
+          echo "Published: $(gh release view "v${VERSION}" --json url --jq .url)"

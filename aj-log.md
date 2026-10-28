@@ -38,3 +38,9 @@
 - `Makefile`: `golib` now depends on `gocryptfs-lib/internal`, which runs the sync when missing; `make golib-sync` regenerates on demand.
 - `.gitignore` / `gocryptfs-lib/go.sum`: go.sum is now committed (as webserver/go.sum already is).
   - Why: both were gitignored with nothing to recreate them, so `make build` failed on any new clone.
+
+## 2026-10-28 — Releases only on a vX.Y.Z tag
+- `.github/workflows/webserver-release.yml` → `release.yml`: triggers only on pushing a `vX.Y.Z` tag (no more release per merge to main, no manual dispatch, no auto patch bump). Version comes from the tag. Split into version / webserver / publish jobs so the Android APK job can join the same release.
+- Release is now `vX.Y.Z` (one tag for all components) instead of `webserver-vX.Y.Z`; `gh release create --verify-tag` attaches to the pushed tag.
+- `webserver/README.md` "Releasing" section updated.
+  - Why: user wants releases only when a tag is created, and one tag to ship both webserver and Android app.
