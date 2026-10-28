@@ -127,3 +127,9 @@
 - release.yml: new `android` job (fails fast on empty secrets, decodes keystore to RUNNER_TEMP, assembleRelease, apksigner verify with cert SHA-256 pinned to 71:E3:...:6B, renames to imagethat-android_vX.Y.Z.apk, uploads artifact `android`); publish needs it; release notes gain an Android section.
 - README: Android section (build, release flow, key location and backup warning).
 - Task 12 fix 1: release.yml APK rename now uses ${VERSION} (a sed -i slip had turned it into a literal vX.Y.Z); release notes substitute the real APK name after the quoted heredoc. Why: second release would have collided with the first.
+
+## Task 8: unified vault repository and save-offline
+- Added android/.../data/Sources.kt: VaultSource, Item/MediaKind, SourceError (Locked, WrongPassword, NotFound, Exists, Other), RemoteSource (maps RemoteError/IOException/SerializationException so nothing escapes raw; streaming upload body), LocalSource over LocalVaultApi (adapter MobileVaultApi for mobile.Vault; chunked lazy reads; chunked streaming writes with abort on failure; injectable Thumbnailer, BitmapFactory inSampleSize default). Why: one browsing/transfer interface for both vault kinds with no decrypted data on disk or whole-file buffers.
+- Added SaveOffline.kt: saveOffline streams 256 KiB chunks, recursive, per-file failures reported while others continue; prefix sanitising helper. Added VaultRepository.kt as a thin facade. SourceError.Exists added (beyond the brief's four) so mkdir can tolerate existing dirs.
+- Added VaultRepositoryTest (15 tests, fakes + MockWebServer).
+- Task 8 fix round 1: saveOffline sanitizes every destination segment and the prefix (hostile remote names cannot escape); Locked/WrongPassword mid-save throws SaveInterrupted(reason, partial) instead of N failures; LocalSource copy loop checks job.ensureActive() per chunk so cancel aborts the file. 3 tests added.
