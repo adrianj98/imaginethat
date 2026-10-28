@@ -103,3 +103,10 @@
 - Manifest: removed USE_FINGERPRINT that androidx.biometric merges in (manifest test allows only INTERNET + USE_BIOMETRIC).
 - Tests: StateStoreTest (JVM), KeyVaultTest (instrumented, requireAuth=false hook).
 - Task 5 fix round 1: state.bin moved to noBackupFilesDir; StateStore quarantines only AEADBadTag/Serialization/IllegalArgument (Keystore/IO errors propagate, timestamped .corrupt name); wrap() swaps keys via alternate alias (old key+blob intact on cancel); unwrap maps UnrecoverableKey/KeyStore/AEADBadTag to Invalidated. Why: reviewer findings (data loss on transient errors, destroyed shortcut on cancel, backup leakage).
+
+## Task 6: Remote API client
+- Added remote/ApiClient.kt, ApiModels.kt, CertPinning.kt (OkHttp 4.12.0; mockwebserver, okhttp-tls, coroutines-test as test deps via catalog). Why: Android must talk to the Go webserver JSON API.
+- No OkHttp Cache, in-memory CookieJar cleared by close(), password JSON built in a private char/byte copy and zeroed after the call. Why: no decrypted data or secrets persisted.
+- Pinning: custom X509TrustManager comparing leaf SHA-256 (lowercase hex), permissive hostname verifier only when pinned; probeCertificate does a handshake-only probe. Why: self-signed servers.
+- Errors: 401 -> Locked (WrongPassword on unlock); 403 -> OriginRejected (server messages "cross-origin request rejected"/"bad origin") else Forbidden (read-only/permission denied, NOT Locked, since server never uses 403 for locked); 404/409/429 mapped; others Http. Why: server is authoritative (handlers_fs.go, writeVaultError).
+- No Origin header sent: server accepts absent Origin (checkOrigin).
