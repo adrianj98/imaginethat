@@ -18,6 +18,10 @@ public enum RemoteServerError: LocalizedError {
     case badResponse
     case invalidServerURL
     case wrongPassword
+    case accessPasswordRequired
+    case wrongAccessPassword
+    case readOnly
+    case vaultLocked
     case http(status: Int, message: String)
 
     public var errorDescription: String? {
@@ -25,16 +29,35 @@ public enum RemoteServerError: LocalizedError {
         case .badResponse: return "The server sent an unexpected response"
         case .invalidServerURL: return "Enter a server address like https://nas.local:8347"
         case .wrongPassword: return "Wrong password"
+        case .accessPasswordRequired: return "This server needs its access password"
+        case .wrongAccessPassword: return "Wrong server access password"
+        case .readOnly: return "Vaults on this server are decrypted on this Mac and are read-only for now"
+        case .vaultLocked: return "The vault is locked"
         case .http(_, let message): return "Server: \(message)"
         }
     }
 }
 
+/// How an imagethat-web server works (its -mode flag).
+public enum RemoteServerMode: Sendable {
+    /// The server unlocks vaults and sends plaintext.
+    case serverDecrypt
+    /// The server sends only ciphertext behind an access password; vaults are
+    /// unlocked and decrypted on this Mac.
+    case clientDecrypt
+}
+
 /// Talks to an imagethat-web server (webserver/ in this repo).
 ///
-/// The server decrypts; this client only ever sees plaintext in memory. The
-/// URLSession is ephemeral with no URL cache, so neither responses nor the
-/// session cookie that holds the unlocked vaults reach the disk.
+/// A server-decrypt server decrypts; this client only ever sees plaintext in
+/// memory. The URLSession is ephemeral with no URL cache, so neither responses
+/// nor the session cookie that holds the unlocked vaults reach the disk.
+///
+/// A client-decrypt server never sees a vault password: the client logs in
+/// with the server's access password, and `unlock` opens the vault here
+/// through the Go library (GocryptfsBridge over GocryptfsOpenRemote), which
+/// fetches ciphertext and decrypts it in this process. Reads then go to that
+/// session; writes are refused.
 public final class RemoteServerClient: @unchecked Sendable {
     public let baseURL: URL
     private let session: URLSession
@@ -43,6 +66,11 @@ public final class RemoteServerClient: @unchecked Sendable {
     // vault ID → password, in memory only. The server locks idle sessions
     // (default 30 min); with this the client re-unlocks instead of failing.
     private var passwords: [String: String] = [:]
+    // Client-decrypt servers: the access password (memory only, for logging
+    // in again after the server's idle timeout) and the open vaults.
+    private var mode: RemoteServerMode?
+    private var accessPassword: String?
+    private var bridges: [String: GocryptfsBridge] = [:]
 
     public init(baseURL: URL) {
         self.baseURL = baseURL
@@ -59,15 +87,71 @@ public final class RemoteServerClient: @unchecked Sendable {
         session.invalidateAndCancel()
     }
 
+    // MARK: - Mode and login
+
+    /// Asks the server how it works. Servers older than the mode switch have
+    /// no /api/info and decrypt themselves.
+    public func serverMode() async throws -> RemoteServerMode {
+        if let mode = lock.withLock({ self.mode }) { return mode }
+        struct Info: Decodable { let mode: String? }
+        let (data, response) = try await raw(request("api/info"))
+        let mode: RemoteServerMode
+        switch response.statusCode {
+        case 404:
+            mode = .serverDecrypt
+        case 200:
+            mode = (try? JSONDecoder().decode(Info.self, from: data))?.mode == "client-decrypt"
+                ? .clientDecrypt : .serverDecrypt
+        default:
+            try check(response, data)
+            throw RemoteServerError.badResponse
+        }
+        lock.withLock { self.mode = mode }
+        return mode
+    }
+
+    public var isClientDecrypt: Bool {
+        lock.withLock { mode == .clientDecrypt }
+    }
+
+    public var hasAccessPassword: Bool {
+        lock.withLock { accessPassword != nil }
+    }
+
+    /// Logs in to a client-decrypt server with its access password.
+    public func login(accessPassword: String) async throws {
+        var req = request("api/login", method: "POST")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(["password": accessPassword])
+        let (data, response) = try await raw(req)
+        if response.statusCode == 401 { throw RemoteServerError.wrongAccessPassword }
+        try check(response, data)
+        lock.withLock { self.accessPassword = accessPassword }
+    }
+
     // MARK: - Vaults
 
     public func listVaults() async throws -> [RemoteVault] {
         struct Response: Decodable { let vaults: [RemoteVault]? }
-        let (data, _) = try await send(request("api/vaults"))
-        return try decode(Response.self, data).vaults ?? []
+        var (data, response) = try await raw(request("api/vaults"))
+        if response.statusCode == 401, isClientDecrypt {
+            guard let access = lock.withLock({ accessPassword }) else { throw RemoteServerError.accessPasswordRequired }
+            try await login(accessPassword: access)
+            (data, response) = try await raw(request("api/vaults"))
+        }
+        try check(response, data)
+        let vaults = try decode(Response.self, data).vaults ?? []
+        guard isClientDecrypt else { return vaults }
+        // The server holds nothing open here; this client does.
+        let open = lock.withLock { Set(bridges.keys) }
+        return vaults.map { RemoteVault(id: $0.id, name: $0.name, unlocked: open.contains($0.id)) }
     }
 
     public func unlock(vaultID: String, password: String) async throws {
+        if try await serverMode() == .clientDecrypt {
+            try await unlockLocally(vaultID: vaultID, password: password)
+            return
+        }
         var req = request("api/vaults/\(vaultID)/unlock", method: "POST")
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONEncoder().encode(["password": password])
@@ -78,20 +162,71 @@ public final class RemoteServerClient: @unchecked Sendable {
         lock.withLock { passwords[vaultID] = password }
     }
 
+    /// Client-decrypt: opens the vault in this process. The Go library logs
+    /// in on its own connection with the access password, so the vault
+    /// password goes only to scrypt here.
+    private func unlockLocally(vaultID: String, password: String) async throws {
+        guard let access = lock.withLock({ accessPassword }) else { throw RemoteServerError.accessPasswordRequired }
+        let server = baseURL
+        do {
+            let bridge = try await Task.detached {
+                try GocryptfsBridge(server: server, vaultID: vaultID, password: password, accessPassword: access)
+            }.value
+            lock.withLock { bridges[vaultID] = bridge }
+        } catch GocryptfsError.wrongPassword {
+            throw RemoteServerError.wrongPassword
+        } catch GocryptfsError.wrongAccessPassword {
+            lock.withLock { accessPassword = nil }
+            throw RemoteServerError.wrongAccessPassword
+        }
+    }
+
     public func lock(vaultID: String) async throws {
-        lock.withLock { passwords[vaultID] = nil }
+        lock.withLock {
+            passwords[vaultID] = nil
+            bridges[vaultID] = nil
+        }
+        if isClientDecrypt { return }
         _ = try await send(request("api/vaults/\(vaultID)/lock", method: "POST"))
     }
 
     /// Ends this client's server session, locking every vault it opened.
     public func logout() async throws {
-        lock.withLock { passwords.removeAll() }
+        lock.withLock {
+            passwords.removeAll()
+            bridges.removeAll()
+            accessPassword = nil
+        }
         _ = try await send(request("api/logout", method: "POST"))
+    }
+
+    /// The local session of a vault on a client-decrypt server, or nil on a
+    /// server-decrypt server (which decrypts itself).
+    private func localVault(_ vaultID: String) throws -> GocryptfsBridge? {
+        try lock.withLock {
+            guard mode == .clientDecrypt else { return nil }
+            guard let bridge = bridges[vaultID] else { throw RemoteServerError.vaultLocked }
+            return bridge
+        }
+    }
+
+    /// Runs a blocking Go library call away from the caller's thread.
+    private func offThread<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
+        try await Task.detached { try body() }.value
+    }
+
+    private func refuseWritesIfLocal() throws {
+        if isClientDecrypt { throw RemoteServerError.readOnly }
     }
 
     // MARK: - Reading
 
     public func list(vaultID: String, path: String) async throws -> [RemoteEntry] {
+        if let bridge = try localVault(vaultID) {
+            return try await offThread {
+                try bridge.listDirectory(path: path).map { RemoteEntry(name: $0.name, isDir: $0.isDirectory, size: $0.size) }
+            }
+        }
         struct Response: Decodable { let entries: [RemoteEntry]? }
         let (data, _) = try await vaultRequest(vaultID) {
             self.request("api/vaults/\(vaultID)/list", query: ["path": path])
@@ -100,6 +235,9 @@ public final class RemoteServerClient: @unchecked Sendable {
     }
 
     public func fileSize(vaultID: String, path: String) async throws -> Int64 {
+        if let bridge = try localVault(vaultID) {
+            return try await offThread { try bridge.fileSize(path: path) }
+        }
         let (_, response) = try await vaultRequest(vaultID) {
             self.request("api/vaults/\(vaultID)/file", method: "HEAD", query: ["path": path])
         }
@@ -108,7 +246,10 @@ public final class RemoteServerClient: @unchecked Sendable {
     }
 
     public func fileData(vaultID: String, path: String) async throws -> Data {
-        try await vaultRequest(vaultID) {
+        if let bridge = try localVault(vaultID) {
+            return try await offThread { try bridge.decryptFile(path: path) }
+        }
+        return try await vaultRequest(vaultID) {
             self.request("api/vaults/\(vaultID)/file", query: ["path": path])
         }.0
     }
@@ -116,6 +257,9 @@ public final class RemoteServerClient: @unchecked Sendable {
     /// Reads up to `length` bytes at `offset`; returns fewer at EOF and none past it.
     public func readRange(vaultID: String, path: String, offset: Int64, length: Int) async throws -> Data {
         guard length > 0 else { return Data() }
+        if let bridge = try localVault(vaultID) {
+            return try await offThread { try bridge.readRange(path: path, offset: offset, length: Int32(length)) }
+        }
         let (data, response) = try await vaultRequest(vaultID, accept: [200, 206, 416]) {
             var req = self.request("api/vaults/\(vaultID)/file", query: ["path": path])
             req.setValue("bytes=\(offset)-\(offset + Int64(length) - 1)", forHTTPHeaderField: "Range")
@@ -134,6 +278,9 @@ public final class RemoteServerClient: @unchecked Sendable {
     /// A server-rendered JPEG thumbnail, or nil when the server has no decoder
     /// for this file (HEIC, RAW, or video without ffmpeg).
     public func thumbnail(vaultID: String, path: String, size: Int) async throws -> Data? {
+        // A client-decrypt server has no plaintext to thumbnail; the caller
+        // renders one from the decrypted file.
+        if try localVault(vaultID) != nil { return nil }
         let (data, response) = try await vaultRequest(vaultID, accept: [200, 204]) {
             self.request("api/vaults/\(vaultID)/thumb", query: ["path": path, "size": String(size)])
         }
@@ -143,6 +290,7 @@ public final class RemoteServerClient: @unchecked Sendable {
     // MARK: - Writing
 
     public func mkdir(vaultID: String, path: String) async throws {
+        try refuseWritesIfLocal()
         _ = try await vaultRequest(vaultID) {
             try self.jsonRequest("api/vaults/\(vaultID)/mkdir", body: ["path": path])
         }
@@ -150,6 +298,7 @@ public final class RemoteServerClient: @unchecked Sendable {
 
     /// Renames or relocates an entry; `to` is the full destination path.
     public func move(vaultID: String, from: String, to: String) async throws {
+        try refuseWritesIfLocal()
         _ = try await vaultRequest(vaultID) {
             try self.jsonRequest("api/vaults/\(vaultID)/move", body: ["from": from, "to": to])
         }
@@ -157,6 +306,7 @@ public final class RemoteServerClient: @unchecked Sendable {
 
     /// Deletes a file, or a directory with everything in it.
     public func delete(vaultID: String, path: String) async throws {
+        try refuseWritesIfLocal()
         _ = try await vaultRequest(vaultID) {
             self.request("api/vaults/\(vaultID)/entry", method: "DELETE", query: ["path": path])
         }
@@ -164,6 +314,7 @@ public final class RemoteServerClient: @unchecked Sendable {
 
     /// Uploads an in-memory file. The server refuses to overwrite.
     public func upload(vaultID: String, directory: String, name: String, data: Data) async throws {
+        try refuseWritesIfLocal()
         _ = try await vaultRequest(vaultID) {
             var req = self.request("api/vaults/\(vaultID)/upload", method: "POST",
                                    query: ["path": directory, "name": name])
@@ -179,6 +330,7 @@ public final class RemoteServerClient: @unchecked Sendable {
         vaultID: String, directory: String, name: String, chunks: S,
         progress: @escaping @Sendable (Int64) -> Void
     ) async throws where S.Element == Data {
+        try refuseWritesIfLocal()
         // A streamed body cannot be replayed after a 401, so make sure the
         // server session is live first; this re-unlocks it if it expired.
         _ = try await list(vaultID: vaultID, path: directory)

@@ -189,6 +189,125 @@ enum RemoteServerTest {
         } catch {
             check("remote vault operations", false, "\(error)")
         }
+
+        await runClientDecrypt(serverBin, check: check)
+    }
+
+    /// The same vault served in client-decrypt mode: the client logs in with
+    /// the server's access password and decrypts here, through the Go library.
+    static func runClientDecrypt(_ serverBin: String, check: (String, Bool, String) -> Void) async {
+        print("  -- client-decrypt mode --")
+        let accessPassword = "server-access-123"
+        let server: Process
+        let baseURL: URL
+        do {
+            let hashFile = fixtureDir.appendingPathComponent("access-hash")
+            try hashPassword(serverBin, accessPassword).write(to: hashFile)
+            (server, baseURL) = try startServer(serverBin, extra: [
+                "-mode", "client-decrypt", "-access-password-file", hashFile.path,
+            ])
+        } catch {
+            check("start client-decrypt server", false, "\(error)")
+            return
+        }
+        defer { server.terminate(); server.waitUntilExit() }
+
+        let client = RemoteServerClient(baseURL: baseURL)
+        do {
+            let mode = try await client.serverMode()
+            check("reports client-decrypt mode", mode == .clientDecrypt, "got \(mode)")
+
+            do {
+                _ = try await client.listVaults()
+                check("vaults need the access password", false, "listed without login")
+            } catch RemoteServerError.accessPasswordRequired {
+                check("vaults need the access password", true, "")
+            }
+            do {
+                try await client.login(accessPassword: "nope")
+                check("wrong access password rejected", false, "login succeeded")
+            } catch RemoteServerError.wrongAccessPassword {
+                check("wrong access password rejected", true, "")
+            }
+            try await client.login(accessPassword: accessPassword)
+            guard let vault = try await client.listVaults().first else {
+                check("lists the vault after login", false, "no vaults")
+                return
+            }
+            check("lists the vault after login", vault.name == "rw" && !vault.unlocked, "got \(vault)")
+
+            do {
+                try await client.unlock(vaultID: vault.id, password: "nope")
+                check("wrong vault password rejected locally", false, "unlock succeeded")
+            } catch RemoteServerError.wrongPassword {
+                check("wrong vault password rejected locally", true, "")
+            }
+            try await client.unlock(vaultID: vault.id, password: password)
+            let unlocked = try await client.listVaults().first?.unlocked ?? false
+            check("unlock opens the vault on this Mac", unlocked, "")
+
+            let root = RemoteVaultSource(client: client, vaultID: vault.id, vaultName: vault.name)
+            guard let video = try await root.listMedia().first(where: { $0.name == "clip.mp4" }) else {
+                check("lists decrypted names", false, "clip.mp4 missing")
+                return
+            }
+            let videoSize = ((try FileManager.default.attributesOfItem(atPath: videoFixture.path)[.size]) as? Int64) ?? 0
+            let size = try await root.fileSize(for: video)
+            check("lists decrypted names and sizes", size == videoSize, "\(size) vs \(videoSize)")
+
+            let reader = RemoteRangeReader(client: client, vaultID: vault.id)
+            let fh = try FileHandle(forReadingFrom: videoFixture)
+            defer { try? fh.close() }
+            var mismatches: [Int64] = []
+            for off in [0, 4089, videoSize / 2, videoSize - 10] {
+                let len = Int32(min(262_144, videoSize - off))
+                let got = try reader.readRange(path: "clip.mp4", offset: off, length: len)
+                try fh.seek(toOffset: UInt64(off))
+                if got != fh.readData(ofLength: Int(len)) { mismatches.append(off) }
+            }
+            check("range reads decrypted here, byte-exact", mismatches.isEmpty, "mismatch at \(mismatches)")
+
+            await playback(try root.createPlayerItem(for: video), check: check)
+            let vthumb = try? await root.loadThumbnail(for: video, size: CGSize(width: 160, height: 160))
+            check("video thumbnail rendered here", (vthumb?.size.width ?? 0) > 0, "")
+
+            do {
+                try await root.createDirectory(named: "Nope")
+                check("writes refused", false, "mkdir succeeded")
+            } catch RemoteServerError.readOnly {
+                check("writes refused", true, "")
+            }
+
+            try await client.lock(vaultID: vault.id)
+            do {
+                _ = try await root.listMedia()
+                check("lock drops the local vault", false, "list still works")
+            } catch RemoteServerError.vaultLocked {
+                check("lock drops the local vault", true, "")
+            }
+        } catch {
+            check("client-decrypt operations", false, "\(error)")
+        }
+    }
+
+    /// Runs `imagethat-web -hash-password`, feeding the password on stdin.
+    static func hashPassword(_ bin: String, _ password: String) throws -> Data {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: bin)
+        p.arguments = ["-hash-password"]
+        let input = Pipe(), output = Pipe()
+        p.standardInput = input
+        p.standardOutput = output
+        p.standardError = FileHandle.nullDevice
+        try p.run()
+        input.fileHandleForWriting.write(Data((password + "\n").utf8))
+        try input.fileHandleForWriting.close()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard p.terminationStatus == 0, !data.isEmpty else {
+            throw NSError(domain: "RemoteServerTest", code: 3, userInfo: [NSLocalizedDescriptionKey: "hash-password failed"])
+        }
+        return data
     }
 
     @MainActor
@@ -211,18 +330,18 @@ enum RemoteServerTest {
         player.replaceCurrentItem(with: nil)
     }
 
-    static func startServer(_ bin: String) throws -> (Process, URL) {
+    static func startServer(_ bin: String, extra: [String] = []) throws -> (Process, URL) {
         let port = try freePort()
         let p = Process()
         p.executableURL = URL(fileURLWithPath: bin)
-        p.arguments = ["-root", fixtureDir.path, "-addr", "127.0.0.1:\(port)", "-idle-timeout", "\(idleTimeout)s"]
+        p.arguments = ["-root", fixtureDir.path, "-addr", "127.0.0.1:\(port)", "-idle-timeout", "\(idleTimeout)s"] + extra
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
         try p.run()
         let base = URL(string: "http://127.0.0.1:\(port)")!
         // Wait for it to answer.
         for _ in 0..<100 {
-            if (try? Data(contentsOf: base.appendingPathComponent("api/vaults"))) != nil { return (p, base) }
+            if (try? Data(contentsOf: base.appendingPathComponent("api/info"))) != nil { return (p, base) }
             Thread.sleep(forTimeInterval: 0.1)
         }
         p.terminate()

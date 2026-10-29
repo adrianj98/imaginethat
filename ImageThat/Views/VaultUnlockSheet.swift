@@ -21,6 +21,12 @@ public struct VaultUnlockSheet: View {
         }
     }
 
+    /// A server URL with no vault: the prompt is for a client-decrypt
+    /// server's access password rather than a vault password.
+    private var isServerLogin: Bool {
+        appState.pendingVaultURL.flatMap(RemoteLocation.parse).map { $0.vaultID == nil } ?? false
+    }
+
     public init() {}
 
     public var body: some View {
@@ -29,7 +35,7 @@ public struct VaultUnlockSheet: View {
                 .font(.system(size: 48))
                 .foregroundStyle(.secondary)
 
-            Text("Unlock Encrypted Vault")
+            Text(isServerLogin ? "Log in to Server" : "Unlock Encrypted Vault")
                 .font(.title2)
                 .fontWeight(.semibold)
 
