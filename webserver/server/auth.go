@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/adrianm/imagethat/core/cache"
 	"github.com/adrianm/imagethat/core/vault"
 )
 
@@ -21,7 +22,7 @@ const sessionCookieName = "imagethat_session"
 // unreadable at that instant instead of lingering until eviction.
 type unlockedVault struct {
 	sess   *vault.Session
-	thumbs *blobCache
+	thumbs *cache.Blob
 }
 
 func (u *unlockedVault) close() {

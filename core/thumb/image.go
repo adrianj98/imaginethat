@@ -1,4 +1,7 @@
-package server
+// Package thumb renders and caches previews of vault media. Image decoding
+// for the formats Go understands lives here; HEIC, RAW and video frames come
+// from the host through the Decoder interface in service.go.
+package thumb
 
 import (
 	"bytes"
@@ -21,14 +24,14 @@ func init() {
 	image.RegisterFormat("bmp", "BM", bmp.Decode, bmp.DecodeConfig)
 }
 
-// thumbQuality is the JPEG quality for generated previews, matching the
-// macOS app's PersistentThumbnailCache.
-const thumbQuality = 80
+// Quality is the JPEG quality of generated previews, the value the macOS
+// app used for its own cache.
+const Quality = 80
 
-// makeThumbnail decodes an image and re-encodes it as a JPEG whose longest
+// Make decodes an image and re-encodes it as a JPEG whose longest
 // edge is at most maxEdge pixels. Images already smaller are left at their
 // original dimensions rather than upscaled.
-func makeThumbnail(src []byte, maxEdge int) ([]byte, error) {
+func Make(src []byte, maxEdge int) ([]byte, error) {
 	img, _, err := image.Decode(bytes.NewReader(src))
 	if err != nil {
 		return nil, fmt.Errorf("decode: %w", err)
@@ -63,7 +66,7 @@ func makeThumbnail(src []byte, maxEdge int) ([]byte, error) {
 	draw.CatmullRom.Scale(dst, dst.Bounds(), img, b, draw.Over, nil)
 
 	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: thumbQuality}); err != nil {
+	if err := jpeg.Encode(&buf, dst, &jpeg.Options{Quality: Quality}); err != nil {
 		return nil, fmt.Errorf("encode: %w", err)
 	}
 	return buf.Bytes(), nil

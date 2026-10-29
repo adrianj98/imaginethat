@@ -68,4 +68,23 @@ extern void GocryptfsWriterAbort(int writerID);
 // Caller must free the returned string.
 extern char* GocryptfsResolveCipherPath(int sessionID, char* plainRelPath, int isDir);
 
+// Thumbnails. The engine keeps an encrypted in-memory cache per session and,
+// when diskDir is non-empty, a persistent cache sealed with the vault's own key
+// (unreadable without the password). sourceID is a stable name for the vault
+// (its path or gdrive:// URL); memBytes/diskBytes of 0 pick the defaults.
+// Without Configure a session gets a memory-only cache on first use.
+extern int GocryptfsThumbConfigure(int sessionID, char* sourceID, char* diskDir, int64_t memBytes, int64_t diskBytes);
+// A JPEG preview with longest edge <= maxEdge, served from the caches or rendered
+// by the engine (JPEG, PNG, GIF, WebP, BMP). size 0 with no error means the engine
+// has no decoder for the file (HEIC, RAW, video): render it on the host and hand
+// it back with GocryptfsThumbPut so the caches learn it. Free with
+// GocryptfsFreeDecryptResult.
+extern DecryptResult GocryptfsThumbGet(int sessionID, char* relativePath, int maxEdge);
+extern int GocryptfsThumbPut(int sessionID, char* relativePath, int maxEdge, void* jpeg, int jpegLen);
+// Drop every cached preview of a path (after an edit, move or delete).
+extern void GocryptfsThumbInvalidate(int sessionID, char* relativePath);
+// The persistent cache as a whole, independent of any session.
+extern int GocryptfsThumbCacheClear(char* diskDir);
+extern int64_t GocryptfsThumbCacheSize(char* diskDir);
+
 #endif

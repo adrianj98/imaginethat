@@ -1,5 +1,5 @@
 .PHONY: build run golib clean app test test-logic test-e2e test-fixtures golib-sync \
-        core-test web-build web-all web-run web-test android-aar android-debug android-test
+        core-test golib-test golib-linux golib-linux-test web-build web-all web-run web-test android-aar android-debug android-test
 
 BIN_DIR = $(shell swift build --show-bin-path)
 APP_BUNDLE = build/ImageThat.app
@@ -53,6 +53,24 @@ golib: core/internal/gocryptfs
 	cd gocryptfs-lib && CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 		go build -tags without_openssl -buildmode=c-shared \
 		-o ../build/libgocryptfs.dylib .
+	rm -f build/libgocryptfs.h
+
+# Drive the built dylib through its public C header (CLibGocryptfs/libgocryptfs.h)
+# the way the app does: open, list, range reads, streaming import, replace,
+# seal, move, delete, and a scan of the vault dir for leaked plaintext.
+golib-test: golib
+	bash gocryptfs-lib/ctest/run.sh build/libgocryptfs.dylib
+
+# The same library for Linux (build/libgocryptfs.so). Nothing ships it; it is
+# how the C API gets exercised on a Linux box or in CI without a Mac.
+golib-linux: core/internal/gocryptfs
+	cd gocryptfs-lib && CGO_ENABLED=1 GOOS=linux \
+		go build -tags without_openssl -buildmode=c-shared \
+		-o ../build/libgocryptfs.so .
+	rm -f build/libgocryptfs.h
+
+golib-linux-test: golib-linux
+	bash gocryptfs-lib/ctest/run.sh build/libgocryptfs.so
 
 # --- Go webserver ---------------------------------------------------------
 # A standalone HTTP server that browses the same gocryptfs vaults from a

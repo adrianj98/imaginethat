@@ -1,7 +1,7 @@
 # Go core: moving file handling, caching, streaming and transport out of the Mac app
 
 Date: 2026-10-29
-Status: in progress (Phase 0 and Phase 1a landed 2026-10-29; see "Status" below)
+Status: in progress (Phases 0, 1a and the Go side of 2 landed 2026-10-29; see the phase notes)
 
 ## Intent
 
@@ -802,6 +802,39 @@ Exit: Mac app opens AES-GCM, AES-SIV and XChaCha fixture vaults; no
 `/tmp/gocryptfs.log`; no-plaintext test passes for local vault imports.
 
 ### Phase 2: caches and thumbnails in Go
+
+**Landed (Go side, verified on Linux):**
+
+- `core/cache`: `Blob` (the webserver's encrypted in-memory LRU, moved) and
+  `ThumbDisk`, the persistent tier sealed with the vault's own key (one
+  directory per source keyed by hashed IDs, magic-prefixed sealed entries,
+  LRU eviction by mtime, atomic writes). `ThumbKey` includes the plaintext
+  size so an overwritten file never serves a stale preview.
+- `core/thumb`: `Make` (the webserver's Go image decode and scale, moved) and
+  `Service`: memory tier, optional disk tier, a decode-permit limit, Go
+  decoders for JPEG/PNG/GIF/WebP/BMP, the host `Decoder` hook for HEIC, RAW
+  and video, `Put` for host-rendered previews and `Invalidate`.
+- `webserver/server` imports both instead of its own copies (part of Phase 7).
+- The shim exports `GocryptfsThumbConfigure` / `ThumbGet` / `ThumbPut` /
+  `ThumbInvalidate` / `ThumbCacheClear` / `ThumbCacheSize`. On macOS the host
+  pulls rather than being called back: `ThumbGet` returns empty for formats
+  Go cannot decode, Swift renders them as before and hands the JPEG to
+  `ThumbPut`. Mutating exports invalidate the previews of the paths they
+  touch.
+- Tests: `core/cache` and `core/thumb` unit tests (tiers, sealing, eviction,
+  invalidation, concurrency and cancellation, no plaintext on disk, disk tier
+  surviving a relaunch and dying with the session), shim tests, and the C
+  harness driving the thumbnail exports through the real shared library.
+
+**Pending (needs a Mac):** the Swift wiring is written but uncompiled.
+`GocryptfsBridge` and `DriveVaultBridge` conform to `VaultThumbnailing`;
+`AppState.loadThumbnail` asks the engine first and stores host-rendered
+previews back; `PersistentThumbnailCache.swift` is deleted and Preferences
+clears and sizes the cache through the engine. Old `.cache` entries from the
+previous format sit in the same directory until "Clear Cache" removes them.
+
+Original plan for reference:
+
 
 - Move `webserver/server/cache.go` → `core/cache/blob.go`,
   `webserver/server/thumb.go` → `core/thumb`. Add `cache.ThumbDisk`

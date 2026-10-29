@@ -19,6 +19,7 @@ import "C"
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,8 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/adrianm/imagethat/core/cache"
+	"github.com/adrianm/imagethat/core/thumb"
 	"github.com/adrianm/imagethat/core/vault"
 )
 
@@ -54,6 +57,10 @@ type session struct {
 	mu    sync.Mutex
 	files map[string]*openFile // plaintext path -> handle, at most maxOpenFiles
 	order []string             // oldest first, for eviction
+
+	// thumbs is the preview service, created by GocryptfsThumbConfigure or
+	// lazily (memory only) on first use.
+	thumbs *thumb.Service
 }
 
 const maxOpenFiles = 16
@@ -215,6 +222,12 @@ func GocryptfsClose(sessionID C.int) {
 		return
 	}
 	sess.dropAllFiles()
+	sess.mu.Lock()
+	if sess.thumbs != nil {
+		sess.thumbs.Close()
+		sess.thumbs = nil
+	}
+	sess.mu.Unlock()
 	_ = sess.s.Close()
 }
 
@@ -462,6 +475,7 @@ func GocryptfsRenameFile(sessionID C.int, sourcePath *C.char, destDirPath *C.cha
 	err := sess.s.Move(src, dst)
 	if err == nil {
 		sess.dropAllFiles()
+		sess.invalidateThumb(src)
 	}
 	return writeCode(err)
 }
@@ -483,6 +497,7 @@ func GocryptfsDeleteFile(sessionID C.int, filePath *C.char) C.int {
 	}
 	p := C.GoString(filePath)
 	sess.dropFile(p)
+	sess.invalidateThumb(p)
 	return writeCode(sess.s.Remove(p))
 }
 
@@ -510,6 +525,7 @@ func GocryptfsWriteFile(sessionID C.int, relativePath *C.char, data unsafe.Point
 	plain := C.GoBytes(data, dataLen)
 	defer wipe(plain)
 	sess.dropFile(p)
+	sess.invalidateThumb(p)
 	_, err := sess.s.Replace(p, bytes.NewReader(plain))
 	return writeCode(err)
 }
@@ -607,6 +623,7 @@ func GocryptfsWriterClose(writerID C.int) C.int {
 	<-w.done
 	if w.err == nil {
 		w.sess.dropFile(w.path)
+		w.sess.invalidateThumb(w.path)
 	}
 	return writeCode(w.err)
 }
@@ -619,6 +636,168 @@ func GocryptfsWriterAbort(writerID C.int) {
 	}
 	w.once.Do(func() { w.pw.CloseWithError(errAborted) })
 	<-w.done
+}
+
+// --- Thumbnails ----------------------------------------------------------------------
+//
+// Previews come from core/thumb: an encrypted memory tier, an optional disk
+// tier sealed with the vault's own key, and Go's image decoders. Formats Go
+// cannot decode (HEIC, RAW, video) return an empty result; the host renders
+// those itself and hands the JPEG back with GocryptfsThumbPut so both tiers
+// learn it. The host never implements a callback.
+
+var (
+	thumbDisks   = make(map[string]*cache.ThumbDisk) // one store per directory, shared by sessions
+	thumbDisksMu sync.Mutex
+)
+
+func thumbDiskFor(dir string, budget int64) *cache.ThumbDisk {
+	thumbDisksMu.Lock()
+	defer thumbDisksMu.Unlock()
+	if d, ok := thumbDisks[dir]; ok {
+		return d
+	}
+	d := cache.NewThumbDisk(dir, budget)
+	thumbDisks[dir] = d
+	return d
+}
+
+// thumbService returns the session's preview service, creating a memory-only
+// one if GocryptfsThumbConfigure was never called.
+func (sess *session) thumbService() (*thumb.Service, error) {
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if sess.thumbs == nil {
+		svc, err := thumb.New("", thumb.SessionReader{S: sess.s}, thumb.Options{})
+		if err != nil {
+			return nil, err
+		}
+		sess.thumbs = svc
+	}
+	return sess.thumbs, nil
+}
+
+func (sess *session) invalidateThumb(p string) {
+	sess.mu.Lock()
+	svc := sess.thumbs
+	sess.mu.Unlock()
+	if svc != nil {
+		svc.Invalidate(p)
+	}
+}
+
+// GocryptfsThumbConfigure sets up previews for a session. sourceID is a stable
+// name for the vault (its path, or a gdrive:// URL) that keys the disk tier;
+// diskDir may be empty for a memory-only cache. Budgets are in bytes; zero
+// picks the defaults (64 MiB memory, 1 GiB disk). Replaces any earlier
+// configuration.
+//
+//export GocryptfsThumbConfigure
+func GocryptfsThumbConfigure(sessionID C.int, sourceID *C.char, diskDir *C.char, memBytes C.int64_t, diskBytes C.int64_t) C.int {
+	sess := getSession(sessionID)
+	if sess == nil {
+		return rcNoConfig
+	}
+	opts := thumb.Options{MemBytes: int64(memBytes)}
+	if dir := C.GoString(diskDir); dir != "" {
+		budget := int64(diskBytes)
+		if budget <= 0 {
+			budget = 1 << 30
+		}
+		opts.Disk = thumbDiskFor(dir, budget)
+		opts.Sealer = sess.s
+	}
+	svc, err := thumb.New(C.GoString(sourceID), thumb.SessionReader{S: sess.s}, opts)
+	if err != nil {
+		return rcBackend
+	}
+	sess.mu.Lock()
+	if sess.thumbs != nil {
+		sess.thumbs.Close()
+	}
+	sess.thumbs = svc
+	sess.mu.Unlock()
+	return rcOK
+}
+
+// GocryptfsThumbGet returns a JPEG preview whose longest edge is at most
+// maxEdge. An empty result with no error means the engine has no decoder for
+// this file: the host should render it and call GocryptfsThumbPut.
+//
+//export GocryptfsThumbGet
+func GocryptfsThumbGet(sessionID C.int, relativePath *C.char, maxEdge C.int) C.DecryptResult {
+	sess := getSession(sessionID)
+	if sess == nil {
+		return C.DecryptResult{error: C.CString("invalid session")}
+	}
+	svc, err := sess.thumbService()
+	if err != nil {
+		return C.DecryptResult{error: C.CString(err.Error())}
+	}
+	jpeg, err := svc.Get(context.Background(), C.GoString(relativePath), int(maxEdge))
+	if errors.Is(err, thumb.ErrNoPreview) {
+		return C.DecryptResult{size: 0}
+	}
+	if err != nil {
+		return C.DecryptResult{error: C.CString(err.Error())}
+	}
+	// The cache keeps its own sealed copy; the bytes handed to C are the
+	// caller's to zero and free.
+	return toCResult(append([]byte(nil), jpeg...))
+}
+
+// GocryptfsThumbPut stores a preview the host rendered itself.
+//
+//export GocryptfsThumbPut
+func GocryptfsThumbPut(sessionID C.int, relativePath *C.char, maxEdge C.int, jpeg unsafe.Pointer, jpegLen C.int) C.int {
+	sess := getSession(sessionID)
+	if sess == nil || jpegLen <= 0 {
+		return rcNoConfig
+	}
+	svc, err := sess.thumbService()
+	if err != nil {
+		return rcBackend
+	}
+	if err := svc.Put(C.GoString(relativePath), int(maxEdge), C.GoBytes(jpeg, jpegLen)); err != nil {
+		return writeCode(err)
+	}
+	return rcOK
+}
+
+// GocryptfsThumbInvalidate drops every cached preview of a path.
+//
+//export GocryptfsThumbInvalidate
+func GocryptfsThumbInvalidate(sessionID C.int, relativePath *C.char) {
+	if sess := getSession(sessionID); sess != nil {
+		sess.invalidateThumb(C.GoString(relativePath))
+	}
+}
+
+// GocryptfsThumbCacheClear deletes every preview stored under diskDir, for
+// every vault. Entries are sealed per vault, so this is the only way to free
+// the space of a vault whose password is gone.
+//
+//export GocryptfsThumbCacheClear
+func GocryptfsThumbCacheClear(diskDir *C.char) C.int {
+	dir := C.GoString(diskDir)
+	if dir == "" {
+		return rcCrypto
+	}
+	if err := thumbDiskFor(dir, 1<<30).Clear(); err != nil {
+		return rcBackend
+	}
+	return rcOK
+}
+
+// GocryptfsThumbCacheSize returns the bytes stored under diskDir.
+//
+//export GocryptfsThumbCacheSize
+func GocryptfsThumbCacheSize(diskDir *C.char) C.int64_t {
+	dir := C.GoString(diskDir)
+	if dir == "" {
+		return 0
+	}
+	return C.int64_t(thumbDiskFor(dir, 1<<30).Size())
 }
 
 // --- Memory helpers --------------------------------------------------------------

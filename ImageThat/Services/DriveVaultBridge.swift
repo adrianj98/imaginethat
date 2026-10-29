@@ -4,7 +4,7 @@ import CLibGocryptfs
 /// A gocryptfs session backed by Google Drive via VFS callbacks.
 /// Mirrors GocryptfsBridge but opens the vault from in-memory config bytes
 /// and reads encrypted file content through DriveVaultFS callbacks.
-public final class DriveVaultBridge: @unchecked Sendable {
+public final class DriveVaultBridge: VaultThumbnailing, @unchecked Sendable {
     private let sessionID: Int32
     // Kept alive so the C callback pointers remain valid for the session lifetime.
     let fs: DriveVaultFS
@@ -101,6 +101,34 @@ public final class DriveVaultBridge: @unchecked Sendable {
         }
         guard size >= 0 else { throw GocryptfsError.decryptFailed("fileSize failed") }
         return size
+    }
+
+
+    // MARK: - Thumbnails (core/thumb through the engine)
+
+    /// Set up the preview caches for this session: an encrypted memory tier
+    /// and, when `diskDir` is given, a persistent tier sealed with the vault's
+    /// own key. `sourceID` must be stable across launches (the vault path).
+    public func configureThumbnails(sourceID: String, diskDir: URL?, memBytes: Int64 = 0, diskBytes: Int64 = 0) throws {
+        try GocryptfsThumbnails.configure(sessionID: sessionID, sourceID: sourceID, diskDir: diskDir,
+                                          memBytes: memBytes, diskBytes: diskBytes)
+    }
+
+    /// A JPEG preview from the caches or the engine's decoders, or nil when the
+    /// engine cannot decode this file (HEIC, RAW, video): render it on the host
+    /// and hand it to `storeThumbnail` so the caches learn it.
+    public func thumbnail(path: String, maxEdge: Int) throws -> Data? {
+        try GocryptfsThumbnails.get(sessionID: sessionID, path: path, maxEdge: maxEdge)
+    }
+
+    /// Store a preview the host rendered itself.
+    public func storeThumbnail(_ jpeg: Data, path: String, maxEdge: Int) throws {
+        try GocryptfsThumbnails.put(sessionID: sessionID, jpeg: jpeg, path: path, maxEdge: maxEdge)
+    }
+
+    /// Drop every cached preview of a path after it changed.
+    public func invalidateThumbnail(path: String) {
+        GocryptfsThumbnails.invalidate(sessionID: sessionID, path: path)
     }
 
     // MARK: - Write helpers

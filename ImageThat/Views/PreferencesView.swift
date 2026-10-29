@@ -119,7 +119,7 @@ public struct SecurityTab: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 Button("Clear Cache") {
-                    PersistentThumbnailCache.shared.clearAll()
+                    try? GocryptfsThumbnails.clearCache(at: AppPaths.thumbnailCache)
                     updateCacheSize()
                 }
             }
@@ -168,7 +168,7 @@ public struct SecurityTab: View {
     @State private var cacheBytes: Int64 = 0
 
     private func updateCacheSize() {
-        cacheBytes = PersistentThumbnailCache.shared.cacheSize()
+        cacheBytes = GocryptfsThumbnails.cacheSize(at: AppPaths.thumbnailCache)
     }
 }
 

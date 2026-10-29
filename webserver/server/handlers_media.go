@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/adrianm/imagethat/core/thumb"
 	"github.com/adrianm/imagethat/core/vault"
 )
 
@@ -126,7 +127,7 @@ func (s *Server) handleThumb(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	jpegBytes, err := makeThumbnail(src, size)
+	jpegBytes, err := thumb.Make(src, size)
 	// The decoded source is no longer needed; do not leave a decoded copy of
 	// vault content lying in the heap any longer than necessary.
 	for i := range src {

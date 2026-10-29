@@ -330,3 +330,91 @@ func assertNoPlaintext(t *testing.T, dir string, marker []byte) {
 		return nil
 	})
 }
+
+func TestThumbnails(t *testing.T) {
+	id, dir := openCopy(t)
+	cacheDir := filepath.Join(t.TempDir(), "thumbs")
+	if rc := tThumbConfigure(id, dir, cacheDir, 0, 0); rc != rcOK {
+		t.Fatalf("ThumbConfigure = %d", rc)
+	}
+
+	jpg, err := tThumbGet(id, "photo.jpg", 64)
+	if err != nil {
+		t.Fatalf("ThumbGet(photo.jpg): %v", err)
+	}
+	if len(jpg) < 4 || jpg[0] != 0xFF || jpg[1] != 0xD8 {
+		t.Fatalf("ThumbGet did not return a JPEG (%d bytes)", len(jpg))
+	}
+	again, err := tThumbGet(id, "photo.jpg", 64)
+	if err != nil || !bytes.Equal(again, jpg) {
+		t.Errorf("second ThumbGet differs: %v", err)
+	}
+
+	// Unsupported without a host decoder: empty, no error.
+	frame, err := tThumbGet(id, "clip.mp4", 64)
+	if err != nil || len(frame) != 0 {
+		t.Errorf("ThumbGet(clip.mp4) = %d bytes, %v; want empty and nil", len(frame), err)
+	}
+	// The host renders it and hands it back.
+	hostJPEG := []byte{0xFF, 0xD8, 0xFF, 0xE0, 9, 9, 9, 9}
+	if rc := tThumbPut(id, "clip.mp4", 64, hostJPEG); rc != rcOK {
+		t.Fatalf("ThumbPut = %d", rc)
+	}
+	got, err := tThumbGet(id, "clip.mp4", 64)
+	if err != nil || !bytes.Equal(got, hostJPEG) {
+		t.Errorf("ThumbGet after Put: %v (%d bytes)", err, len(got))
+	}
+	tThumbInvalidate(id, "clip.mp4")
+	if got, _ := tThumbGet(id, "clip.mp4", 64); len(got) != 0 {
+		t.Error("preview survived ThumbInvalidate")
+	}
+	if _, err := tThumbGet(id, "missing.jpg", 64); err == nil {
+		t.Error("ThumbGet(missing) succeeded")
+	}
+
+	// The disk tier holds sealed entries only, and sizes/clears as a whole.
+	if tThumbCacheSize(cacheDir) <= 0 {
+		t.Error("ThumbCacheSize reports nothing stored")
+	}
+	assertNoPlaintext(t, cacheDir, jpg[:32])
+	plainPhoto, _ := tDecryptFile(id, "photo.jpg")
+	assertNoPlaintext(t, cacheDir, plainPhoto[:32])
+
+	// A relaunch (new session, same cache dir) hits the disk tier: it must
+	// return the same bytes, and must not once the vault is closed.
+	tClose(id)
+	id2 := tOpen(dir, fixturePassword)
+	if id2 <= 0 {
+		t.Fatal(id2)
+	}
+	tThumbConfigure(id2, dir, cacheDir, 0, 0)
+	fromDisk, err := tThumbGet(id2, "photo.jpg", 64)
+	if err != nil || !bytes.Equal(fromDisk, jpg) {
+		t.Errorf("disk tier after relaunch: %v", err)
+	}
+	// Replacing the file drops its previews.
+	tWriteFile(id2, "photo.jpg", plainPhoto[:len(plainPhoto)/2])
+	changed, err := tThumbGet(id2, "photo.jpg", 64)
+	if err == nil && bytes.Equal(changed, jpg) {
+		t.Error("stale preview served after the file changed")
+	}
+	tClose(id2)
+
+	if rc := tThumbCacheClear(cacheDir); rc != rcOK {
+		t.Errorf("ThumbCacheClear = %d", rc)
+	}
+	if tThumbCacheSize(cacheDir) != 0 {
+		t.Errorf("ThumbCacheSize after clear = %d", tThumbCacheSize(cacheDir))
+	}
+	entries, _ := os.ReadDir(cacheDir)
+	if len(entries) != 0 {
+		t.Errorf("cache dir still has %d entries after clear", len(entries))
+	}
+
+	// Memory-only default: works without configure.
+	id3 := tOpen(dir, fixturePassword)
+	defer tClose(id3)
+	if jpg3, err := tThumbGet(id3, "photo.png", 48); err != nil || len(jpg3) == 0 {
+		t.Errorf("unconfigured ThumbGet: %v (%d bytes)", err, len(jpg3))
+	}
+}

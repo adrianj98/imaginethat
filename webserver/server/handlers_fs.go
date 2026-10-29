@@ -11,6 +11,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/adrianm/imagethat/core/cache"
 	"github.com/adrianm/imagethat/core/vault"
 )
 
@@ -112,7 +113,7 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	// log alongside everything else.
 	sess.Logf = s.cfg.Logger.Printf
 
-	thumbs, err := newBlobCache(s.cfg.ThumbCacheBytes)
+	thumbs, err := cache.NewBlob(s.cfg.ThumbCacheBytes)
 	if err != nil {
 		sess.Close()
 		s.cfg.Logger.Printf("thumb cache for %s: %v", id, err)

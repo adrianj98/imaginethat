@@ -674,62 +674,54 @@ public class AppState: ObservableObject {
     }
 
     public func loadThumbnail(for item: MediaItem, size: CGSize) async -> NSImage? {
-        // 1. In-memory cache (fast)
+        // 1. Decoded images for the visible grid (memory only)
         if let cached = thumbnailCache.get(for: item.id) {
             return cached
         }
 
         guard let source = mediaSource else { return nil }
+        let maxEdge = Int(max(size.width, size.height) * 2) // retina
 
-        // 2. Persistent disk cache (vault sources only)
-        if let vaultSource = source as? VaultSource {
-            if let thumb = loadFromPersistentCache(item: item, vaultId: vaultSource.bridge.vaultPath.path, bridge: vaultSource.bridge) {
-                thumbnailCache.set(thumb, for: item.id)
-                return thumb
-            }
-        } else if let dvSource = source as? DriveVaultSource {
-            if let thumb = loadFromPersistentCache(item: item, vaultId: "gdrive://\(dvSource.bridge.folderId)", bridge: dvSource.bridge) {
-                thumbnailCache.set(thumb, for: item.id)
-                return thumb
-            }
+        // 2. Vault sources: the engine's caches (encrypted memory, disk sealed
+        //    with the vault key) and its own decoders for JPEG/PNG/GIF/WebP/BMP.
+        let engine = Self.thumbnailer(for: source)
+        if let engine,
+           let jpeg = try? engine.thumbnail(path: item.url.path, maxEdge: maxEdge),
+           let image = NSImage(data: jpeg) {
+            thumbnailCache.set(image, for: item.id)
+            return image
         }
 
-        // 3. Generate from source (slow for vaults)
+        // 3. Render here (plain folders, Drive, remote servers; HEIC, RAW and
+        //    video for vaults) and hand vault previews back to the engine.
         do {
             let thumb = try await source.loadThumbnail(for: item, size: size)
             thumbnailCache.set(thumb, for: item.id)
-
-            if let vaultSource = source as? VaultSource {
-                saveToPersistentCache(thumb, item: item, vaultId: vaultSource.bridge.vaultPath.path, bridge: vaultSource.bridge)
-            } else if let dvSource = source as? DriveVaultSource {
-                saveToPersistentCache(thumb, item: item, vaultId: "gdrive://\(dvSource.bridge.folderId)", bridge: dvSource.bridge)
+            if let engine, let jpeg = thumb.jpegData(compressionFactor: 0.8) {
+                try? engine.storeThumbnail(jpeg, path: item.url.path, maxEdge: maxEdge)
             }
-
             return thumb
         } catch {
             return nil
         }
     }
 
-    private func loadFromPersistentCache(item: MediaItem, vaultId: String, bridge: any VaultCryptoBridge) -> NSImage? {
-        guard let fileSize = try? bridge.fileSize(path: item.url.path) else { return nil }
-        return PersistentThumbnailCache.shared.get(
-            vaultPath: vaultId,
-            filePath: item.url.path,
-            expectedSize: fileSize,
-            bridge: bridge
-        )
+    /// The engine session behind a vault source, which owns its preview caches.
+    private static func thumbnailer(for source: any MediaSource) -> (any VaultThumbnailing)? {
+        if let v = source as? VaultSource { return v.bridge }
+        if let d = source as? DriveVaultSource { return d.bridge }
+        return nil
     }
 
-    private func saveToPersistentCache(_ image: NSImage, item: MediaItem, vaultId: String, bridge: any VaultCryptoBridge) {
-        guard let fileSize = try? bridge.fileSize(path: item.url.path) else { return }
-        PersistentThumbnailCache.shared.set(
-            image,
-            vaultPath: vaultId,
-            filePath: item.url.path,
-            fileSize: fileSize,
-            bridge: bridge
-        )
+    /// Point a freshly unlocked session's preview caches at the app's cache
+    /// directory. Entries are sealed with the vault's own key, so the directory
+    /// is shared by every vault and unreadable without each one's password.
+    private func configureThumbnails(_ bridge: any VaultThumbnailing, sourceID: String) {
+        do {
+            try bridge.configureThumbnails(sourceID: sourceID, diskDir: AppPaths.thumbnailCache, memBytes: 0, diskBytes: 0)
+        } catch {
+            print("thumbnail cache unavailable for \(sourceID): \(error)")
+        }
     }
 
     // MARK: - Private
@@ -768,6 +760,7 @@ public class AppState: ObservableObject {
         Task {
             do {
                 let bridge = try GocryptfsBridge(vaultPath: url, password: password)
+                configureThumbnails(bridge, sourceID: url.path)
                 vaultPasswords[url.path] = password
                 // Save password to file if user opted in
                 if saveToKeychain {
@@ -1105,6 +1098,7 @@ public class AppState: ObservableObject {
         do {
             let bridge = try await DriveVaultBridge(folderId: folderId, password: password)
             let cacheKey = "gdrive://\(folderId)"
+            configureThumbnails(bridge, sourceID: cacheKey)
             vaultPasswords[cacheKey] = password
             if saveToKeychain {
                 if PasswordStore.encryptionDisabled {

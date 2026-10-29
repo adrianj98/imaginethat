@@ -20,7 +20,7 @@ import (
 
 const (
 	fixturePassword = "test-password-123"
-	fixtureSrc      = "../vault/testdata/vault"
+	fixtureSrc      = "../../core/vault/testdata/vault"
 )
 
 // patternBytes mirrors the generator in the vault package's fixture so tests
@@ -384,10 +384,8 @@ func TestThumbnailCacheIsEncrypted(t *testing.T) {
 		t.Fatal("vault not unlocked")
 	}
 
-	u.thumbs.mu.Lock()
 	var sealedFound bool
-	for _, el := range u.thumbs.entries {
-		sealed := el.Value.(*blobEntry).sealed
+	u.thumbs.Walk(func(_ string, sealed []byte) {
 		sealedFound = true
 		if bytes.Contains(sealed, plaintext) {
 			t.Error("cache entry holds the thumbnail in plaintext")
@@ -395,8 +393,7 @@ func TestThumbnailCacheIsEncrypted(t *testing.T) {
 		if bytes.HasPrefix(sealed, []byte{0xFF, 0xD8}) {
 			t.Error("cache entry starts with a JPEG marker; it is not encrypted")
 		}
-	}
-	u.thumbs.mu.Unlock()
+	})
 
 	if !sealedFound {
 		t.Fatal("nothing was cached, so the encryption check proved nothing")
@@ -426,44 +423,11 @@ func TestLockWipesCache(t *testing.T) {
 	if _, hit := cache.Get("anything"); hit {
 		t.Error("cache still returns entries after lock")
 	}
-	if cache.crypt.aead != nil {
+	if !cache.Closed() {
 		t.Error("cache key was not wiped on lock")
 	}
 	if rec := c.do(http.MethodGet, "/api/vaults/"+id+"/list?path=", nil); rec.Code != http.StatusUnauthorized {
 		t.Errorf("list after lock: %d, want 401", rec.Code)
-	}
-}
-
-func TestBlobCacheRoundTripAndEviction(t *testing.T) {
-	c, err := newBlobCache(1024)
-	if err != nil {
-		t.Fatalf("newBlobCache: %v", err)
-	}
-	payload := []byte("some sensitive preview bytes")
-	c.Put("a", payload)
-
-	got, ok := c.Get("a")
-	if !ok || !bytes.Equal(got, payload) {
-		t.Fatalf("Get(a) = %q, %v; want the original payload", got, ok)
-	}
-
-	// Filling past the budget must evict, not grow without bound.
-	for i := 0; i < 200; i++ {
-		c.Put(string(rune('a'+i%26))+string(rune('0'+i/26)), bytes.Repeat([]byte("x"), 100))
-	}
-	if c.cost > c.maxCost {
-		t.Errorf("cache cost %d exceeds budget %d", c.cost, c.maxCost)
-	}
-
-	// An oversized entry is skipped rather than flushing everything.
-	c.Put("huge", bytes.Repeat([]byte("y"), 5000))
-	if _, ok := c.Get("huge"); ok {
-		t.Error("oversized entry was cached")
-	}
-
-	c.Close()
-	if _, ok := c.Get("a"); ok {
-		t.Error("cache returned an entry after Close")
 	}
 }
 

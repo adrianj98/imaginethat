@@ -172,3 +172,40 @@ func tEncryptName(id int, cipherDir, name string) string {
 	defer C.free(unsafe.Pointer(r))
 	return C.GoString(r)
 }
+
+func tThumbConfigure(id int, sourceID, diskDir string, mem, disk int64) int {
+	src, d := cstr(sourceID), cstr(diskDir)
+	defer C.free(unsafe.Pointer(src))
+	defer C.free(unsafe.Pointer(d))
+	return int(GocryptfsThumbConfigure(C.int(id), src, d, C.int64_t(mem), C.int64_t(disk)))
+}
+
+func tThumbGet(id int, path string, maxEdge int) ([]byte, error) {
+	p := cstr(path)
+	defer C.free(unsafe.Pointer(p))
+	return fromResult(GocryptfsThumbGet(C.int(id), p, C.int(maxEdge)))
+}
+
+func tThumbPut(id int, path string, maxEdge int, jpeg []byte) int {
+	p := cstr(path)
+	defer C.free(unsafe.Pointer(p))
+	return int(GocryptfsThumbPut(C.int(id), p, C.int(maxEdge), ptr(jpeg), C.int(len(jpeg))))
+}
+
+func tThumbInvalidate(id int, path string) {
+	p := cstr(path)
+	defer C.free(unsafe.Pointer(p))
+	GocryptfsThumbInvalidate(C.int(id), p)
+}
+
+func tThumbCacheClear(dir string) int {
+	d := cstr(dir)
+	defer C.free(unsafe.Pointer(d))
+	return int(GocryptfsThumbCacheClear(d))
+}
+
+func tThumbCacheSize(dir string) int64 {
+	d := cstr(dir)
+	defer C.free(unsafe.Pointer(d))
+	return int64(GocryptfsThumbCacheSize(d))
+}
