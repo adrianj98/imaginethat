@@ -1,6 +1,8 @@
 package ai.alertd.imagethat.ui
 
 import ai.alertd.imagethat.data.CachingSource
+import ai.alertd.imagethat.data.EncryptedDiskCache
+import ai.alertd.imagethat.data.VaultDiskCache
 import ai.alertd.imagethat.data.VaultSource
 import ai.alertd.imagethat.keys.KeyVault
 import ai.alertd.imagethat.local.LocalVaults
@@ -93,7 +95,12 @@ class Session(
     idleTimeoutMs: Long = IDLE_TIMEOUT_MS,
     private val backgroundTimeoutMs: Long = BACKGROUND_TIMEOUT_MS,
     private val alarm: LockAlarm = LockAlarm.None,
+    /** Encrypted on-disk cache of remote vault reads; null (tests) means memory-only caching. */
+    private val diskCache: EncryptedDiskCache? = null,
 ) {
+    /** The disk cache of one remote vault (same instance each time); null when there is no disk cache. */
+    fun diskCache(sourceId: String): VaultDiskCache? = diskCache?.forVault(sourceId)
+
     /** The configurable idle timeout (AppState.idleTimeoutMinutes); takes effect on the next [tick]. */
     @Volatile var idleTimeoutMs: Long = idleTimeoutMs
         private set

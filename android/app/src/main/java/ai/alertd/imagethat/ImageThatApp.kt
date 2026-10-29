@@ -1,5 +1,6 @@
 package ai.alertd.imagethat
 
+import ai.alertd.imagethat.data.EncryptedDiskCache
 import ai.alertd.imagethat.keys.KeyVault
 import ai.alertd.imagethat.local.LocalVaults
 import ai.alertd.imagethat.media.ThumbnailFetcher
@@ -21,14 +22,18 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import mobile.Mobile
+import java.io.File
 
 /** The one KeyVault/StateStore and Session shared app-wide. */
 class AppContainer(private val context: Context) {
     val keys = KeyVault(context)
     val local = LocalVaults(context, keys.store())
+    // Ciphertext only, keyed per vault from its password (DiskCache.kt); the OS may clear cacheDir.
+    val diskCache = EncryptedDiskCache(File(context.cacheDir, "vault-cache"))
     val session = Session(
         keys, local,
         clearImageCache = { SingletonImageLoader.get(context).memoryCache?.clear() },
+        diskCache = diskCache,
         biometricsAvailable = {
             BiometricManager.from(context).canAuthenticate(BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
         },

@@ -3,10 +3,14 @@ package ai.alertd.imagethat.data
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 
@@ -74,7 +78,10 @@ class CountingSource : VaultSource {
 }
 
 class CachingSourceTest {
+    @get:Rule val tmp = TemporaryFolder()
+
     private var now = 0L
+    private var wall = 1_700_000_000_000L
 
     private fun inner() = CountingSource().apply {
         tree["/"] = mutableListOf(img("/", "a.jpg", 10), bin("/", "b.bin", 10), img("/", "big.jpg", 1000), dir("/", "d"))
@@ -96,7 +103,18 @@ class CachingSourceTest {
         fileBudget: Long = 1_000,
         maxFile: Long = 100,
         maxListings: Int = 512,
-    ) = CachingSource(src, ttl, thumbBudget, fileBudget, maxFile, maxListings) { now }
+        disk: VaultDiskCache? = null,
+    ) = CachingSource(src, ttl, thumbBudget, fileBudget, maxFile, maxListings, clock = { now }, wallClock = { wall }, disk = disk)
+
+    private lateinit var diskRoot: java.io.File
+
+    /** A fresh store object over one directory, as after an app restart; the vault's key comes from [password]. */
+    private fun diskVault(password: String? = "pw"): VaultDiskCache {
+        if (!::diskRoot.isInitialized) diskRoot = tmp.newFolder("disk")
+        val v = EncryptedDiskCache(diskRoot, budgetBytes = 10_000_000, maxEntryBytes = 100_000, kdfIterations = 1_000).forVault("srv:v1")
+        if (password != null) v.unlock(password.toCharArray())
+        return v
+    }
 
     @Test fun listingsAreServedFromMemoryUntilTheTtl() = runTest {
         val src = inner()
@@ -142,11 +160,12 @@ class CachingSourceTest {
 
     @Test fun thumbnailCacheEvictsTheLeastRecentlyUsedWithinItsByteBudget() = runTest {
         val src = inner()
-        val c = cached(src, thumbBudget = 100)
-        c.thumbnail("/a.jpg", 256)      // 40 bytes
-        c.thumbnail("/d/c.jpg", 256)    // 80
+        // Entries cost at least 64 bytes each, so 160 holds two of these 40-byte thumbnails, not three.
+        val c = cached(src, thumbBudget = 160)
+        c.thumbnail("/a.jpg", 256)      // 64
+        c.thumbnail("/d/c.jpg", 256)    // 128
         c.thumbnail("/a.jpg", 256)      // hit; a.jpg is now the most recent
-        c.thumbnail("/d/sub/e.jpg", 256) // 120 > 100: c.jpg goes
+        c.thumbnail("/d/sub/e.jpg", 256) // 192 > 160: c.jpg goes
         assertEquals(3, src.thumbCalls)
         c.thumbnail("/a.jpg", 256)
         c.thumbnail("/d/sub/e.jpg", 256)
@@ -307,11 +326,11 @@ class CachingSourceTest {
         lru.put("a", ByteArray(100))
         lru.put("b", ByteArray(100))
         assertEquals(200, lru.bytes)
-        lru.put("a", ByteArray(50)) // replace: no double counting
-        assertEquals(150, lru.bytes)
-        lru.put("c", ByteArray(100)) // 250 > 200: "b" is the least recently used
+        lru.put("a", ByteArray(70)) // replace: no double counting
+        assertEquals(170, lru.bytes)
+        lru.put("c", ByteArray(100)) // 270 > 200: "b" is the least recently used
         assertNull(lru.get("b"))
-        assertEquals(150, lru.bytes)
+        assertEquals(170, lru.bytes)
         lru.put("huge", ByteArray(201)) // never stored
         assertNull(lru.get("huge"))
         assertEquals(2, lru.size)
@@ -325,6 +344,103 @@ class CachingSourceTest {
         lru.clear()
         assertEquals(0, lru.bytes)
         assertEquals(0, lru.size)
+    }
+
+    // ---- the encrypted disk layer -----------------------------------------------
+
+    @Test fun everythingSurvivesARestartWithinTheTtl() = runTest {
+        val src = inner()
+        val first = cached(src, ttl = 300_000, disk = diskVault())
+        first.list("/")
+        first.thumbnail("/a.jpg", 256)
+        first.open("/a.jpg").use { it.readBytes() }
+        assertEquals(0, first.thumbnail("/b.bin", 256).size)
+        first.clear() // lock: memory gone, disk key gone, ciphertext stays
+        assertEquals(1, src.lists); assertEquals(2, src.thumbCalls); assertEquals(1, src.opens)
+
+        // "Restart": a new source over a new store object, unlocked with the same password.
+        wall += 60_000; now += 60_000
+        val second = cached(src, ttl = 300_000, disk = diskVault())
+        assertEquals(listOf("a.jpg", "b.bin", "big.jpg", "d"), second.list("/").map { it.name })
+        assertArrayEquals(ByteArray(40) { 5 }, second.thumbnail("/a.jpg", 256))
+        assertArrayEquals(ByteArray(10) { 1 }, second.open("/a.jpg").use { it.readBytes() })
+        assertEquals(0, second.thumbnail("/b.bin", 256).size)
+        assertEquals(1, src.lists); assertEquals(2, src.thumbCalls); assertEquals(1, src.opens)
+        assertEquals(10L, second.size("/a.jpg"))
+        assertEquals(0, src.sizes)
+    }
+
+    @Test fun aStaleDiskListingIsShownThenRefetched() = runTest {
+        val src = inner()
+        cached(src, ttl = 300_000, disk = diskVault()).list("/")
+        wall += 10 * 60_000; now += 10 * 60_000
+        val c = cached(src, ttl = 300_000, disk = diskVault())
+        assertEquals(4, c.peekListing("/")!!.size)
+        assertEquals(1, src.lists)
+        // Thumbnails and bytes keyed from the stale listing are still good: the file size is their validator.
+        assertNull(c.peekListing("/d"))
+        c.list("/")
+        assertEquals(2, src.lists)
+        c.list("/")
+        assertEquals(2, src.lists)
+    }
+
+    @Test fun diskThumbnailsAreKeyedByTheFileSize() = runTest {
+        val src = inner()
+        val c = cached(src, ttl = 300_000, disk = diskVault())
+        c.list("/")
+        c.thumbnail("/a.jpg", 256)
+        assertEquals(1, src.thumbCalls)
+        // Another client replaced a.jpg: the next listing shows a new size, and the old thumbnail is not reused.
+        src.tree["/"] = mutableListOf(img("/", "a.jpg", 11))
+        src.thumbs["/a.jpg"] = ByteArray(40) { 9 }
+        now += 1_000; wall += 1_000
+        val again = cached(src, ttl = 300_000, disk = diskVault())
+        again.invalidateListing("/")
+        again.list("/")
+        assertArrayEquals(ByteArray(40) { 9 }, again.thumbnail("/a.jpg", 256))
+        assertEquals(2, src.thumbCalls)
+    }
+
+    @Test fun writesReachTheDiskLayer() = runTest {
+        val src = inner()
+        val c = cached(src, ttl = 300_000, disk = diskVault())
+        c.list("/"); c.list("/d")
+        c.thumbnail("/d/c.jpg", 256)
+        c.open("/a.jpg").use { it.readBytes() }
+        c.delete("/d")
+        c.upload("/", "a.jpg", ByteArrayInputStream(ByteArray(10) { 8 }), 10)
+        val after = cached(src, ttl = 300_000, disk = diskVault())
+        assertNull(after.peekListing("/"))
+        assertNull(after.peekListing("/d"))
+        after.list("/"); after.list("/d")
+        after.thumbnail("/d/c.jpg", 256)
+        after.open("/a.jpg").use { it.readBytes() }
+        assertEquals(4, src.lists); assertEquals(2, src.thumbCalls); assertEquals(2, src.opens)
+    }
+
+    @Test fun aLockedDiskLayerIsSkippedAndAnotherPasswordSeesNothing() = runTest {
+        val src = inner()
+        val locked = cached(src, ttl = 300_000, disk = diskVault(password = null))
+        locked.list("/"); locked.thumbnail("/a.jpg", 256)
+        assertFalse(diskRoot.walkTopDown().any { it.isFile })
+        val wrong = cached(src, ttl = 300_000, disk = diskVault(password = "other"))
+        wrong.list("/")
+        assertEquals(2, src.lists)
+        val right = cached(src, ttl = 300_000, disk = diskVault())
+        right.list("/")
+        assertEquals(3, src.lists)
+        assertNotNull(cached(src, ttl = 300_000, disk = diskVault()).peekListing("/"))
+    }
+
+    @Test fun lockedFromTheSourceLocksTheDiskLayerToo() = runTest {
+        val src = inner()
+        val disk = diskVault()
+        val c = cached(src, ttl = 300_000, disk = disk)
+        c.list("/")
+        src.error = SourceError.Locked
+        try { c.list("/d"); fail() } catch (e: SourceError.Locked) {}
+        assertFalse(disk.isOpen)
     }
 
     @Test fun defaultBudgetsAreSane() {

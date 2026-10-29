@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 internal fun remoteSourceId(serverKey: String, vaultId: String) = "$serverKey:$vaultId"
 
@@ -81,9 +82,12 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
 
     fun open(vault: RemoteVault) {
         val id = remoteSourceId(serverKey, vault.id)
-        // CachingSource: listings, thumbnails and viewed images are kept in memory so browsing does
-        // not hit the server for the same thing twice; the Session clears it when the vault locks.
-        if (session.source(id) == null) session.registerSource(id, vault.name, CachingSource(RemoteSource(server!!.api, vault.id)))
+        // CachingSource: listings, thumbnails and viewed images are kept in memory, and encrypted on
+        // disk under a key from the vault password (derived at unlock below; without it the disk layer
+        // stays locked), so browsing does not hit the server for the same thing twice.
+        if (session.source(id) == null) {
+            session.registerSource(id, vault.name, CachingSource(RemoteSource(server!!.api, vault.id), disk = session.diskCache(id)))
+        }
         onOpen(id)
     }
 
@@ -145,6 +149,8 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
                 scope.launch(Dispatchers.Main) {
                     try {
                         server!!.api.unlock(v.id, pw)
+                        // The disk cache is keyed from the same password (PBKDF2: a few hundred ms, off the main thread).
+                        session.diskCache(remoteSourceId(serverKey, v.id))?.let { d -> withContext(Dispatchers.Default) { d.unlock(pw) } }
                         server.markUnlocked(v.id)
                         (load as? Load.Loaded)?.let { l -> load = Load.Loaded(l.vaults.map { if (it.id == v.id) it.copy(unlocked = true) else it }) }
                         unlocking = null

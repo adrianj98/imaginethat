@@ -210,6 +210,9 @@ private fun BrowserContent(
             if (state.busy != null) {
                 Text(state.busy!! + "…", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
                 LinearProgressIndicator(Modifier.fillMaxWidth())
+            } else if (state.loading && state.items.isNotEmpty()) {
+                // A known (possibly stale) listing is on screen while the fresh one loads.
+                LinearProgressIndicator(Modifier.fillMaxWidth().testTag("browser-revalidating"))
             }
             state.error?.let {
                 Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {

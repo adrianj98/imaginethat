@@ -1,29 +1,33 @@
 package ai.alertd.imagethat.data
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import java.io.ByteArrayInputStream
 import java.io.InputStream
 
 /**
- * In-memory read cache in front of a [VaultSource], so browsing does not ask the server for the
- * same folder, thumbnail or image again and again.
+ * Read cache in front of a [VaultSource], so browsing does not ask the server for the same folder,
+ * thumbnail or image again and again. Two layers: memory, and optionally an encrypted [disk] layer
+ * ([VaultDiskCache]) that survives restarts. Decrypted content lives only in memory; the disk layer
+ * holds ciphertext under a key derived from the vault password, and is readable only while that
+ * key is held ([VaultDiskCache.unlock]). [clear] drops the memory layer and locks the disk one.
  *
- * Nothing here is ever written to disk: every cache is a plain heap structure, bounded by a byte
- * budget or entry count, and [clear] drops it all (the Session calls it when the vault locks).
- *
- *  - Folder listings are kept for [listTtlMs] and re-fetched after that. Every write through this
- *    source (upload, mkdir, move, delete) invalidates the listings it touches, so the browser never
- *    sees a stale folder after its own changes; changes made by other clients show up after the TTL
- *    or on an explicit [invalidateListing].
+ *  - Folder listings are good for [listTtlMs] from the moment they were fetched, in memory and on
+ *    disk alike. Every write through this source (upload, mkdir, move, delete) forgets the listings
+ *    it touches, so the browser never sees a stale folder after its own changes; changes made by
+ *    other clients show up after the TTL, on [invalidateListing] (the Refresh action), or on the
+ *    next [list] after a stale listing was shown through [peekListing].
  *  - [size] answers from the cached parent listing when it can.
- *  - Thumbnail bytes are an LRU of [thumbBudgetBytes]; a "no preview" answer is cached as well.
- *  - Whole image files up to [maxCachedFileBytes] are kept in an LRU of [fileBudgetBytes] once the
- *    caller has read them to the end (the viewer reads a whole image to decode it), so swiping back
- *    to an image or reopening it does not download it again. Ranged reads and non-images stream
- *    through untouched.
+ *  - Thumbnail bytes are an LRU of [thumbBudgetBytes] in memory, and on disk keyed by the file's
+ *    size from the listing, so a replaced file gets a new thumbnail; "no preview" is cached too.
+ *  - Whole image files up to [maxCachedFileBytes] are kept (memory LRU of [fileBudgetBytes], and
+ *    disk) once the caller has read them to the end, so swiping back to an image or reopening it
+ *    does not download it again. Ranged reads and non-images stream through untouched.
  *
- * A [SourceError.Locked] from the wrapped source empties the cache before it is rethrown: a locked
- * vault's decrypted content is not kept around.
+ * A [SourceError.Locked] from the wrapped source clears the cache before it is rethrown.
  */
 class CachingSource(
     internal val inner: VaultSource,
@@ -32,59 +36,94 @@ class CachingSource(
     fileBudgetBytes: Long = DEFAULT_FILE_BUDGET,
     private val maxCachedFileBytes: Long = maxCachedFileFor(fileBudgetBytes),
     private val maxListings: Int = MAX_LISTINGS,
+    /** Monotonic milliseconds, for the in-memory TTL. */
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
+    /** Wall-clock milliseconds, stored with listings on disk so the TTL carries across restarts. */
+    private val wallClock: () -> Long = { System.currentTimeMillis() },
+    private val disk: VaultDiskCache? = null,
 ) : VaultSource {
     private class Listing(val items: List<Item>, val at: Long)
+
+    @Serializable
+    private class DiskListing(val at: Long, val items: List<Item>)
 
     private val lock = Any()
     private val listings = LinkedHashMap<String, Listing>(64, 0.75f, true)
     private val thumbs = ByteLru(thumbBudgetBytes)
     private val files = ByteLru(fileBudgetBytes)
+    private val json = Json { ignoreUnknownKeys = true }
 
     // ---- reads -----------------------------------------------------------------
 
     override suspend fun list(path: String): List<Item> {
         val key = norm(path)
-        cachedListing(key)?.let { return it }
+        memListing(key, fresh = true)?.let { return it }
+        diskListing(key)?.let { (items, age) -> if (age < listTtlMs) return items }
         val items = guard { inner.list(path) }
-        synchronized(lock) {
-            listings[key] = Listing(items, clock())
-            while (listings.size > maxListings) listings.remove(listings.keys.first())
-        }
+        remember(key, items, clock())
+        diskPut(CacheKind.LISTING, key, "", json.encodeToString(DiskListing.serializer(), DiskListing(wallClock(), items)).toByteArray())
         return items
+    }
+
+    /**
+     * The last known listing of [path], however old, without asking the source: what the browser
+     * shows while [list] revalidates. Null when nothing is known.
+     */
+    suspend fun peekListing(path: String): List<Item>? {
+        val key = norm(path)
+        return memListing(key, fresh = false) ?: diskListing(key)?.first
     }
 
     override suspend fun size(path: String): Long {
         val (dir, name) = parentOf(path)
-        cachedListing(norm(dir))?.firstOrNull { it.name == name }?.let { return it.size }
-        // Not in a cached listing (or none cached): the source is authoritative.
+        memListing(norm(dir), fresh = true)?.firstOrNull { it.name == name }?.let { return it.size }
+        // Not in a fresh listing (or none cached): the source is authoritative.
         return guard { inner.size(path) }
     }
 
     override suspend fun thumbnail(path: String, px: Int): ByteArray {
-        val key = "${norm(path)}\u0000$px"
-        thumbs.get(key)?.let { return it }
+        val key = norm(path)
+        val memKey = "$key\u0000$px"
+        thumbs.get(memKey)?.let { return it }
+        // On disk the file's size is part of the key: a replaced file gets a new thumbnail.
+        val variant = knownItem(key)?.let { "$px-${it.size}" }
+        if (variant != null) diskGet(CacheKind.THUMB, key, variant)?.let { thumbs.put(memKey, it); return it }
         val bytes = guard { inner.thumbnail(path, px) }
-        thumbs.put(key, bytes)
+        thumbs.put(memKey, bytes)
+        if (variant != null) diskPut(CacheKind.THUMB, key, variant, bytes)
         return bytes
     }
 
     override suspend fun open(path: String, range: LongRange?): InputStream {
         val key = norm(path)
-        if (range == null) files.get(key)?.let { return ByteArrayInputStream(it) }
-        val stream = guard { inner.open(path, range) }
-        if (range != null) return stream
-        val expected = cacheableImageSize(key) ?: return stream
-        return RecordingInput(stream, expected) { bytes -> files.put(key, bytes) }
+        if (range != null) return guard { inner.open(path, range) }
+        files.get(key)?.let { return ByteArrayInputStream(it) }
+        val expected = cacheableImageSize(key)
+        if (expected != null) {
+            diskGet(CacheKind.FILE, key, expected.toString())?.let { files.put(key, it); return ByteArrayInputStream(it) }
+        }
+        val stream = guard { inner.open(path, null) }
+        if (expected == null) return stream
+        val d = disk
+        return RecordingInput(stream, expected) { bytes ->
+            files.put(key, bytes)
+            // Called from the reader's (blocking I/O) thread once the last byte was read.
+            d?.put(CacheKind.FILE, key, expected.toString(), bytes)
+        }
     }
 
-    /** The file's size when the cached parent listing says it is an image small enough to keep. */
-    private fun cacheableImageSize(key: String): Int? {
-        val (dir, name) = parentOf(key)
-        val item = cachedListing(norm(dir))?.firstOrNull { it.name == name } ?: return null
+    /** The file's size when the last known parent listing says it is an image small enough to keep. */
+    private suspend fun cacheableImageSize(key: String): Int? {
+        val item = knownItem(key) ?: return null
         if (item.isDir || item.media != MediaKind.IMAGE) return null
         if (item.size <= 0 || item.size > maxCachedFileBytes) return null
         return item.size.toInt()
+    }
+
+    /** The entry for [key] in the last known listing of its parent (any age; memory, then disk). */
+    private suspend fun knownItem(key: String): Item? {
+        val (dir, name) = parentOf(key)
+        return peekListing(dir)?.firstOrNull { it.name == name }
     }
 
     // ---- writes: do the work, then forget what it changed ----------------------
@@ -129,39 +168,74 @@ class CachingSource(
     // ---- cache control ---------------------------------------------------------
 
     /** Forgets the listing of [path] so the next [list] asks the source (the browser's Refresh). */
-    fun invalidateListing(path: String) {
-        synchronized(lock) { listings.remove(norm(path)) }
+    suspend fun invalidateListing(path: String) {
+        val key = norm(path)
+        synchronized(lock) { listings.remove(key) }
+        diskIo { it.removeListing(key) }
     }
 
-    /** Drops every cached listing, thumbnail and file. */
+    /** Drops every cached listing, thumbnail and file from memory and locks the disk layer. */
     fun clear() {
         synchronized(lock) { listings.clear() }
         thumbs.clear()
         files.clear()
+        disk?.lock()
     }
 
-    /** What the cache holds right now; for tests and diagnostics. */
+    /** What the memory layer holds right now; for tests and diagnostics. */
     internal fun stats() = synchronized(lock) { Stats(listings.size, thumbs.size, thumbs.bytes, files.size, files.bytes) }
 
     internal data class Stats(val listings: Int, val thumbs: Int, val thumbBytes: Long, val files: Int, val fileBytes: Long)
 
-    private fun cachedListing(key: String): List<Item>? = synchronized(lock) {
+    // ---- memory layer ----------------------------------------------------------
+
+    private fun memListing(key: String, fresh: Boolean): List<Item>? = synchronized(lock) {
         val l = listings[key] ?: return null
-        if (clock() - l.at >= listTtlMs) {
-            listings.remove(key)
-            return null
-        }
+        if (fresh && clock() - l.at >= listTtlMs) return null
         l.items
     }
 
-    /** Forgets [path] and everything below it: listings, thumbnails and file bytes. */
-    private fun forgetSubtree(path: String) {
+    private fun remember(key: String, items: List<Item>, at: Long) = synchronized(lock) {
+        listings[key] = Listing(items, at)
+        while (listings.size > maxListings) listings.remove(listings.keys.first())
+    }
+
+    /** Forgets [path] and everything below it: listings, thumbnails and file bytes, on both layers. */
+    private suspend fun forgetSubtree(path: String) {
         val root = norm(path)
         val prefix = if (root == "/") "/" else "$root/"
         fun hit(key: String) = key == root || key.startsWith(prefix)
         synchronized(lock) { listings.keys.removeAll(::hit) }
         thumbs.removeIf { hit(it.substringBefore('\u0000')) }
         files.removeIf(::hit)
+        diskIo { it.removeSubtree(root) }
+    }
+
+    // ---- disk layer ------------------------------------------------------------
+
+    /** The listing of [key] from disk with its age; also remembered in memory (as old as it is). */
+    private suspend fun diskListing(key: String): Pair<List<Item>, Long>? {
+        val bytes = diskGet(CacheKind.LISTING, key, "") ?: return null
+        val l = try {
+            json.decodeFromString(DiskListing.serializer(), String(bytes))
+        } catch (_: Exception) {
+            return null
+        }
+        val age = (wallClock() - l.at).coerceAtLeast(0)
+        remember(key, l.items, clock() - age)
+        return l.items to age
+    }
+
+    private suspend fun diskGet(kind: CacheKind, key: String, variant: String): ByteArray? =
+        diskIo { it.get(kind, key, variant) }
+
+    private suspend fun diskPut(kind: CacheKind, key: String, variant: String, bytes: ByteArray) {
+        diskIo { it.put(kind, key, variant, bytes) }
+    }
+
+    private suspend fun <T> diskIo(block: (VaultDiskCache) -> T): T? {
+        val d = disk?.takeIf { it.isOpen } ?: return null
+        return withContext(Dispatchers.IO) { block(d) }
     }
 
     private suspend fun <T> guard(block: suspend () -> T): T = try {

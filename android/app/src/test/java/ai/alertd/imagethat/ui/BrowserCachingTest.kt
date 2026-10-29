@@ -16,7 +16,7 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
-private class Offline : OfflineAccess {
+private class OpenOffline : OfflineAccess {
     override fun exists() = true
     override fun source() = LocalSource(FakeLocalVault())
 }
@@ -37,7 +37,7 @@ class BrowserCachingTest {
         source = src,
         rootLabel = "Trips",
         savePrefix = "My server/Trips",
-        offline = Offline(),
+        offline = OpenOffline(),
         scope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)),
     )
 
