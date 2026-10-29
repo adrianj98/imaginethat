@@ -19,6 +19,11 @@ Status: approved 2026-10-28
 - The built-in offline vault has its own password, set by the user. Fingerprint
   or face is a shortcut to it, never the only way in: changing biometrics must
   never lock the user out.
+- (Changed 2026-10-28, user request: "opening the app should require a
+  biometric and then everything in it should save the passwords so you only
+  once have to add each password. for vaults and servers".) Opening the app
+  requires a biometric or the phone's screen lock; every vault password and
+  server is then saved automatically, so each password is typed only once.
 - Local vaults: both a built-in offline vault in app-private storage and
   vaults the user picks from phone storage (SD card, synced folders).
 - An APK is built on release. Releases happen only when a `vX.Y.Z` tag is
@@ -42,10 +47,9 @@ phone:
 |---|---|
 | Remote images, thumbnails, video bytes | Memory only; image loader and player disk caches disabled |
 | Remote session cookie | In-memory cookie jar; gone when the process dies |
-| Server address | Memory only, unless the user ticks "Remember this server" — then in the encrypted app store (below) |
+| Server address | Every server that connects is remembered (URL, label, pinned cert) in the encrypted app store (below) |
 | Saved-for-offline files | Inside the built-in gocryptfs vault (ciphertext only) |
-| Local vault passwords | Never stored, unless "Unlock with biometrics" is chosen — then wrapped by a biometric-gated Keystore key |
-| Built-in vault password | Chosen by the user when the vault is created; never stored, unless the biometric shortcut is on — then wrapped by a biometric-gated Keystore key |
+| Vault passwords (built-in, folders, server vaults) | Saved automatically once they unlock: one AES-256-GCM blob in the app store, under a random data key that is itself wrapped by the auth-per-use master key. Decrypted only in memory after the app-open authentication; zeroed on lock |
 | Temp files during writes | gocryptfs ciphertext only (the Go engine streams through `CreateTemp`) |
 
 Android-specific leak points closed in v1:
@@ -137,7 +141,7 @@ copied into a `[]byte` and wiped after key derivation.
 | `remote/ApiClient` | OkHttp client for the webserver JSON API (`/api/vaults`, `unlock`, `lock`, `list`, `file`, `thumb`, `upload`, `mkdir`, `move`, `entry`, `logout`); in-memory cookie jar; optional pinned cert | OkHttp, kotlinx.serialization |
 | `local/LocalVaults` | Opens/creates vaults via `vaultcore`; owns the built-in vault | `vaultcore.aar`, `keys` |
 | `local/SafStorage` | `mobile.Storage` over a persisted SAF tree URI | `DocumentsContract` |
-| `keys/KeyVault` | Keystore AES-GCM key with `setUserAuthenticationRequired(true)`, biometric-strong; wraps/unwraps secrets (built-in vault password, remembered local vault passwords, remembered servers) | `androidx.biometric` |
+| `keys/KeyVault` | Keystore keys: the state-file key (no auth) and the master key `imagethat.vault-master` (auth per use; biometric strong, or device credential on API 30+; invalidated by biometric enrolment). The app-open prompt authorises a master-key cipher that unwraps (or, first run, wraps) the saved-password data key (`keys/AppUnlocker`, `keys/SavedPasswords`) | `androidx.biometric` |
 | `data/VaultRepository` | One interface for UI: `list`, `open stream`, `thumbnail`, `upload`, `mkdir`, `move`, `delete`, `saveOffline` — backed by a remote or local source | the above |
 | `media/VaultDataSource` | Media3 `DataSource` that reads ranges from a local vault; remote video uses OkHttp data source with the session cookie | Media3 |
 | `ui/*` | Compose screens | `VaultRepository` |
@@ -149,31 +153,58 @@ vault mirrors the remote layout under `/<server label>/<vault name>/…`.
 ### Persisted state
 
 One file, `noBackupFilesDir/state.bin`, AES-GCM encrypted with a
-non-biometric Keystore key (so the app can list what exists before the user
-authenticates). It holds only what the user opted into: remembered servers
-(URL, label, pinned cert hash), picked SAF folder URIs, and wrapped secrets.
-Wrapped secrets inside it still need biometrics to unwrap. Nothing else is
-written.
+non-biometric Keystore key. It holds: servers that connected (URL, label,
+pinned cert hash), picked SAF folder URIs, the idle timeout, and the saved
+passwords as ciphertext:
+
+- `wrappedDek` — a random 256-bit data key (DEK), AES-GCM-wrapped by the
+  Keystore master key `imagethat.vault-master`, which needs authentication for
+  every use (`setUserAuthenticationParameters(0, BIOMETRIC_STRONG |
+  DEVICE_CREDENTIAL)` on API 30+, biometric-per-use on API 29) and is
+  invalidated by biometric enrolment.
+- `savedPasswords` — one AES-GCM blob under the DEK holding the map
+  id → password, ids `offline`, `folder:<folderId>`,
+  `server:<serverKey>:<vaultId>`.
+
+The app-open prompt authorises one master-key cipher: DECRYPT for an existing
+wrapped DEK, or (first run, or after invalidation) ENCRYPT to wrap a fresh
+one. The DEK then stays in memory until the app locks, so adding, changing or
+forgetting a password re-encrypts the whole map without a second prompt.
+Passwords are held as `CharArray`s and zeroed on lock or forget. The
+per-vault `imagethat.bio.*` keys and `wrapped` secrets of earlier builds are
+deleted on the first unlock of this version. Nothing else is written.
 
 ## Screens
 
-1. **Home** — three sections: *Servers* (remembered + "Connect…"), *On this
-   phone* (Offline vault, picked folders, "Open folder…", "New vault…"),
-   lock-all button.
+0. **App lock** — shown on cold start and after every lock (idle timeout,
+   1 minute in the background, the lock alarm, "Lock all") in place of
+   everything else, Home included. It shows only the app name and an
+   "Unlock" button; the prompt (biometric strong, or the screen-lock PIN /
+   pattern / password on API 30+; biometric only on API 29) shows by itself.
+   With no biometric and no screen lock set up it says "Set up a fingerprint,
+   face or screen lock in Android settings" with a Retry button; it never
+   silently lets the user in.
+1. **Home** — three sections: *Servers* (remembered + "Connect…", each with
+   Remove, which also forgets its saved passwords), *On this phone* (Offline
+   vault, picked folders, "Open folder…", "New vault…"), lock-all button.
+   Long-press the offline vault or a folder to forget its saved password.
 2. **Connect** — URL, optional "trust this certificate" (shows SHA-256 of a
-   self-signed cert on first contact), "Remember this server" checkbox.
-3. **Vault list** (server) — the server's vaults with lock state; tap to
-   unlock with password.
+   self-signed cert on first contact). Every server that connects is
+   remembered.
+3. **Vault list** (server) — the server's vaults with lock state; tap opens
+   with the saved password (no prompt) or asks for it once and saves it;
+   long-press forgets the saved password.
 4. **Browser** — grid of thumbnails + folders; breadcrumb; multi-select bar:
    *Save offline*, *Move*, *Delete*; FAB: *Upload* (system photo picker),
    *New folder*.
 5. **Viewer** — swipeable full-screen images (pinch zoom) and video (Media3
    player with seek).
-6. **Unlock prompts** — one flow for every local vault, the built-in one
-   included: biometric prompt if the shortcut is on, otherwise (or on
-   "Use password") a password dialog with "Unlock with biometrics next time".
-   First launch asks the user to set the offline vault's password (entered
-   twice, minimum 8 characters) before anything can be saved offline.
+6. **Unlock prompts** — one flow for every vault: a saved password opens it
+   with no prompt; otherwise a password dialog, and a password that unlocks is
+   saved automatically (no checkbox). Forgetting a password is a confirm
+   dialog: "Forget the saved password for X?". First launch asks the user to
+   set the offline vault's password (entered twice, minimum 8 characters,
+   saved automatically) before anything can be saved offline.
 
 ## Errors
 
@@ -181,11 +212,15 @@ written.
 - Server unreachable/TLS mismatch → banner on the server; pinned-cert
   mismatch is a hard failure with the new fingerprint shown.
 - Remote session expired (401/locked) → back to unlock prompt for that vault.
-- Biometric enrolment changed → Android invalidates the shortcut key → the
-  app deletes the stale wrapped password, asks for the vault password once and
-  offers to re-enable the shortcut. Nothing is lost: the password always opens
-  the vault, on the phone or, after copying the folder, with `gocryptfs` on a
-  computer.
+- Biometric enrolment or screen lock changed → Android invalidates the
+  master key → at the next app unlock the app deletes the master key, the
+  wrapped DEK and the saved-password map, makes a fresh master key and DEK in
+  the same prompt, and says once: "Your fingerprints or screen lock changed,
+  so saved passwords were cleared. Enter each password once again." Vaults
+  are unaffected: the password always opens the vault, on the phone or, after
+  copying the folder, with `gocryptfs` on a computer.
+- A saved password stops working (e.g. changed on the server) → the entry is
+  dropped, the password is asked for once, and the new one is saved.
 - Forgotten password → the vault cannot be opened (that is the point of
   encryption); the app says so plainly when the password is set.
 - SAF permission revoked → folder shown as unavailable with "Pick again".
