@@ -144,6 +144,11 @@ class BrowserViewModel(
 
     fun clearSelection() = _state.update { it.copy(selection = emptySet()) }
 
+    fun selectAll() = _state.update { s -> s.copy(selection = s.items.mapTo(HashSet()) { it.path }) }
+
+    /** Makes [item] the whole selection, so the viewer can run the selection actions on one file. */
+    fun selectOnly(item: Item) = _state.update { it.copy(selection = setOf(item.path)) }
+
     private fun selected(): List<Item> = _state.value.let { s -> s.items.filter { it.path in s.selection } }
 
     // ---- save offline ----------------------------------------------------------

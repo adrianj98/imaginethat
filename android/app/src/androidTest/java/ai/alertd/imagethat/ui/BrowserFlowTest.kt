@@ -143,6 +143,46 @@ class BrowserFlowTest {
         assertTrue("/notes.txt" !in mem.files)
     }
 
+    @Test fun deleteFromTheViewerAsksThenShowsTheNextImage() {
+        mem.files["/pic2.png"] = png()
+        show("srv:v1")
+        waitForTag("item-pic.png")
+        rule.onNodeWithTag("item-pic.png").performClick()
+        waitForTag("viewer-image")
+        rule.onNodeWithTag("viewer-delete").performClick()
+        waitForTag("delete-confirm")
+        rule.onNodeWithTag("delete-confirm").performClick()
+        rule.waitUntil(20_000) { "/pic.png" !in mem.files && rule.onAllNodes(hasText("pic2.png")).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag("viewer").assertIsDisplayed()
+        rule.onNodeWithTag("viewer-close").performClick()
+        waitForTag("browser-grid")
+        // The viewer's one-file selection does not leak into the grid.
+        assertTrue(rule.onAllNodes(hasTestTag("action-delete")).fetchSemanticsNodes().isEmpty())
+    }
+
+    @Test fun viewerInfoShowsTheFullImageSize() {
+        show("srv:v1")
+        waitForTag("item-pic.png")
+        rule.onNodeWithTag("item-pic.png").performClick()
+        waitForTag("viewer-image")
+        rule.onNodeWithTag("viewer-info").performClick()
+        waitForTag("viewer-info-dialog")
+        rule.waitUntil(20_000) { rule.onAllNodes(hasText("64 × 48")).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag("viewer-info-done").performClick()
+        gone("viewer-info-dialog")
+    }
+
+    @Test fun selectThenSelectAllPicksEveryItem() {
+        show("srv:v1")
+        waitForTag("item-pic.png")
+        rule.onNodeWithTag("browser-select").performClick()
+        waitForTag("selection-all")
+        rule.onNodeWithTag("selection-all").performClick()
+        rule.waitUntil(20_000) { rule.onAllNodes(hasText("3 selected")).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag("selection-cancel").performClick()
+        waitForTag("browser-select")
+    }
+
     @Test fun lockedListingReportsTheSourceLockedInsteadOfShowingAnEmptyFolder() {
         mem.lockedList = true
         val seen = java.util.concurrent.atomic.AtomicReference<SessionEvent?>()

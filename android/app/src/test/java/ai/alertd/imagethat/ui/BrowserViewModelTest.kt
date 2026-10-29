@@ -126,6 +126,29 @@ class BrowserViewModelTest {
         assertTrue(v.state.value.selection.isEmpty())
     }
 
+    @Test fun selectAllAndSelectOnly() = runTest {
+        val v = vm(memTrip())
+        v.state.first { !it.loading }
+        v.selectAll()
+        assertEquals(setOf("/Alpha", "/Zed", "/a.jpg", "/b.jpg"), v.state.value.selection)
+        v.selectOnly(file("/", "b.jpg"))
+        assertEquals(setOf("/b.jpg"), v.state.value.selection)
+    }
+
+    @Test fun deleteFromTheViewerRemovesOnlyThatFile() = runTest {
+        val src = memTrip()
+        val v = vm(src)
+        v.state.first { !it.loading }
+        v.toggle(file("/", "a.jpg"))
+        v.selectOnly(file("/", "b.jpg"))
+        v.requestDelete()
+        assertEquals(listOf("b.jpg"), v.state.value.confirmDelete?.map { it.name })
+        v.confirmDelete()
+        assertEquals(listOf("/b.jpg"), src.deleted)
+        val s = v.state.first { !it.loading && it.items.none { i -> i.name == "b.jpg" } }
+        assertTrue(s.selection.isEmpty())
+    }
+
     @Test fun saveOfflineProducesPerFileReport() = runTest {
         val src = memTrip()
         src.openError = mapOf("/b.jpg" to SourceError.Other("disk gremlins"))

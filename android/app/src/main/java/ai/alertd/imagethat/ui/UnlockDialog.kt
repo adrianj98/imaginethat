@@ -3,12 +3,15 @@ package ai.alertd.imagethat.ui
 import ai.alertd.imagethat.data.LocalSource
 import ai.alertd.imagethat.data.MobileVaultApi
 import ai.alertd.imagethat.local.LocalError
+import ai.alertd.imagethat.ui.theme.Palette
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -58,11 +61,16 @@ internal fun SecureAlertDialog(
 ) = AlertDialog(
     modifier = Modifier.touchReporting(LocalTouch.current),
     onDismissRequest = onDismissRequest,
-    title = { Text(title) },
+    title = { Text(title, style = MaterialTheme.typography.headlineSmall) },
     text = { Column(verticalArrangement = Arrangement.spacedBy(12.dp)) { content() } },
     confirmButton = confirmButton,
     dismissButton = dismissButton,
     properties = SecureDialogProperties,
+    shape = RoundedCornerShape(24.dp),
+    containerColor = Palette.Surface,
+    titleContentColor = Palette.Text,
+    textContentColor = Palette.TextSecondary,
+    tonalElevation = 0.dp,
 )
 
 private fun Modifier.touchReporting(touch: () -> Unit): Modifier = pointerInput(touch) {

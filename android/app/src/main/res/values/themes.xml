@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark window behind Compose so launch and transitions never flash white. -->
+    <style name="Theme.ImageThat" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/background</item>
+        <item name="android:colorBackground">@color/background</item>
+    </style>
+    <color name="background">#FF0E0F12</color>
+</resources>
