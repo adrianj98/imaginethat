@@ -86,6 +86,17 @@ class UnlockFlowTest {
 
     // ---- local unlock --------------------------------------------------------
 
+    @Test fun autoLockTimeoutIsPickedOnHomeAndSaved() {
+        createOffline()
+        launch()
+        rule.onNodeWithText("5 minutes without a touch").assertIsDisplayed()
+        rule.onNodeWithTag("idle-timeout-setting").performClick()
+        rule.onNodeWithTag("idle-timeout-10").performClick()
+        waitForText("10 minutes without a touch")
+        assertEquals(10, fx.keys.state().idleTimeoutMinutes)
+        assertEquals(10, fx.session.idleTimeoutMinutes)
+    }
+
     @Test fun wrongPasswordShowsInlineErrorAndKeepsTheDialog() {
         createOffline()
         launch()

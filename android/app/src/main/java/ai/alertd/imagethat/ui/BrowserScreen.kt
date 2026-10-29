@@ -9,7 +9,6 @@ import ai.alertd.imagethat.media.VaultUri
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -143,8 +142,8 @@ private fun BrowserContent(
         }
     }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+    val pickMedia = rememberPickerLauncher(session, ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
+        if (uris.isEmpty()) return@rememberPickerLauncher
         scope.launch(Dispatchers.IO) { vm.upload(uris.map { uploadSpec(context, it) }) }
     }
 
@@ -190,7 +189,7 @@ private fun BrowserContent(
                     ) {
                         DropdownMenuItem(text = { Text("Upload photos or videos") }, onClick = {
                             menuOpen = false
-                            picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                            pickMedia(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                         })
                         DropdownMenuItem(text = { Text("New folder") }, modifier = Modifier.testTag("menu-new-folder"), onClick = {
                             menuOpen = false

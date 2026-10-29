@@ -32,6 +32,7 @@ class AppContainer(private val context: Context) {
         biometricsAvailable = {
             BiometricManager.from(context).canAuthenticate(BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
         },
+        alarm = AndroidLockAlarm(context),
     )
 }
 
@@ -43,6 +44,10 @@ class ImageThatApp : Application(), SingletonImageLoader.Factory {
         // Go's default temp dir (/data/local/tmp) is not writable by apps.
         Mobile.setTempDir(cacheDir.absolutePath)
         startAutoLock()
+        // The saved idle timeout; until it loads the 5 minute default applies (nothing is unlocked yet).
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            runCatching { container.session.loadIdleTimeout() }
+        }
     }
 
     // androidx.startup's provider is removed from the manifest (so ProcessLifecycleOwner cannot
@@ -68,7 +73,8 @@ class ImageThatApp : Application(), SingletonImageLoader.Factory {
             override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
             override fun onActivityDestroyed(activity: Activity) = Unit
         })
-        // Deadlines are checked here; onForeground covers a process that was frozen in the background.
+        // Deadlines are checked here while the process runs. A frozen background process is woken by
+        // the Session's alarm (AutoLockReceiver), and onForeground is the backstop.
         CoroutineScope(SupervisorJob() + Dispatchers.Main).launch {
             while (true) {
                 delay(TICK_MS)

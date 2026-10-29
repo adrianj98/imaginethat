@@ -19,6 +19,7 @@ class TestFixture(
     val keys = KeyVault(context, requireAuth = false, stateFile = File(dir, "state.bin"))
     val local = LocalVaults(context, keys.store(), File(dir, "offline"))
     var imageCacheClears = 0
+    val alarm = FakeAlarm()
     val session = Session(
         keys, local,
         clock = { now },
@@ -26,12 +27,20 @@ class TestFixture(
         biometricsAvailable = { biometrics },
         idleTimeoutMs = idleMs,
         backgroundTimeoutMs = backgroundMs,
+        alarm = alarm,
     )
 
     fun cleanup() {
         session.lockAll()
         for (id in listOf("offline")) keys.forget(id)
         dir.deleteRecursively()
+    }
+
+    /** Records the alarm the Session arms; null when none is pending. */
+    class FakeAlarm : LockAlarm {
+        var pendingDelayMs: Long? = null
+        override fun schedule(delayMs: Long) { pendingDelayMs = delayMs }
+        override fun cancel() { pendingDelayMs = null }
     }
 
     companion object {

@@ -27,6 +27,11 @@
             </intent-filter>
         </activity>
 
+        <!-- Background auto-lock alarm target; reachable only through the app's own PendingIntent. -->
+        <receiver
+            android:name=".AutoLockReceiver"
+            android:exported="false" />
+
         <!-- Libraries add content providers through androidx.startup. The app
              exposes no providers, so drop it; nothing here needs its initializers. -->
         <provider

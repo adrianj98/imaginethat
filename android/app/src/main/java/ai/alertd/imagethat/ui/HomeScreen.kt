@@ -6,10 +6,17 @@ import ai.alertd.imagethat.local.LocalError
 import ai.alertd.imagethat.remote.ApiClient
 import android.content.Intent
 import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.material3.RadioButton
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -65,6 +72,7 @@ fun HomeScreen(
     var pendingFolder by remember { mutableStateOf<SavedFolder?>(null) }
     var newVaultUri by remember { mutableStateOf<Uri?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
+    var pickingTimeout by remember { mutableStateOf(false) }
 
     fun refresh() { state = session.keys.state() }
 
@@ -75,15 +83,15 @@ fun HomeScreen(
 
     fun folderTarget(f: SavedFolder) = LocalTarget(folderSourceId(f), f.label) { pw -> session.local.openFolder(f, pw) }
 
-    val openFolder = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
+    val openFolder = rememberPickerLauncher(session, ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri == null) return@rememberPickerLauncher
         persist(uri)
         val known = state.folders.firstOrNull { it.treeUri == uri.toString() }
         val folder = known ?: SavedFolder(UUID.randomUUID().toString(), savedFolderLabel(uri), uri.toString())
         if (known == null) pendingFolder = folder
         unlocking = folderTarget(folder)
     }
-    val newVaultPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+    val newVaultPicker = rememberPickerLauncher(session, ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri != null) { persist(uri); newVaultUri = uri }
     }
 
@@ -163,8 +171,18 @@ fun HomeScreen(
                     )
                 }
             }
-            item { ListItem(headlineContent = { Text("Open folder…") }, modifier = Modifier.clickable { openFolder.launch(null) }) }
-            item { ListItem(headlineContent = { Text("New vault…") }, modifier = Modifier.clickable { newVaultPicker.launch(null) }) }
+            item { ListItem(headlineContent = { Text("Open folder…") }, modifier = Modifier.clickable { openFolder(null) }) }
+            item { ListItem(headlineContent = { Text("New vault…") }, modifier = Modifier.clickable { newVaultPicker(null) }) }
+            item { HorizontalDivider() }
+
+            item { SectionHeader("Settings") }
+            item {
+                ListItem(
+                    headlineContent = { Text("Auto-lock after") },
+                    supportingContent = { Text(minutesLabel(state.idleTimeoutMinutes) + " without a touch") },
+                    modifier = Modifier.clickable { pickingTimeout = true }.testTag("idle-timeout-setting"),
+                )
+            }
             message?.let { item { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp)) } }
         }
     }
@@ -181,8 +199,20 @@ fun HomeScreen(
             },
             onDismiss = { unlocking = null; pendingFolder = null },
             onPickAgain = if (pendingFolder == null && target.sourceId != OFFLINE_ID) {
-                { unlocking = null; openFolder.launch(null) }
+                { unlocking = null; openFolder(null) }
             } else null,
+        )
+    }
+
+    if (pickingTimeout) {
+        IdleTimeoutDialog(
+            current = state.idleTimeoutMinutes,
+            onPick = { m ->
+                session.setIdleTimeoutMinutes(m)
+                refresh()
+                pickingTimeout = false
+            },
+            onDismiss = { pickingTimeout = false },
         )
     }
 
@@ -240,5 +270,31 @@ private fun NewFolderVaultDialog(onDismiss: () -> Unit, create: suspend (CharArr
         Text(NO_RECOVERY_WARNING)
         NewPasswordFields(state)
         error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    }
+}
+
+private fun minutesLabel(m: Int) = if (m == 1) "1 minute" else "$m minutes"
+
+@Composable
+private fun IdleTimeoutDialog(current: Int, onPick: (Int) -> Unit, onDismiss: () -> Unit) {
+    SecureAlertDialog(
+        onDismissRequest = onDismiss,
+        title = "Auto-lock after",
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    ) {
+        Column(Modifier.selectableGroup()) {
+            Session.IDLE_TIMEOUT_CHOICES.forEach { m ->
+                Row(
+                    Modifier.fillMaxWidth()
+                        .selectable(selected = m == current, role = Role.RadioButton, onClick = { onPick(m) })
+                        .padding(vertical = 8.dp)
+                        .testTag("idle-timeout-$m"),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(selected = m == current, onClick = null)
+                    Text(minutesLabel(m), Modifier.padding(start = 12.dp))
+                }
+            }
+        }
     }
 }

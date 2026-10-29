@@ -16,4 +16,6 @@ data class AppState(
     /** vault/server id -> base64(iv + ciphertext) of a secret wrapped by a biometric Keystore key. */
     val wrapped: Map<String, String> = emptyMap(),
     val offlineVaultCreated: Boolean = false,
+    /** Auto-lock after this many minutes without a touch (not secret; spec default 5). */
+    val idleTimeoutMinutes: Int = 5,
 )
