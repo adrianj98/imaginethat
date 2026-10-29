@@ -209,3 +209,12 @@ func tThumbCacheSize(dir string) int64 {
 	defer C.free(unsafe.Pointer(d))
 	return int64(GocryptfsThumbCacheSize(d))
 }
+
+func tOpenRemote(base, vaultID, password, pin string) int {
+	b, v, p, pn := cstr(base), cstr(vaultID), cstr(password), cstr(pin)
+	defer C.free(unsafe.Pointer(b))
+	defer C.free(unsafe.Pointer(v))
+	defer C.free(unsafe.Pointer(p))
+	defer C.free(unsafe.Pointer(pn))
+	return int(GocryptfsOpenRemote(b, v, p, pn))
+}

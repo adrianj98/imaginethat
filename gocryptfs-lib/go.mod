@@ -19,3 +19,9 @@ require (
 )
 
 replace github.com/adrianm/imagethat/core => ../core
+
+// Tests only: remote_test.go runs the real webserver in process. Nothing from
+// it is linked into libgocryptfs.
+require github.com/adrianm/imagethat/webserver v0.0.0
+
+replace github.com/adrianm/imagethat/webserver => ../webserver

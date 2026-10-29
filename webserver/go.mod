@@ -14,7 +14,7 @@ require github.com/adrianm/imagethat/core v0.0.0
 
 replace github.com/adrianm/imagethat/core => ../core
 
-require golang.org/x/image v0.47.0
+require golang.org/x/image v0.47.0 // indirect
 
 require (
 	github.com/aperturerobotics/jacobsa-crypto v1.1.0 // indirect

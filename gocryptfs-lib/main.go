@@ -29,6 +29,7 @@ import (
 	"unsafe"
 
 	"github.com/adrianm/imagethat/core/cache"
+	"github.com/adrianm/imagethat/core/remote"
 	"github.com/adrianm/imagethat/core/thumb"
 	"github.com/adrianm/imagethat/core/vault"
 )
@@ -210,6 +211,37 @@ func GocryptfsOpenVFS(
 		return openCode(err)
 	}
 	return register(s)
+}
+
+// GocryptfsOpenRemote opens a vault on an imagethat-web server in ciphertext
+// mode: the server sends the vault's encrypted files and this library
+// decrypts them, so nothing the server sends is plaintext. pinnedSHA256 is
+// the server certificate's SHA-256 in hex for a self-signed server, or empty.
+// The session is read-only (writes go through the server's decrypted API)
+// and works with every read and thumbnail export.
+//
+// Returns a session id, or -1 no such vault, -2 wrong password, -3 network or
+// server error, -6 certificate does not match the pin.
+//
+//export GocryptfsOpenRemote
+func GocryptfsOpenRemote(baseURL *C.char, vaultID *C.char, password *C.char, pinnedSHA256 *C.char) C.int {
+	client, err := remote.New(C.GoString(baseURL), remote.Options{PinnedSHA256: C.GoString(pinnedSHA256)})
+	if err != nil {
+		return rcCrypto
+	}
+	s, err := client.OpenVault(context.Background(), C.GoString(vaultID), C.GoString(password))
+	switch {
+	case err == nil:
+		return register(s)
+	case errors.Is(err, remote.ErrWrongPassword), errors.Is(err, vault.ErrWrongPassword):
+		return rcWrongPassword
+	case errors.Is(err, remote.ErrNotFound), errors.Is(err, vault.ErrNoConfig):
+		return rcNoConfig
+	case errors.Is(err, remote.ErrCertMismatch):
+		return -6
+	default:
+		return rcCrypto
+	}
 }
 
 //export GocryptfsClose

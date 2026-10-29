@@ -35,6 +35,10 @@ func (s *Server) routes() {
 	mux.HandleFunc("DELETE /api/vaults/{id}/entry", s.handleDelete)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
 
+	// Ciphertext access for clients that decrypt themselves (handlers_raw.go).
+	mux.HandleFunc("GET /api/vaults/{id}/raw/list", s.handleRawList)
+	mux.HandleFunc("GET /api/vaults/{id}/raw/file", s.handleRawFile)
+
 	mux.Handle("/", s.staticHandler())
 
 	s.mux = mux

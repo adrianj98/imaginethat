@@ -1,5 +1,15 @@
 # aj-log
 
+## 2026-10-29 — imagethat-web can send a vault encrypted or decrypted
+- User asked for the server to send either encrypted or decrypted data, so clients can cache ciphertext (the remote-vault cache discussion: caching the plaintext the server sends would break the no-plaintext-on-disk rule).
+- `webserver/server/handlers_raw.go` (new), routes in `handlers_fs.go`: `GET/HEAD /api/vaults/{id}/raw/list?path=` (ciphertext listing) and `/raw/file?path=` (ciphertext bytes via `http.ServeContent`, Range; `gocryptfs.conf` is a file there). Same unlocked-session requirement as every endpoint (conf + ciphertext would allow offline guessing). Paths cleaned with `vault.CleanPath`, resolved with `EvalSymlinks`, refused if they leave the vault dir. `no-store`. The decrypted endpoints are unchanged; writes keep using them.
+- `core/remote/client.go` (new package): `Client` (cookie jar, optional leaf-cert SHA-256 pinning, re-unlock once on 401 with the in-memory password), `OpenVault` = unlock + `vault.Open(RawFS)`. `RawFS` is a `vault.VFS` over the raw endpoints (Range reads, HEAD sizes). Sessions are read-only.
+- `gocryptfs-lib/main.go`: `GocryptfsOpenRemote(baseURL, vaultID, password, pinnedSHA256)` returns a normal session id; all read and thumbnail exports work on it. Declared in `CLibGocryptfs/libgocryptfs.h`. `core/mobile`: `OpenRemote` for Android (`cert_mismatch:` error code added).
+- Tests: `webserver/server/raw_test.go` (every fixture file decrypts identically to a local session, wrong password, unknown vault, read-only, one HTTP request for a 100 KB read, re-unlock after the server drops sessions, 401 without unlock, `..`/absolute/symlink escapes refused, Range). `gocryptfs-lib/remote_test.go` runs the real server in process and checks `GocryptfsOpenRemote` reads, ranges and thumbnails match the local session and writes are refused; `gocryptfs-lib/go.mod` gains a test-only `webserver` require/replace.
+- `webserver/go.mod`: tidied (`x/image` now indirect since the thumbnailer moved to core). `webserver/README.md`: raw endpoints and the two modes documented.
+- Not done: the Mac and Android apps do not use ciphertext mode yet (RemoteVaultSource still uses the decrypted API), and there is no disk range cache for it yet.
+- Verified: core (race), webserver, shim, C harness 69/69, app build, Swift integration 61/61, Android unit tests with a rebuilt aar.
+
 ## 2026-10-29 — Drive vault: "gocryptfs.diriv: file does not exist" when opening a folder
 - Symptom (user screenshot): opening `turkey2019/istanbul_bj` in a Drive vault failed with `read LVcgjkO6wt2kFYio4JbH4g/gocryptfs.diriv: ... file does not exist`. The IV file was missing from the app's index of Drive entries, not from Drive.
 - Cause 1, race in `DriveVaultFS.ensureDirListed`: it marked a directory listed before the Drive fetch finished, so a concurrent caller skipped the fetch and found nothing. Clicking a vault folder now expands the sidebar and loads the folder at the same moment, which hits it. A failed fetch was also remembered as listed-and-empty for the rest of the session.

@@ -136,6 +136,20 @@ are additionally checked against the `Origin` header.
 | `POST` | `/api/vaults/{id}/move` | `{"from": "...", "to": "..."}` |
 | `DELETE` | `/api/vaults/{id}/entry?path=` | Delete a file or directory tree |
 | `POST` | `/api/logout` | End the session, locking every vault |
+| `GET`, `HEAD` | `/api/vaults/{id}/raw/list?path=` | Ciphertext directory listing (encrypted names, ciphertext sizes) |
+| `GET`, `HEAD` | `/api/vaults/{id}/raw/file?path=` | Ciphertext file bytes as on disk; supports `Range`; `path=gocryptfs.conf` is the vault config |
+
+### Decrypted or encrypted
+
+The server can send a vault either way. The endpoints above `raw/` decrypt on
+the server and send plaintext; browsers use them, and every write goes through
+them. The `raw/` endpoints send the vault's gocryptfs files as they are on disk,
+so a client that holds the password (`core/remote`, used by the macOS and
+Android apps) decrypts locally: nothing on the wire is plaintext, and anything
+the client caches is ciphertext. They need the same unlocked session as the
+rest, because ciphertext plus `gocryptfs.conf` would otherwise allow offline
+password guessing. Paths are ciphertext paths; `..` and symlinks leading out of
+the vault are refused.
 
 Video seeking works because `vault.File` implements `io.ReadSeeker`, letting
 `http.ServeContent` answer range requests directly out of the encrypted file.
