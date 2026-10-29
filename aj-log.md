@@ -1,5 +1,11 @@
 # aj-log
 
+## 2026-10-29 — Go core verified on the Mac
+- Fast-forwarded `feature/sharedgo` onto the cloud session's three commits (spec, Phase 0+1a, Phase 2) and built on macOS (Xcode, Swift 6.4, Go 1.27.1).
+- Results: `make build` clean apart from existing Swift 6 warnings in `DriveVaultFS.swift` and `LocalOAuthServer.swift`; `make golib-test` 69/69 through `libgocryptfs.dylib`; `make core-test` all packages ok; `make test-logic` 61/61, including the new streaming-import checks and the slow-drive video test, which exercises the host-callback (Drive-style) path over `core/vault`; `make test-e2e` 3 pass, 1 skip (screenshot needs Screen Recording permission, as before); `make android-test` passes with `vaultcore.aar` rebuilt from `core/mobile`.
+- `Tests/IntegrationTest.swift`: iterate `enumerator(...).allObjects` in the no-plaintext scan. Why: iterating the enumerator directly is unavailable from async contexts (Swift 6 warning, a future error).
+- Not verified by hand: the running app's thumbnail grid and Preferences cache controls; the uncompiled-in-the-cloud Swift now compiles, and the integration tests cover the engine calls behind them.
+
 ## 2026-10-29 — Go core, Phase 2 (Go side) + Linux library + C API harness
 - `core/cache/` (new package): `blob.go` moved from `webserver/server/cache.go` (exported as `Blob`, plus `Walk`, `Closed`, `Remove`); `thumbdisk.go` (`ThumbDisk`): persistent previews sealed with the vault's own key, hashed per-source dirs, magic-prefixed entries, LRU eviction, atomic writes, `ThumbKey` with plaintext size. Tests moved/added (`blob_test.go`, `thumbdisk_test.go`).
 - `core/thumb/` (new package): `image.go` moved from `webserver/server/thumb.go` (`Make`, `Quality`); `service.go` (`Service`): memory + optional disk tier, decode permits with context cancellation, Go decoders, host `Decoder` hook, `Put` for host-rendered previews, `Invalidate`, `SessionReader` adapter. `service_test.go` covers tiers, no-preview cases, host decoder path, disk tier across a relaunch and after lock, no plaintext on disk, concurrency/cancellation.

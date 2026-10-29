@@ -147,7 +147,7 @@ struct IntegrationTest {
 
             var leaked: [String] = []
             if let walker = FileManager.default.enumerator(at: vaultDir, includingPropertiesForKeys: [.isRegularFileKey]) {
-                for case let fileURL as URL in walker {
+                for case let fileURL as URL in walker.allObjects {
                     guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
                           let bytes = try? Data(contentsOf: fileURL) else { continue }
                     if bytes.range(of: marker) != nil { leaked.append(fileURL.lastPathComponent) }
