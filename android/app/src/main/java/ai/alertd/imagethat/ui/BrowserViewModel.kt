@@ -40,6 +40,8 @@ data class OpResult(
     val note: String? = null,
     /** The vault was locked part-way: dismissing the result goes to the unlock prompt. */
     val unlockAfter: Boolean = false,
+    /** Already there from an earlier save (same size); not copied again, not a failure. */
+    val skipped: List<String> = emptyList(),
 )
 
 data class MoveState(val path: String, val folders: List<Item> = emptyList(), val loading: Boolean = true)
@@ -158,13 +160,13 @@ class BrowserViewModel(
         guarded("Saving offline") {
             try {
                 val r = saveOffline(source, items, into, savePrefix)
-                _state.update { it.copy(selection = emptySet(), result = OpResult("Saved offline", r.saved, r.failed)) }
+                _state.update { it.copy(selection = emptySet(), result = OpResult("Saved offline", r.saved, r.failed, skipped = r.skipped)) }
             } catch (e: SaveInterrupted) {
                 val locked = e.reason is SourceError.Locked
                 val note = if (locked) "The vault was locked part-way. Unlock it and save the rest again."
                 else "Stopped: ${e.reason.message}."
                 _state.update {
-                    it.copy(selection = emptySet(), result = OpResult("Saved offline", e.partial.saved, e.partial.failed, note, unlockAfter = locked))
+                    it.copy(selection = emptySet(), result = OpResult("Saved offline", e.partial.saved, e.partial.failed, note, unlockAfter = locked, skipped = e.partial.skipped))
                 }
             }
         }

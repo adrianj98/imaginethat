@@ -11,7 +11,6 @@ import coil3.fetch.SourceFetchResult
 import coil3.request.Options
 import kotlinx.coroutines.CancellationException
 import okio.Buffer
-import okio.FileSystem
 import java.io.IOException
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -40,8 +39,8 @@ object VaultUri {
 
 /**
  * Coil fetcher that gets thumbnail bytes from the session's [ai.alertd.imagethat.data.VaultSource].
- * The bytes go to Coil as an in-memory okio Buffer: nothing here touches disk, and the app's
- * ImageLoader has no disk cache to put them in.
+ * The bytes go to Coil as an in-memory okio Buffer over [ReadOnlyFileSystem]: nothing here touches
+ * disk, a decoder cannot spill them to a temp file, and the app's ImageLoader has no disk cache.
  */
 class ThumbnailFetcher(
     private val session: Session,
@@ -62,7 +61,8 @@ class ThumbnailFetcher(
         }
         if (bytes.isEmpty()) throw IOException("no preview")
         return SourceFetchResult(
-            source = ImageSource(Buffer().apply { write(bytes) }, FileSystem.SYSTEM),
+            // ReadOnlyFileSystem: if a decoder ever wants a file path, it fails rather than writing plaintext.
+            source = ImageSource(Buffer().apply { write(bytes) }, ReadOnlyFileSystem),
             mimeType = "image/jpeg",
             dataSource = DataSource.NETWORK,
         )

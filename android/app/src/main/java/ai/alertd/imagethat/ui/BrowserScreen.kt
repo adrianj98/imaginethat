@@ -294,10 +294,14 @@ private fun BrowserContent(
 private fun ResultBody(r: OpResult) {
     Column(Modifier.heightIn(max = 320.dp).verticalScrollable(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         r.note?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        if (r.ok.isEmpty() && r.failed.isEmpty()) Text("Nothing was done.")
+        if (r.ok.isEmpty() && r.failed.isEmpty() && r.skipped.isEmpty()) Text("Nothing was done.")
         if (r.ok.isNotEmpty()) {
             Text("${r.ok.size} succeeded", style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("result-saved"))
             r.ok.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+        }
+        if (r.skipped.isNotEmpty()) {
+            Text("${r.skipped.size} already saved", style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("result-skipped"))
+            r.skipped.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
         }
         if (r.failed.isNotEmpty()) {
             Text("${r.failed.size} failed", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("result-failed"))

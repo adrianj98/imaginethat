@@ -31,7 +31,8 @@ class VaultDataSource(private val source: VaultSource) : DataSource {
         val path = dataSpec.uri.path ?: throw IOException("no path in ${dataSpec.uri}")
         try {
             val total = runBlocking { source.size(path) }
-            if (dataSpec.position > total || (dataSpec.position == total && total > 0)) {
+            // position == total is a valid zero-length open (Media3: open returns 0, read ends).
+            if (dataSpec.position > total) {
                 throw DataSourceException(PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE)
             }
             val end = if (dataSpec.length == C.LENGTH_UNSET.toLong()) total - 1 else minOf(total - 1, dataSpec.position + dataSpec.length - 1)

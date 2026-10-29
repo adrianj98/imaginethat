@@ -68,6 +68,17 @@ class VaultDataSourceTest {
         assertArrayEquals(plain, all)
     }
 
+    /** Media3 contract: opening at exactly the end is a zero-length read, not an error. */
+    @Test fun openAtExactlyTheEndReturnsZeroAndEndOfInput() {
+        val (opened, bytes) = read(plain.size.toLong(), C.LENGTH_UNSET.toLong())
+        assertEquals(0L, opened)
+        assertEquals(0, bytes.size)
+        val ds = VaultDataSource(source)
+        assertEquals(0L, ds.open(DataSpec.Builder().setUri(uri()).setPosition(plain.size.toLong()).build()))
+        assertEquals(C.RESULT_END_OF_INPUT, ds.read(ByteArray(10), 0, 10))
+        ds.close()
+    }
+
     @Test fun positionPastTheEndFailsAsIOException() {
         val ds = VaultDataSource(source)
         try {

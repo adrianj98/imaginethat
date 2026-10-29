@@ -11,6 +11,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.job
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -213,6 +215,8 @@ object BitmapThumbnailer : Thumbnailer {
 class LocalSource(
     private val vault: LocalVaultApi,
     private val thumbnailer: Thumbnailer = BitmapThumbnailer,
+    /** Bounds concurrent thumbnail work (whole-file read + decode); shared app-wide by default. */
+    private val thumbLimit: Semaphore = THUMB_LIMIT,
 ) : VaultSource {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -232,12 +236,23 @@ class LocalSource(
 
     override suspend fun size(path: String): Long = io { vault.size(path) }
 
-    override suspend fun thumbnail(path: String, px: Int): ByteArray = io {
+    /**
+     * Reads the whole image into memory and decodes it, so at most [thumbLimit] permits run at once
+     * (a grid fling queues dozens; the engine calls block and cannot be cancelled once started).
+     * A request cancelled while queued or before the read never starts it.
+     */
+    override suspend fun thumbnail(path: String, px: Int): ByteArray {
         val name = path.substringAfterLast('/')
-        if (mediaKindOf(name, false, "") != MediaKind.IMAGE) return@io ByteArray(0)
-        val total = vault.size(path)
-        if (total > MAX_THUMB_SOURCE) return@io ByteArray(0)
-        thumbnailer.thumbnail(vault.readRange(path, 0, total), px)
+        if (mediaKindOf(name, false, "") != MediaKind.IMAGE) return ByteArray(0)
+        return thumbLimit.withPermit {
+            withContext(Dispatchers.IO) {
+                ensureActive()
+                val total = local { vault.size(path) }
+                if (total > MAX_THUMB_SOURCE) return@withContext ByteArray(0)
+                ensureActive()
+                local { thumbnailer.thumbnail(vault.readRange(path, 0, total), px) }
+            }
+        }
     }
 
     override suspend fun upload(dir: String, name: String, input: InputStream, length: Long) {
@@ -269,8 +284,11 @@ class LocalSource(
     override suspend fun move(from: String, to: String) = io { vault.move(from, to) }
     override suspend fun delete(path: String) = io { vault.remove(path) }
 
-    private companion object {
-        const val MAX_THUMB_SOURCE = 64L * 1024 * 1024
+    internal companion object {
+        /** Larger images get no thumbnail: a SAF read holds several copies of the file at once. */
+        const val MAX_THUMB_SOURCE = 24L * 1024 * 1024
+        const val THUMB_CONCURRENCY = 2
+        private val THUMB_LIMIT = Semaphore(THUMB_CONCURRENCY)
     }
 }
 
@@ -291,6 +309,8 @@ private fun <T> local(block: () -> T): T = try {
         is LocalError.WrongPassword -> SourceError.WrongPassword
         is LocalError.NotFound -> SourceError.NotFound
         is LocalError.Exists -> SourceError.Exists
+        // The Go vault was closed under us (lockAll): to the UI that is "locked", not a failure.
+        is LocalError.Closed -> SourceError.Locked
         else -> SourceError.Other(le.message ?: "local error", le)
     }
 }

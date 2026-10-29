@@ -2,8 +2,12 @@ package ai.alertd.imagethat.data
 
 import kotlinx.coroutines.CancellationException
 
-/** [saved] and [failed] are keyed by destination path relative to the offline vault root, e.g. "srv/vault/Trip/a.jpg". */
-data class SaveReport(val saved: List<String>, val failed: Map<String, String>)
+/**
+ * [saved], [failed] and [skipped] are keyed by destination path relative to the offline vault root,
+ * e.g. "srv/vault/Trip/a.jpg". [skipped] files were already there with the same size (an earlier,
+ * interrupted save got them), so they were not copied again.
+ */
+data class SaveReport(val saved: List<String>, val failed: Map<String, String>, val skipped: List<String> = emptyList())
 
 /** A single safe path segment: no separators, never "." / ".." / blank. */
 fun sanitizeSegment(s: String): String {
@@ -26,6 +30,7 @@ fun offlinePrefix(serverLabel: String, vaultName: String) =
 suspend fun saveOffline(from: VaultSource, items: List<Item>, into: LocalSource, prefix: String): SaveReport {
     val saved = ArrayList<String>()
     val failed = LinkedHashMap<String, String>()
+    val skipped = ArrayList<String>()
     val root = "/" + prefix.split('/').filter { it.isNotEmpty() }.joinToString("/") { sanitizeSegment(it) }
 
     try {
@@ -36,6 +41,10 @@ suspend fun saveOffline(from: VaultSource, items: List<Item>, into: LocalSource,
         }
     } catch (e: CancellationException) {
         throw e
+    } catch (e: SourceError.Locked) {
+        throw SaveInterrupted(e, SaveReport(saved, failed))
+    } catch (e: SourceError.WrongPassword) {
+        throw SaveInterrupted(e, SaveReport(saved, failed))
     } catch (e: Exception) {
         for (it in items) failed["${root.trimStart('/')}/${sanitizeSegment(it.name)}"] = e.message ?: e.toString()
         return SaveReport(saved, failed)
@@ -50,6 +59,11 @@ suspend fun saveOffline(from: VaultSource, items: List<Item>, into: LocalSource,
             if (item.isDir) {
                 mkdirTolerant(into, dest)
                 for (child in from.list(item.path)) copy(child, dest)
+            } else if (key in saved || key in skipped) {
+                // Two source names sanitized to the same segment in this run: report, never merge.
+                failed[key] = "another item in this save has the same name"
+            } else if (existingSize(into, dest) == item.size) {
+                skipped += key
             } else {
                 from.open(item.path).use { into.upload(destDir, seg, it, item.size) }
                 saved += key
@@ -68,11 +82,18 @@ suspend fun saveOffline(from: VaultSource, items: List<Item>, into: LocalSource,
     try {
         for (item in items) copy(item, root)
     } catch (e: SourceError.Locked) {
-        throw SaveInterrupted(e, SaveReport(saved, failed))
+        throw SaveInterrupted(e, SaveReport(saved, failed, skipped))
     } catch (e: SourceError.WrongPassword) {
-        throw SaveInterrupted(e, SaveReport(saved, failed))
+        throw SaveInterrupted(e, SaveReport(saved, failed, skipped))
     }
-    return SaveReport(saved, failed)
+    return SaveReport(saved, failed, skipped)
+}
+
+/** Plaintext size of [path] in the offline vault, or null when nothing is there. */
+private suspend fun existingSize(into: LocalSource, path: String): Long? = try {
+    into.size(path)
+} catch (_: SourceError.NotFound) {
+    null
 }
 
 private suspend fun mkdirTolerant(into: LocalSource, path: String) {

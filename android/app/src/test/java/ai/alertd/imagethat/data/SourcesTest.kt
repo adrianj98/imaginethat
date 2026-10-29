@@ -1,7 +1,13 @@
 package ai.alertd.imagethat.data
 
 import ai.alertd.imagethat.remote.ApiClient
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Semaphore
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -83,7 +89,7 @@ class FakeSource(private val tree: Map<String, List<Item>>, private val data: Ma
     override suspend fun delete(path: String) {}
 }
 
-class VaultRepositoryTest {
+class SourcesTest {
     private fun item(path: String, isDir: Boolean = false, size: Long = 0) =
         Item(path, path.substringAfterLast('/'), isDir, size, mediaKindOf(path.substringAfterLast('/'), isDir, ""))
 
@@ -270,15 +276,119 @@ class VaultRepositoryTest {
         assertArrayEquals(payload, vault.files["/d/f"])
     }
 
-    @Test fun repositoryDelegatesAndSavesOffline() = runTest {
+    @Test fun saveOfflineCopiesIntoTheOfflineVault() = runTest {
         val src = FakeSource(mapOf("/" to listOf(item("/x.png", size = 3))), mapOf("/x.png" to byteArrayOf(1, 2, 3)))
         val vault = FakeLocalVault()
-        val repo = VaultRepository(src, LocalSource(vault))
-        assertEquals(1, repo.list("/").size)
-        val rep = repo.saveOffline(repo.list("/"), "s/v")
+        val rep = saveOffline(src, src.list("/"), LocalSource(vault), "s/v")
         assertEquals(listOf("s/v/x.png"), rep.saved)
         assertArrayEquals(byteArrayOf(1, 2, 3), vault.files["/s/v/x.png"])
-        try { VaultRepository(src, null).saveOffline(emptyList(), "s/v"); fail() } catch (e: SourceError) { assertTrue(e is SourceError.Other) }
+    }
+
+    /** Re-saving after SaveInterrupted: files the first run got are "already saved", not "exists" failures. */
+    @Test fun resaveSkipsFilesAlreadySavedWithTheSameSize() = runTest {
+        val data = mapOf("/a" to byteArrayOf(1), "/b" to byteArrayOf(2, 2), "/c" to byteArrayOf(3, 3, 3))
+        val src = FakeSource(emptyMap(), data)
+        val vault = FakeLocalVault()
+        vault.files["/s/v/a"] = byteArrayOf(1)          // saved by the interrupted run
+        vault.files["/s/v/c"] = byteArrayOf(9)          // a different file with the same name
+        val opened = ArrayList<String>()
+        val counting = object : VaultSource by src {
+            override suspend fun open(path: String, range: LongRange?): InputStream { opened += path; return src.open(path, range) }
+        }
+        val items = listOf(item("/a", size = 1), item("/b", size = 2), item("/c", size = 3))
+        val rep = saveOffline(counting, items, LocalSource(vault), "s/v")
+        assertEquals(listOf("s/v/a"), rep.skipped)
+        assertEquals(listOf("s/v/b"), rep.saved)
+        assertEquals(setOf("s/v/c"), rep.failed.keys)
+        assertFalse("an already-saved file was downloaded again", "/a" in opened)
+    }
+
+    @Test fun closedEngineVaultIsLocked() = runTest {
+        val vault = object : LocalVaultApi by FakeLocalVault() {
+            override fun list(path: String): String = throw Exception("closed: vault: session is closed")
+        }
+        try {
+            LocalSource(vault).list("/")
+            fail()
+        } catch (e: SourceError) {
+            assertEquals(SourceError.Locked, e)
+        }
+        assertTrue(ai.alertd.imagethat.local.LocalError.from(Exception("closed: x")) is ai.alertd.imagethat.local.LocalError.Closed)
+    }
+
+    /** lockAll closing the offline vault before the first write: SaveInterrupted, not N failures. */
+    @Test fun offlineVaultClosedBeforeTheSaveStartsInterrupts() = runTest {
+        val closed = object : LocalVaultApi by FakeLocalVault() {
+            override fun mkdir(path: String) = throw Exception("closed: vault: session is closed")
+        }
+        val src = FakeSource(emptyMap(), mapOf("/a" to byteArrayOf(1)))
+        try {
+            saveOffline(src, listOf(item("/a", size = 1)), LocalSource(closed), "s/v")
+            fail()
+        } catch (e: SaveInterrupted) {
+            assertEquals(SourceError.Locked, e.reason)
+            assertTrue(e.partial.saved.isEmpty() && e.partial.failed.isEmpty())
+        }
+    }
+
+    @Test fun offlineVaultClosedMidSaveInterrupts() = runTest {
+        val inner = FakeLocalVault()
+        var creates = 0
+        val closing = object : LocalVaultApi by inner {
+            override fun create(path: String): LocalWriter =
+                if (++creates == 2) throw Exception("closed: vault: session is closed") else inner.create(path)
+        }
+        val src = FakeSource(emptyMap(), mapOf("/a" to byteArrayOf(1), "/b" to byteArrayOf(2)))
+        try {
+            saveOffline(src, listOf(item("/a", size = 1), item("/b", size = 1)), LocalSource(closing), "s/v")
+            fail()
+        } catch (e: SaveInterrupted) {
+            assertEquals(SourceError.Locked, e.reason)
+            assertEquals(listOf("s/v/a"), e.partial.saved)
+        }
+    }
+
+    @Test fun localThumbnailsRunAtMostTwoAtATime() = runBlocking {
+        val vault = FakeLocalVault()
+        repeat(8) { vault.files["/p$it.jpg"] = ByteArray(10) }
+        val running = AtomicInteger()
+        val peak = AtomicInteger()
+        val thumbnailer = Thumbnailer { _, _ ->
+            val now = running.incrementAndGet()
+            peak.accumulateAndGet(now) { a, b -> maxOf(a, b) }
+            Thread.sleep(50)
+            running.decrementAndGet()
+            byteArrayOf(1)
+        }
+        val src = LocalSource(vault, thumbnailer, Semaphore(LocalSource.THUMB_CONCURRENCY))
+        (0 until 8).map { i -> async(Dispatchers.Default) { src.thumbnail("/p$i.jpg", 64) } }.awaitAll()
+        assertEquals(2, peak.get())
+    }
+
+    @Test fun localThumbnailSkipsHugeImagesWithoutReadingThem() = runTest {
+        val vault = object : LocalVaultApi by FakeLocalVault() {
+            override fun size(path: String) = LocalSource.MAX_THUMB_SOURCE + 1
+            override fun readRange(path: String, off: Long, n: Long): ByteArray = throw AssertionError("read a too-large image")
+        }
+        assertEquals(0, LocalSource(vault, { _, _ -> byteArrayOf(1) }).thumbnail("/big.jpg", 64).size)
+        assertEquals(24L * 1024 * 1024, LocalSource.MAX_THUMB_SOURCE)
+    }
+
+    @Test fun cancelledThumbnailRequestWaitingForAPermitNeverReads() = runBlocking {
+        val reads = AtomicInteger()
+        val vault = object : LocalVaultApi by FakeLocalVault() {
+            override fun size(path: String) = 10L
+            override fun readRange(path: String, off: Long, n: Long): ByteArray { reads.incrementAndGet(); return ByteArray(10) }
+        }
+        val limit = Semaphore(1)
+        limit.acquire() // all permits busy
+        val src = LocalSource(vault, { _, _ -> byteArrayOf(1) }, limit)
+        val job = launch(Dispatchers.Default) { src.thumbnail("/a.jpg", 64) }
+        kotlinx.coroutines.delay(50)
+        job.cancel()
+        limit.release()
+        job.join()
+        assertEquals(0, reads.get())
     }
 
     @Test fun saveOfflineSanitizesHostileNamesAndPrefix() = runTest {
