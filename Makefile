@@ -1,7 +1,6 @@
-.PHONY: build run golib clean app test test-logic test-e2e \
-        web-build web-all web-run web-test
+.PHONY: build run golib clean app test test-logic test-e2e test-fixtures golib-sync \
+        web-build web-all web-run web-test android-aar android-debug android-test
 
-# Ask SwiftPM: the output dir moved between toolchains (.build/out/Products/Debug).
 BIN_DIR = $(shell swift build --show-bin-path)
 APP_BUNDLE = build/ImageThat.app
 
@@ -30,8 +29,18 @@ app: build
 	cp ImageThat/Resources/Info.plist $(APP_BUNDLE)/Contents/Info.plist
 	codesign --force --sign - $(APP_BUNDLE)
 
+# Copy the gocryptfs internal/ packages into gocryptfs-lib. Required once after
+# cloning, and again whenever the pinned gocryptfs version changes.
+golib-sync:
+	./Scripts/sync-gocryptfs.sh
+
+# internal/ is generated, so make the build depend on it existing rather than
+# failing with a confusing "no required module provides package".
+gocryptfs-lib/internal:
+	./Scripts/sync-gocryptfs.sh
+
 # Build the Go shared library
-golib:
+golib: gocryptfs-lib/internal
 	cd gocryptfs-lib && CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 		go build -tags without_openssl -buildmode=c-shared \
 		-o ../build/libgocryptfs.dylib .
@@ -57,15 +66,43 @@ web-run:
 web-test:
 	$(MAKE) -C webserver test
 
+# --- Android app ----------------------------------------------------------
+# Kotlin + Compose app under android/ that embeds the Go vault engine
+# (webserver/mobile) through a gomobile-built aar. Needs JDK 21, the Android
+# SDK + NDK, and gomobile (see android/vaultcore/build.sh).
+ANDROID_HOME ?= $(HOME)/Library/Android/sdk
+JAVA_HOME ?= $(shell /usr/libexec/java_home 2>/dev/null || echo /opt/homebrew/opt/openjdk@21)
+ANDROID_ENV = ANDROID_HOME=$(ANDROID_HOME) JAVA_HOME=$(JAVA_HOME)
+
+# Build android/app/libs/vaultcore.aar from the Go engine
+android-aar:
+	$(ANDROID_ENV) android/vaultcore/build.sh
+
+# Build the debug APK (android/app/build/outputs/apk/debug/app-debug.apk)
+android-debug:
+	cd android && $(ANDROID_ENV) ./gradlew :app:assembleDebug
+
+# Run the Android JVM unit tests
+android-test:
+	cd android && $(ANDROID_ENV) ./gradlew :app:testDebugUnitTest
+
 # Run all tests
 test: test-logic test-e2e
 
+# Copy the committed fixtures to the /tmp paths IntegrationTest reads.
+# The vault was made with the real gocryptfs (password: testpass123).
+test-fixtures:
+	rm -rf /tmp/imagethat-test-plain /tmp/imagethat-test
+	mkdir -p /tmp/imagethat-test
+	cp -R Tests/fixtures/plain /tmp/imagethat-test-plain
+	cp -R Tests/fixtures/vault /tmp/imagethat-test/vault
+
 # Run logic/integration tests
-test-logic: build web-build
+test-logic: build web-build test-fixtures
 	DYLD_LIBRARY_PATH=$(PWD)/build $(BIN_DIR)/IntegrationTest
 
-# Run E2E tests (requires Peekaboo: brew install steipete/tap/peekaboo)
-test-e2e: app
+# Run E2E tests (needs Screen Recording permission for the terminal)
+test-e2e: app test-fixtures
 	bash Tests/e2e_test.sh
 
 # Clean all build artifacts

@@ -276,9 +276,8 @@ func GocryptfsOpenVFS(
 	return openSession(cf, C.GoString(password), fs)
 }
 
-// parseConfig parses gocryptfs.conf bytes held in memory. configfile only
-// loads from a path, and its internal/ copy is generated, so the in-memory
-// variant lives here rather than as a patch to that generated tree.
+// parseConfig is configfile.Load for a gocryptfs.conf already in memory
+// (Drive vaults). Kept here so internal/ stays an unmodified upstream copy.
 func parseConfig(data []byte) (*configfile.ConfFile, error) {
 	if len(data) == 0 {
 		return nil, fmt.Errorf("config file is empty")

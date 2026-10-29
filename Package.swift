@@ -37,6 +37,7 @@ let package = Package(
             name: "IntegrationTest",
             dependencies: ["ImageThatCore", "CLibGocryptfs"],
             path: "Tests",
+            exclude: ["e2e_test.sh", "fixtures"],
             linkerSettings: [
                 .unsafeFlags(["-L\(Context.packageDirectory)/build"]),
                 .linkedLibrary("gocryptfs")

@@ -10,15 +10,26 @@ FAILED=0
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
+YELLOW='\033[0;33m'
 NC='\033[0m'
+SKIPPED=0
 
 pass() { echo -e "  ${GREEN}PASS${NC}: $1"; PASSED=$((PASSED+1)); }
 fail() { echo -e "  ${RED}FAIL${NC}: $1 — $2"; FAILED=$((FAILED+1)); }
+skip() { echo -e "  ${YELLOW}SKIP${NC}: $1 — $2"; SKIPPED=$((SKIPPED+1)); }
 
 kill_app() { pkill -9 ImageThat 2>/dev/null || true; sleep 1; }
 
+# Prints the CGWindowID of ImageThat's main window (empty if none)
+window_id() {
+    osascript -l JavaScript -e 'ObjC.import("CoreGraphics");
+        const l = ObjC.deepUnwrap(ObjC.castRefToObject($.CGWindowListCopyWindowInfo($.kCGWindowListOptionOnScreenOnly, 0)));
+        const w = l.find(w => w.kCGWindowOwnerName === "ImageThat" && w.kCGWindowLayer === 0);
+        w ? String(w.kCGWindowNumber) : ""' 2>/dev/null
+}
+
 has_window() {
-    peekaboo list windows --app ImageThat 2>/dev/null | grep -q 'ImageThat - ID'
+    [ -n "$(window_id)" ]
 }
 
 wait_for_window() {
@@ -71,18 +82,21 @@ kill_app
 echo ""
 echo "--- Test 2: Open folder with images via --args ---"
 open -n "$APP_BUNDLE" --args "$TEST_DIR/photos"
-if wait_for_window 10; then
+if wait_for_window 20; then
     pass "App launches with --args"
     # Wait for folder to load (the .task has 1s delay)
     sleep 4
-    peekaboo image --app ImageThat --path /tmp/e2e-test2 --format png 2>/dev/null || true
+    shot_err=$(screencapture -x -o -l "$(window_id)" /tmp/e2e-test2.png 2>&1 || true)
     if [ -f "/tmp/e2e-test2.png" ]; then
         pass "Screenshot captured"
+    elif [[ "$shot_err" == *"could not create image"* ]]; then
+        # macOS returns this when the terminal lacks Screen Recording permission
+        skip "Screenshot" "grant Screen Recording to your terminal to run this"
     else
-        fail "Screenshot" "file not created"
+        fail "Screenshot" "${shot_err:-file not created}"
     fi
 else
-    fail "App launches with --args" "window not found"
+    fail "App launches with --args" "window not found after 20s"
 fi
 kill_app
 
@@ -91,7 +105,7 @@ echo ""
 echo "--- Test 3: Integration tests (logic layer) ---"
 cd "$PROJECT_DIR"
 if DYLD_LIBRARY_PATH="$PROJECT_DIR/build" \
-    "$PROJECT_DIR/.build/arm64-apple-macosx/debug/IntegrationTest" 2>/dev/null; then
+    "$(swift build --show-bin-path)/IntegrationTest" 2>/dev/null; then
     pass "All integration tests pass"
 else
     fail "Integration tests" "some tests failed"
@@ -99,7 +113,7 @@ fi
 
 # ============================================================
 echo ""
-echo "=== Results: $PASSED passed, $FAILED failed ==="
+echo "=== Results: $PASSED passed, $FAILED failed, $SKIPPED skipped ==="
 echo ""
 
 rm -rf "$TEST_DIR" /tmp/e2e-*.png

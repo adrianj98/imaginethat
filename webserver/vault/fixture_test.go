@@ -1,13 +1,8 @@
 package vault
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
-	"image"
-	"image/color"
-	"image/jpeg"
-	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +16,13 @@ import (
 // There is one vault per content cipher, because they are not interchangeable:
 // AES-SIV in particular takes a different branch in CryptoCore.Wipe, and a
 // GCM-only fixture hid a panic there.
+//
+// The image plaintexts live in testdata/plain/ and are authoritative: they
+// were extracted from these vaults (and checked byte-for-byte against the
+// Go 1.25 encoders that originally produced them). If the vaults are
+// regenerated, TestGenerateFixture writes those committed bytes into the new
+// vault, so the two stay in step. Do not regenerate the images from
+// image/jpeg or image/png.
 //
 // To regenerate (needs the gocryptfs binary and FUSE) — see
 // scripts/gen-fixtures.sh, which does all of this:
@@ -49,36 +51,34 @@ func altFixtureVaults() map[string]string {
 	}
 }
 
-// fixtureKind selects how a fixture file's content is produced.
-type fixtureKind int
-
-const (
-	// kindPattern is deterministic pseudo-random bytes.
-	kindPattern fixtureKind = iota
-	// kindJPEG and kindPNG are real, decodable images so the thumbnail path
-	// can be exercised against genuine image data.
-	kindJPEG
-	kindPNG
-)
-
 // fixtureFile is one file in the test vault.
+//
+// Most files are deterministic pseudo-random bytes (patternBytes: SHA-256
+// chaining, stable across Go versions). The images are different: they are
+// committed under testdata/plain/ and read back verbatim. They used to be
+// produced at test time with image/jpeg and image/png, but Go 1.26 changed
+// those encoders' output, so the expected bytes drifted away from what the
+// gocryptfs-written fixture vaults hold. The committed bytes are therefore the
+// authoritative plaintext; nothing re-encodes them.
 type fixtureFile struct {
 	Path string
 	Size int // pattern files only
 	Seed uint64
-	Kind fixtureKind
+	// Plain, when set, is a path under testdata/plain/ holding the exact
+	// plaintext stored in the fixture vaults. Size and Seed are ignored.
+	Plain string
 }
 
 // Content returns the file's expected plaintext.
 func (f fixtureFile) Content() []byte {
-	switch f.Kind {
-	case kindJPEG:
-		return encodeFixtureImage(f.Seed, kindJPEG)
-	case kindPNG:
-		return encodeFixtureImage(f.Seed, kindPNG)
-	default:
-		return patternBytes(f.Seed, f.Size)
+	if f.Plain != "" {
+		b, err := os.ReadFile(filepath.Join("testdata", "plain", filepath.FromSlash(f.Plain)))
+		if err != nil {
+			panic(err)
+		}
+		return b
 	}
+	return patternBytes(f.Seed, f.Size)
 }
 
 // fixtureFiles covers the cases where the block arithmetic is easy to get
@@ -94,8 +94,8 @@ func fixtureFiles() []fixtureFile {
 		{Path: "block-8192.bin", Size: 8192, Seed: 6},
 		{Path: "large.bin", Size: 100000, Seed: 7},
 		{Path: "clip.mp4", Size: 60000, Seed: 9},
-		{Path: "photo.jpg", Seed: 8, Kind: kindJPEG},
-		{Path: "photo.png", Seed: 14, Kind: kindPNG},
+		{Path: "photo.jpg", Plain: "full/photo.jpg"},
+		{Path: "photo.png", Plain: "full/photo.png"},
 		{Path: "subdir/nested.txt", Size: 64, Seed: 10},
 		{Path: "subdir/deeper/deep.bin", Size: 12345, Seed: 11},
 		// A plaintext name long enough that its EME ciphertext exceeds
@@ -104,34 +104,6 @@ func fixtureFiles() []fixtureFile {
 		{Path: longFixtureName, Size: 5000, Seed: 12},
 		{Path: "subdir/" + longFixtureName, Size: 777, Seed: 13},
 	}
-}
-
-// encodeFixtureImage builds a small deterministic gradient image and encodes
-// it. Go's encoders are deterministic, so the bytes are stable across runs.
-func encodeFixtureImage(seed uint64, kind fixtureKind) []byte {
-	const w, h = 160, 120
-	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			img.Set(x, y, color.RGBA{
-				R: uint8((x*3 + int(seed)*7) % 256),
-				G: uint8((y*5 + int(seed)*11) % 256),
-				B: uint8((x*y + int(seed)*13) % 256),
-				A: 255,
-			})
-		}
-	}
-	var buf bytes.Buffer
-	if kind == kindPNG {
-		if err := png.Encode(&buf, img); err != nil {
-			panic(err)
-		}
-	} else {
-		if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 85}); err != nil {
-			panic(err)
-		}
-	}
-	return buf.Bytes()
 }
 
 // longFixtureName is 200 characters, well past the point where the encrypted
@@ -152,7 +124,7 @@ func altFixtureFiles() []fixtureFile {
 		{Path: "block-4096.bin", Size: 4096, Seed: 102},
 		{Path: "block-4097.bin", Size: 4097, Seed: 103},
 		{Path: "medium.bin", Size: 20000, Seed: 104},
-		{Path: "photo.jpg", Seed: 105, Kind: kindJPEG},
+		{Path: "photo.jpg", Plain: "alt/photo.jpg"},
 		{Path: "subdir/nested.bin", Size: 3000, Seed: 106},
 		{Path: longFixtureName, Size: 2000, Seed: 107},
 	}

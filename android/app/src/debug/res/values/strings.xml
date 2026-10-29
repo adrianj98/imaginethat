@@ -1,0 +1,4 @@
+<resources>
+    <!-- Debug builds install as ai.alertd.imagethat.debug next to the release app; tell them apart. -->
+    <string name="app_name">ImageThat (debug)</string>
+</resources>
