@@ -1,5 +1,12 @@
 # aj-log
 
+## 2026-10-29 — Drive vault: "gocryptfs.diriv: file does not exist" when opening a folder
+- Symptom (user screenshot): opening `turkey2019/istanbul_bj` in a Drive vault failed with `read LVcgjkO6wt2kFYio4JbH4g/gocryptfs.diriv: ... file does not exist`. The IV file was missing from the app's index of Drive entries, not from Drive.
+- Cause 1, race in `DriveVaultFS.ensureDirListed`: it marked a directory listed before the Drive fetch finished, so a concurrent caller skipped the fetch and found nothing. Clicking a vault folder now expands the sidebar and loads the folder at the same moment, which hits it. A failed fetch was also remembered as listed-and-empty for the rest of the session.
+- Cause 2, `GoogleDriveService.listAllEntries`, `listFiles`, `listFolders` asked for 1000 entries and ignored `nextPageToken`, so folders over 1000 entries were truncated, including possibly their `gocryptfs.diriv`.
+- `DriveVaultFS.swift`: one fetch per directory at a time (`inFlight` `DispatchGroup`s); concurrent callers wait for it; only a successful fetch marks the directory listed. `GoogleDriveService.swift`: shared `listAllPages` follows `nextPageToken` for all three listings.
+- Verified: app builds and is signed; Swift integration 61/61. Not verified: the Drive flow itself (no automated Drive test; `GoogleDriveService` is a singleton with no seam to fake). Needs a retry on the real vault.
+
 ## 2026-10-29 — Google Drive vaults: decrypted folder names, encrypted folder creation
 - Symptom (user screenshot): under a Drive vault (`bali2023_nov`) the sidebar listed gocryptfs ciphertext names (`4sbz9JYNvL1RyXyu145W7w`...) plus one readable folder (`bali2023mobile`). Not from the Go core work: the Drive sidebar and Drive vault create code date from 2026-05-05.
 - Cause 1, sidebar: `expandGoogleDriveSidebarItem` listed raw Drive folder names for every folder, vault or not, and never switched to the vault's decrypted tree after unlock (local vaults do). `findVaultRoot` then passed those ciphertext names as a plaintext subpath, so clicking one opened nothing.

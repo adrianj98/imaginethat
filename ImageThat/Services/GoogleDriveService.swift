@@ -276,20 +276,38 @@ public actor GoogleDriveService {
         return !files.isEmpty
     }
 
+    /// Runs a files.list query and follows nextPageToken to the end. Drive
+    /// returns at most 1000 entries per page, so a single request silently
+    /// truncated large folders (and could miss a vault's gocryptfs.diriv).
+    private func listAllPages(query: String, fields: String, orderBy: String? = nil) async throws -> [[String: Any]] {
+        var all: [[String: Any]] = []
+        var pageToken: String?
+        repeat {
+            let token = try await validAccessToken()
+            var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
+            var items = [
+                URLQueryItem(name: "q", value: query),
+                URLQueryItem(name: "fields", value: "nextPageToken,files(\(fields))"),
+                URLQueryItem(name: "pageSize", value: "1000"),
+            ]
+            if let orderBy { items.append(URLQueryItem(name: "orderBy", value: orderBy)) }
+            if let pageToken { items.append(URLQueryItem(name: "pageToken", value: pageToken)) }
+            components.queryItems = items
+            var request = URLRequest(url: components.url!)
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            try checkHTTP(response, data: data)
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+            all.append(contentsOf: json["files"] as? [[String: Any]] ?? [])
+            pageToken = json["nextPageToken"] as? String
+        } while pageToken != nil
+        return all
+    }
+
     public func listAllEntries(in folderId: String) async throws -> [DriveAllEntry] {
-        let token = try await validAccessToken()
-        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
-        components.queryItems = [
-            URLQueryItem(name: "q", value: "'\(folderId)' in parents and trashed=false"),
-            URLQueryItem(name: "fields", value: "files(id,name,mimeType,size,modifiedTime)"),
-            URLQueryItem(name: "pageSize", value: "1000"),
-        ]
-        var request = URLRequest(url: components.url!)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try checkHTTP(response, data: data)
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        return (json["files"] as? [[String: Any]] ?? []).compactMap { dict in
+        let files = try await listAllPages(query: "'\(folderId)' in parents and trashed=false",
+                                           fields: "id,name,mimeType,size,modifiedTime")
+        return files.compactMap { dict in
             guard let id = dict["id"] as? String, let name = dict["name"] as? String else { return nil }
             let mimeType = dict["mimeType"] as? String ?? ""
             let isFolder = mimeType == "application/vnd.google-apps.folder"
@@ -300,42 +318,18 @@ public actor GoogleDriveService {
     }
 
     public func listFiles(in folderId: String) async throws -> [DriveFile] {
-        let token = try await validAccessToken()
         let mimeFilter = "mimeType contains 'image/' or mimeType contains 'video/'"
-        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
-        components.queryItems = [
-            URLQueryItem(name: "q", value: "'\(folderId)' in parents and (\(mimeFilter)) and trashed=false"),
-            URLQueryItem(name: "fields", value: "files(id,name,mimeType,size,thumbnailLink,modifiedTime)"),
-            URLQueryItem(name: "pageSize", value: "1000"),
-            URLQueryItem(name: "orderBy", value: "name"),
-        ]
-        var request = URLRequest(url: components.url!)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try checkHTTP(response, data: data)
-
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        return (json["files"] as? [[String: Any]] ?? []).compactMap(parseFile)
+        let files = try await listAllPages(query: "'\(folderId)' in parents and (\(mimeFilter)) and trashed=false",
+                                           fields: "id,name,mimeType,size,thumbnailLink,modifiedTime",
+                                           orderBy: "name")
+        return files.compactMap(parseFile)
     }
 
     public func listFolders(in folderId: String) async throws -> [DriveFolder] {
-        let token = try await validAccessToken()
-        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
-        components.queryItems = [
-            URLQueryItem(name: "q", value: "'\(folderId)' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"),
-            URLQueryItem(name: "fields", value: "files(id,name)"),
-            URLQueryItem(name: "pageSize", value: "1000"),
-            URLQueryItem(name: "orderBy", value: "name"),
-        ]
-        var request = URLRequest(url: components.url!)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try checkHTTP(response, data: data)
-
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        return (json["files"] as? [[String: Any]] ?? []).compactMap { dict in
+        let files = try await listAllPages(
+            query: "'\(folderId)' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+            fields: "id,name", orderBy: "name")
+        return files.compactMap { dict in
             guard let id = dict["id"] as? String, let name = dict["name"] as? String else { return nil }
             return DriveFolder(id: id, name: name)
         }
