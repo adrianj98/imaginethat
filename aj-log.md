@@ -1,5 +1,11 @@
 # aj-log
 
+## 2026-10-29 — Spec: move file handling, caching, streaming and transport into a Go core
+- `docs/superpowers/specs/2026-10-29-go-core-design.md` (new): design + phased plan for a `core/` Go module that owns sources (folder, local vault, remote vault, Drive, Drive vault), caches (encrypted thumbnail tiers, Drive ciphertext caches), streaming (`File.ReadAt` for players, `Copy` with progress) and transport (imagethat-web client, Drive v3 + OAuth refresh), bound to macOS and Android with gomobile. Eight Mermaid diagrams: current vs target architecture, class model, video / thumbnail / Drive / transfer sequences, phase graph.
+  - Why: the Mac does all of this in Swift over a crypto-only cgo library, Android re-did it in Kotlin, and `webserver/vault` is a second copy of the gocryptfs engine; one Go implementation serves all three.
+  - Keeps Keychain + LAContext, decoders, SAF and player glue native; each phase swaps one implementation behind the existing `MediaSource` interface and deletes the old one only after the same tests pass.
+  - Flags defects the move fixes, chiefly `VaultSource.writeChunks` writing plaintext into the ciphertext directory and `/tmp/gocryptfs.log`.
+
 ## 2026-10-28 — Android redesign part B: Home, Connect, server vaults, unlock, app lock, dialogs
 - `HomeScreen.kt`: rebuilt with the shared redesign components — big "ImageThat" title with a live summary ("1 server · 2 vaults unlocked" / "all locked"), "Lock all" pill, grouped cards Servers / On this phone / Settings. Server rows show "Port N · https" (online state is only known on the server screen); "Connect to a server" row with dashed tile; Offline vault row with a "Set up" chip until it exists; folder rows with an options button (forget saved password / remove from list); Open folder | New vault split row; Settings has the Auto-lock row (value + chevron) and an informational "App lock" row (no toggle). Why: user asked for the new design; app lock is always on.
   - Server removal moved from an inline "Remove" button to long-press on Home and the server screen's overflow menu, both with a confirm dialog (`RemoveServerDialog`, tag `remove-confirm`). Why: the design has chevrons, not inline buttons; removing also forgets saved passwords so it deserves a confirmation.
