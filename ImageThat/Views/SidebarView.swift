@@ -201,6 +201,19 @@ public struct SidebarView: View {
 
     @ViewBuilder
     private func localRowContextMenu(_ item: SidebarItem) -> some View {
+        if item.url.scheme == "gdrive", item.vaultPath != nil {
+            // A folder inside an unlocked Drive vault: its URL is the vault
+            // root's, so the plain-Drive delete below would delete the vault.
+            Button("Delete Folder", role: .destructive) {
+                appState.deleteDriveVaultSidebarFolder(item)
+            }
+        } else {
+            plainRowContextMenu(item)
+        }
+    }
+
+    @ViewBuilder
+    private func plainRowContextMenu(_ item: SidebarItem) -> some View {
         if item.url.scheme != "gdrive" {
             Button("Add to Favorites") {
                 appState.addFavorite(url: item.url)

@@ -43,6 +43,9 @@ extern int64_t GocryptfsFileSize(int sessionID, char* relativePath);
 // Encrypt a filename for the given cipher directory path (needed to upload to Drive with correct name).
 // Caller must free the returned string.
 extern char* GocryptfsEncryptFileName(int sessionID, char* cipherDirPath, char* plainName);
+// Content of the "<hashed name>.name" sidecar for a long name, "" when the name
+// is short enough to need none, NULL on error. Caller must free.
+extern char* GocryptfsLongNameSidecar(int sessionID, char* cipherDirPath, char* plainName);
 extern void GocryptfsFreeDecryptResult(DecryptResult result);
 extern void GocryptfsFreeListResult(ListResult result);
 extern DecryptResult GocryptfsEncryptData(int sessionID, void* plaintext, int plaintextLen);

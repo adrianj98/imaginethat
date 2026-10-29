@@ -207,3 +207,23 @@ func (s *Session) CipherPath(plainPath string) (string, error) {
 	}
 	return s.resolveCipherPath(clean)
 }
+
+// LongNameSidecar reports what a backend that writes ciphertext itself must
+// store next to an entry named plainName in cipherDir. For a short name it
+// returns "" and nothing extra is needed. For a long one, whose on-disk name
+// is a gocryptfs.longname.<hash>, it returns the full encrypted name, the
+// content of the "<hashed name>.name" sidecar file without which gocryptfs
+// cannot list the entry.
+func (s *Session) LongNameSidecar(cipherDir, plainName string) (string, error) {
+	cName, err := s.EncryptName(cipherDir, plainName)
+	if err != nil || s.plaintextNames || !nametransform.IsLongContent(cName) {
+		return "", err
+	}
+	var iv []byte
+	if s.useDirIV {
+		if iv, err = s.readDirIV(cipherDir); err != nil {
+			return "", err
+		}
+	}
+	return s.nameTransform.EncryptName(plainName, iv)
+}

@@ -260,7 +260,11 @@ public class AppState: ObservableObject {
         }
         if item.url.scheme == "gdrive" {
             expandGoogleDriveSidebarItem(item)
-            navigateToGoogleDriveFolder(folderId: item.url.host ?? "root")
+            if let vaultPath = item.vaultPath, let rootId = item.url.host {
+                navigateToDriveVaultFolder(rootFolderId: rootId, path: vaultPath)
+            } else {
+                navigateToGoogleDriveFolder(folderId: item.url.host ?? "root")
+            }
             return
         }
 
@@ -451,6 +455,9 @@ public class AppState: ObservableObject {
                     let children = Self.subfolders(of: folderSource.rootURL, maxDepth: 1)
                     let rootItem = SidebarItem(name: rootName, url: folderSource.rootURL, children: children)
                     self.sidebarItems = [rootItem]
+                } else if let driveVault = source as? DriveVaultSource {
+                    self.refreshDriveVaultSidebar(bridge: driveVault.bridge, path: driveVault.currentPath)
+                    self.loadMedia(from: driveVault)
                 } else if source is GoogleDriveSource {
                     await self.buildGoogleDriveSidebar()
                 } else if let remote = source as? RemoteVaultSource {
@@ -957,6 +964,11 @@ public class AppState: ObservableObject {
     }
 
     func navigateToGoogleDriveFolder(folderId: String) {
+        // Already unlocked: browse it, don't derive the key again.
+        if driveVaultBridges[folderId] != nil {
+            navigateToDriveVaultFolder(rootFolderId: folderId, path: "")
+            return
+        }
         Task {
             let hasConf = (try? await GoogleDriveService.shared.fileExists(name: "gocryptfs.conf", in: folderId)) ?? false
             if hasConf {
@@ -995,8 +1007,20 @@ public class AppState: ObservableObject {
     private func expandGoogleDriveSidebarItem(_ item: SidebarItem) {
         guard item.children.isEmpty, let folderId = item.url.host else { return }
         let itemID = item.id
+        // Inside a Drive vault the Drive folder names are gocryptfs ciphertext:
+        // list the decrypted tree from the unlocked vault instead.
+        if let bridge = driveVaultBridges[folderId] {
+            loadDriveVaultSidebarChildren(bridge: bridge, path: item.vaultPath ?? "", parentID: itemID)
+            return
+        }
+        if item.vaultPath != nil { return } // locked vault subfolder: nothing to show yet
         Task {
             do {
+                // A locked vault shows no children; they appear decrypted once
+                // it is unlocked (see unlockDriveVault).
+                if (try? await GoogleDriveService.shared.fileExists(name: "gocryptfs.conf", in: folderId)) == true {
+                    return
+                }
                 let folders = try await GoogleDriveService.shared.listFolders(in: folderId)
                 let children = folders.map { folder in
                     SidebarItem(name: folder.name, url: URL(string: "gdrive://\(folder.id)")!, children: [])
@@ -1022,6 +1046,87 @@ public class AppState: ObservableObject {
             }
         }
         googleDriveSidebarItems = update(googleDriveSidebarItems)
+    }
+
+    /// Decrypted subfolders of `path` in an unlocked Drive vault, as sidebar
+    /// items that keep the vault root's Drive ID in their URL and the
+    /// plaintext vault path in `vaultPath`, like local vault items.
+    private func loadDriveVaultSidebarChildren(bridge: DriveVaultBridge, path: String, parentID: UUID) {
+        let rootId = bridge.folderId
+        Task.detached {
+            // listDirectory blocks on Drive requests; keep it off the main actor.
+            let entries = (try? bridge.listDirectory(path: path)) ?? []
+            let children = entries
+                .filter { $0.isDirectory && !$0.name.hasPrefix(".") }
+                .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+                .map { entry in
+                    SidebarItem(name: entry.name, url: URL(string: "gdrive://\(rootId)")!,
+                                vaultPath: path.isEmpty ? entry.name : "\(path)/\(entry.name)", children: [])
+                }
+            await MainActor.run { [weak self] in
+                self?.updateGoogleDriveSidebarChildren(parentID: parentID, children: children)
+            }
+        }
+    }
+
+    /// Re-list the decrypted children of the sidebar item for `path` in the
+    /// Drive vault rooted at `rootId` (after a folder is created or deleted).
+    private func refreshDriveVaultSidebar(bridge: DriveVaultBridge, path: String) {
+        let rootURL = URL(string: "gdrive://\(bridge.folderId)")!
+        let target = findItem(in: googleDriveSidebarItems) { item in
+            item.url == rootURL && (item.vaultPath ?? "") == path
+        }
+        if let target { loadDriveVaultSidebarChildren(bridge: bridge, path: path, parentID: target.id) }
+    }
+
+    private func navigateToDriveVaultFolder(rootFolderId: String, path: String) {
+        guard let bridge = driveVaultBridges[rootFolderId] else {
+            tryUnlockDriveVault(folderId: rootFolderId, navigateToSubpath: path)
+            return
+        }
+        if let current = mediaSource as? DriveVaultSource, current.bridge === bridge, current.currentPath == path { return }
+        let source = DriveVaultSource(bridge: bridge, currentPath: path)
+        mediaSource = source
+        viewMode = .grid
+        selectedIndex = 0
+        loadMedia(from: source)
+    }
+
+    /// Delete a folder inside an unlocked Drive vault from the sidebar.
+    public func deleteDriveVaultSidebarFolder(_ item: SidebarItem) {
+        guard let rootId = item.url.host, let path = item.vaultPath, !path.isEmpty,
+              let bridge = driveVaultBridges[rootId] else { return }
+        Task {
+            do {
+                try await DriveVaultSource(bridge: bridge, currentPath: path).deleteCurrentDirectory()
+                let parent = (path as NSString).deletingLastPathComponent
+                self.refreshDriveVaultSidebar(bridge: bridge, path: parent == "." ? "" : parent)
+                if let current = self.mediaSource as? DriveVaultSource, current.bridge === bridge,
+                   current.currentPath == path || current.currentPath.hasPrefix(path + "/") {
+                    self.navigateToDriveVaultFolder(rootFolderId: rootId, path: "")
+                }
+            } catch {
+                self.errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Maps a path of Drive folder names inside a vault (gocryptfs ciphertext,
+    /// as `findVaultRoot` reports them) to the plaintext vault path.
+    nonisolated private static func plainVaultPath(cipherComponents: [String], bridge: DriveVaultBridge) -> String? {
+        var plain = ""
+        for component in cipherComponents {
+            guard let entries = try? bridge.listDirectory(path: plain) else { return nil }
+            let match = entries.first { entry in
+                guard entry.isDirectory else { return false }
+                let candidate = plain.isEmpty ? entry.name : "\(plain)/\(entry.name)"
+                return bridge.cipherPath(forPlainPath: candidate, isDir: true)
+                    .map { ($0 as NSString).lastPathComponent == component } ?? false
+            }
+            guard let match else { return nil }
+            plain = plain.isEmpty ? match.name : "\(plain)/\(match.name)"
+        }
+        return plain
     }
 
     public func deleteGoogleDriveSidebarFolder(_ item: SidebarItem) {
@@ -1108,7 +1213,26 @@ public class AppState: ObservableObject {
                 }
             }
             driveVaultBridges[folderId] = bridge
-            let source = DriveVaultSource(bridge: bridge, currentPath: subpath ?? "")
+
+            // A subpath from findVaultRoot is made of Drive folder names, which
+            // inside a vault are ciphertext; map it to the plaintext path.
+            var path = subpath ?? ""
+            if !path.isEmpty {
+                let given = path
+                let resolved = await Task.detached { () -> String? in
+                    if (try? bridge.listDirectory(path: given)) != nil { return given }
+                    return Self.plainVaultPath(cipherComponents: given.split(separator: "/").map(String.init), bridge: bridge)
+                }.value
+                path = resolved ?? ""
+            }
+
+            // Show the vault's folders decrypted under its sidebar item.
+            let rootURL = URL(string: cacheKey)!
+            if let rootItem = findItem(in: googleDriveSidebarItems, where: { $0.url == rootURL && $0.vaultPath == nil }) {
+                loadDriveVaultSidebarChildren(bridge: bridge, path: "", parentID: rootItem.id)
+            }
+
+            let source = DriveVaultSource(bridge: bridge, currentPath: path)
             self.mediaSource = source
             self.viewMode = .grid
             self.selectedIndex = 0

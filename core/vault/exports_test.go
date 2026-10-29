@@ -183,3 +183,43 @@ func TestReplaceOnClosedSession(t *testing.T) {
 		t.Errorf("SealBlob after Close = %v, want ErrClosed", err)
 	}
 }
+
+func TestLongNameSidecar(t *testing.T) {
+	s, dir := openWritable(t)
+	if side, err := s.LongNameSidecar("", "short.jpg"); err != nil || side != "" {
+		t.Errorf("short name: sidecar %q, %v; want none", side, err)
+	}
+	long := strings.Repeat("a-very-long-folder-name-", 10)
+	cName, err := s.EncryptName("", long)
+	if err != nil || !strings.HasPrefix(cName, "gocryptfs.longname.") {
+		t.Fatalf("EncryptName(long) = %q, %v", cName, err)
+	}
+	side, err := s.LongNameSidecar("", long)
+	if err != nil || side == "" {
+		t.Fatalf("LongNameSidecar(long) = %q, %v", side, err)
+	}
+	// Writing exactly what a cloud backend would (hashed dir, diriv, sidecar)
+	// must give a directory this package lists under its plain name.
+	if err := os.Mkdir(filepath.Join(dir, cName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, cName, "gocryptfs.diriv"), bytes.Repeat([]byte{7}, 16), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, cName+".name"), []byte(side), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := s.ListDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range entries {
+		if e.Name == long && e.IsDir {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("a directory written by hand with its sidecar does not list under its plain name")
+	}
+}

@@ -216,6 +216,29 @@ final class DriveVaultFS: @unchecked Sendable {
         return folderIds[cipherDir]
     }
 
+    /// Forget what is known about one cipher directory's children so the next
+    /// listing fetches it again from Drive. Call after the app itself creates,
+    /// uploads or deletes something in that directory; without it the index
+    /// keeps serving the listing it fetched first, and new entries stay
+    /// invisible until the vault is reopened.
+    func invalidateListing(cipherDir: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        listedDirs.remove(cipherDir)
+        let prefix = cipherDir.isEmpty ? "" : "\(cipherDir)/"
+        func isDirectChild(_ key: String) -> Bool {
+            guard key.hasPrefix(prefix), key != cipherDir else { return false }
+            let rest = key.dropFirst(prefix.count)
+            return !rest.isEmpty && !rest.contains("/")
+        }
+        for key in fileEntries.keys where isDirectChild(key) { fileEntries.removeValue(forKey: key) }
+        for key in folderIds.keys where isDirectChild(key) {
+            // Keep the folder ID of a directory that is still listed below us:
+            // only drop it if nothing under it has been indexed.
+            if !listedDirs.contains(key) { folderIds.removeValue(forKey: key) }
+        }
+    }
+
     // MARK: - Private
 
     private func parentOf(_ path: String) -> String {

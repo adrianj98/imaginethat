@@ -177,6 +177,24 @@ public final class DriveVaultBridge: VaultThumbnailing, @unchecked Sendable {
         return name
     }
 
+    /// Content of the "<hashed name>.name" sidecar gocryptfs needs next to an
+    /// entry whose encrypted name is too long; nil when the name is short.
+    public func longNameSidecar(cipherDirPath: String, plainName: String) throws -> String? {
+        let ptr = cipherDirPath.withCString { dirPtr in
+            plainName.withCString { namePtr in
+                GocryptfsLongNameSidecar(
+                    sessionID,
+                    UnsafeMutablePointer(mutating: dirPtr),
+                    UnsafeMutablePointer(mutating: namePtr)
+                )
+            }
+        }
+        guard let ptr else { throw GocryptfsError.writeFailed("cannot encrypt name \(plainName)") }
+        let side = String(cString: ptr)
+        free(ptr)
+        return side.isEmpty ? nil : side
+    }
+
     /// Resolve a vault-relative plaintext path to its cipher equivalent.
     public func cipherPath(forPlainPath plainPath: String, isDir: Bool = false) -> String? {
         let ptr = plainPath.withCString { pathPtr in

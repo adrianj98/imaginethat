@@ -399,6 +399,25 @@ func GocryptfsEncryptFileName(sessionID C.int, cipherDirPath *C.char, plainName 
 	return C.CString(name)
 }
 
+// GocryptfsLongNameSidecar returns the content of the "<hashed name>.name"
+// sidecar a backend must write next to an entry whose encrypted name is too
+// long (GocryptfsEncryptFileName then returns gocryptfs.longname.<hash>). It
+// returns an empty string when no sidecar is needed and NULL on error. Caller
+// frees.
+//
+//export GocryptfsLongNameSidecar
+func GocryptfsLongNameSidecar(sessionID C.int, cipherDirPath *C.char, plainName *C.char) *C.char {
+	sess := getSession(sessionID)
+	if sess == nil {
+		return nil
+	}
+	side, err := sess.s.LongNameSidecar(C.GoString(cipherDirPath), C.GoString(plainName))
+	if err != nil {
+		return nil
+	}
+	return C.CString(side)
+}
+
 //export GocryptfsResolveCipherPath
 func GocryptfsResolveCipherPath(sessionID C.int, plainRelPath *C.char, isDir C.int) *C.char {
 	sess := getSession(sessionID)
