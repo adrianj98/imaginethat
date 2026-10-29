@@ -94,6 +94,12 @@ class LocalVaults(
     @Synchronized
     fun hasOpen(): Boolean = open.isNotEmpty()
 
+    /** Closes one vault opened here (its folder was removed). */
+    @Synchronized
+    fun close(v: Vault) {
+        if (open.remove(v)) runCatching { v.close() }
+    }
+
     @Synchronized
     fun closeAll() {
         open.forEach { runCatching { it.close() } }

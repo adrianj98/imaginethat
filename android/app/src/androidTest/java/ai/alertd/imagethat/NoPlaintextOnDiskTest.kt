@@ -2,6 +2,8 @@ package ai.alertd.imagethat
 
 import ai.alertd.imagethat.data.LocalSource
 import ai.alertd.imagethat.keys.AppState
+import ai.alertd.imagethat.keys.KeyVault
+import ai.alertd.imagethat.keys.PasswordIds
 import ai.alertd.imagethat.ui.AppNav
 import ai.alertd.imagethat.ui.OFFLINE_ID
 import ai.alertd.imagethat.ui.Routes
@@ -48,7 +50,11 @@ import java.security.SecureRandom
  * The app's central guarantee: decrypted vault content never reaches disk. Drives the real app
  * (real KeyVault, real offline vault in noBackupFilesDir, the app's Coil loader) through a remote
  * view, Save offline, an offline view and an upload, then searches every file under the app's
- * data directory for the plaintext markers and the server address.
+ * data directory for the plaintext markers, the server address and the saved vault passwords.
+ *
+ * The app lock is passed with a KeyVault over the same state file whose master key (under a test
+ * alias) needs no authentication, because an emulator has no enrolled biometric or screen lock.
+ * Everything else (state cipher, saved-password encryption) is the real code path.
  */
 class NoPlaintextOnDiskTest {
     @get:Rule val rule = createAndroidComposeRule<ComponentActivity>()
@@ -63,6 +69,8 @@ class NoPlaintextOnDiskTest {
     private val sentinel = File(app.noBackupFilesDir, SENTINEL)
     private val marker2 = ByteArray(64).also { SecureRandom().nextBytes(it) }
     private val password = "correct-horse-battery"
+    private val remotePassword = "remote-password-7f3a"
+    private val testMasterAlias = "imagethat.vault-master.noplaintext-test"
     private var server: MockWebServer? = null
     private lateinit var nav: NavHostController
 
@@ -100,6 +108,7 @@ class NoPlaintextOnDiskTest {
     private fun wipe() {
         offlineDir.deleteRecursively()
         container.keys.store().update { AppState() }
+        java.security.KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(testMasterAlias)
         sentinel.delete()
     }
 
@@ -163,32 +172,33 @@ class NoPlaintextOnDiskTest {
         val s = startServer(png(marker1), jpeg(marker1b))
         val serverStrings = listOf("localhost:${s.port}", "127.0.0.1:${s.port}")
 
+        val testKeys = KeyVault(app, requireAuth = false, stateFile = container.keys.stateFile, masterAlias = testMasterAlias)
+        assertTrue(runBlocking { session.unlockApp(null, testKeys) })
         rule.setContent {
             nav = rememberNavController()
             MaterialTheme { AppNav(session, null, nav) }
         }
 
-        // Create the offline vault (first run), then unlock it so Save offline has a destination.
+        // Create the offline vault (first run; its password is saved), then open it (no prompt) so
+        // Save offline has a destination.
         rule.onNodeWithTag("new-password").performTextInput(password)
         rule.onNodeWithTag("new-password-confirm").performTextInput(password)
         rule.onNodeWithText("Create").performClick()
         waitForText("On this phone")
         rule.onNodeWithText("Offline vault").performClick()
-        rule.onNodeWithTag("unlock-password").performTextInput(password)
-        rule.onNodeWithTag("unlock-submit").performClick()
         waitForTag("browser-screen")
         rule.runOnUiThread { nav.popBackStack(Routes.HOME, false) }
-        waitForText("Connect…")
+        waitForText("Connect to a server")
 
-        // Connect to the remote server without ticking "Remember this server".
-        rule.onNodeWithText("Connect…").performClick()
+        // Connect to the remote server (remembered automatically, encrypted).
+        rule.onNodeWithText("Connect to a server").performClick()
         rule.onNodeWithTag("connect-url").performTextInput("https://localhost:${s.port}")
         rule.onNodeWithTag("connect-submit").performClick()
         waitForText("Trust this certificate")
         rule.onNodeWithText("Trust this certificate").performClick()
         waitForText("Holiday")
         rule.onNodeWithText("Holiday").performClick()
-        rule.onNodeWithTag("unlock-password").performTextInput("remote-password")
+        rule.onNodeWithTag("unlock-password").performTextInput(remotePassword)
         rule.onNodeWithTag("unlock-submit").performClick()
         waitForTag("browser-screen")
 
@@ -236,14 +246,21 @@ class NoPlaintextOnDiskTest {
         val uploadedBytes = runBlocking { offline.open("/uploaded.png").use { it.readBytes() } }
         assertTrue("uploaded file must contain marker2 when decrypted", uploadedBytes.indexOf(marker2) >= 0)
         assertTrue("offline vault must have gocryptfs.conf", File(offlineDir, "gocryptfs.conf").exists())
-        assertTrue("server must not be remembered", container.keys.state().servers.isEmpty())
+        val st = container.keys.state()
+        assertEquals("the server is remembered", 1, st.servers.size)
+        assertTrue("passwords are saved, as ciphertext", st.wrappedDek != null && st.savedPasswords != null)
+        assertTrue(session.hasSavedPassword(PasswordIds.OFFLINE))
+        assertTrue(session.hasSavedPassword(PasswordIds.server(st.servers.single().id, "v1")))
 
         assertTrue("grid never requested the remote thumbnail", thumbRequests.get() > 0)
 
         // Let async writers (Coil, ExoPlayer, engine) finish before looking.
         rule.waitForIdle()
         Thread.sleep(2_000)
-        val leaks = scan(listOf("marker1" to marker1, "marker1b(thumb)" to marker1b, "marker2" to marker2), serverStrings)
+        val passwords = listOf("offline" to password, "remote" to remotePassword).flatMap { (name, pw) ->
+            listOf("$name password (UTF-8)" to pw.toByteArray(Charsets.UTF_8), "$name password (UTF-16)" to pw.toByteArray(Charsets.UTF_16LE))
+        }
+        val leaks = scan(listOf("marker1" to marker1, "marker1b(thumb)" to marker1b, "marker2" to marker2) + passwords, serverStrings)
         assertTrue("plaintext found on disk:\n${leaks.leaks()}", leaks.isEmpty())
     }
 

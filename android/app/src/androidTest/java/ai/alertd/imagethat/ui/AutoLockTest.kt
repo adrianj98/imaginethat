@@ -219,4 +219,33 @@ class AutoLockTest {
         session.reportLocked("offline")
         assertEquals(1, fx.imageCacheClears)
     }
+
+    // ---- app lock --------------------------------------------------------------
+
+    @Test fun lockAllZeroesTheSavedPasswordsAndLocksTheApp() {
+        fx.unlockApp()
+        assertTrue(!session.appLocked.value)
+        session.savePassword(ai.alertd.imagethat.keys.PasswordIds.OFFLINE, TestFixture.PASSWORD.toCharArray())
+        val held = session.savedPassword(ai.alertd.imagethat.keys.PasswordIds.OFFLINE)
+        assertEquals(TestFixture.PASSWORD, String(held!!))
+        session.lockAll()
+        assertTrue(session.appLocked.value)
+        assertNull(session.savedPassword(ai.alertd.imagethat.keys.PasswordIds.OFFLINE))
+        assertTrue(!session.hasSavedPassword(ai.alertd.imagethat.keys.PasswordIds.OFFLINE))
+    }
+
+    @Test fun backgroundAlarmLocksTheAppEvenWithNothingOpen() {
+        fx.unlockApp()
+        session.onBackground()
+        fx.now += 60_000
+        session.onAlarm()
+        assertTrue(session.appLocked.value)
+    }
+
+    @Test fun idleTickDoesNothingWhileTheAppIsAlreadyLocked() {
+        val clears = fx.imageCacheClears
+        fx.now += 10 * 60_000
+        session.tick()
+        assertEquals(clears, fx.imageCacheClears)
+    }
 }

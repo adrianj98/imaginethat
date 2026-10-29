@@ -1,11 +1,31 @@
 package ai.alertd.imagethat.ui
 
+import ai.alertd.imagethat.keys.PasswordIds
 import ai.alertd.imagethat.data.Item
-import ai.alertd.imagethat.data.MediaKind
 import ai.alertd.imagethat.data.LocalSource
+import ai.alertd.imagethat.data.MediaKind
 import ai.alertd.imagethat.data.VaultSource
 import ai.alertd.imagethat.data.offlinePrefix
 import ai.alertd.imagethat.media.VaultUri
+import ai.alertd.imagethat.ui.components.ActionBar
+import ai.alertd.imagethat.ui.components.ActionTile
+import ai.alertd.imagethat.ui.components.ActionTone
+import ai.alertd.imagethat.ui.components.AppIcons
+import ai.alertd.imagethat.ui.components.AppTextField
+import ai.alertd.imagethat.ui.components.CardRow
+import ai.alertd.imagethat.ui.components.Chevron
+import ai.alertd.imagethat.ui.components.DialogButton
+import ai.alertd.imagethat.ui.components.ErrorText
+import ai.alertd.imagethat.ui.components.GroupCard
+import ai.alertd.imagethat.ui.components.IconTile
+import ai.alertd.imagethat.ui.components.InsetDivider
+import ai.alertd.imagethat.ui.components.OutlinePill
+import ai.alertd.imagethat.ui.components.PillButton
+import ai.alertd.imagethat.ui.components.RoundIconButton
+import ai.alertd.imagethat.ui.components.ScreenTitle
+import ai.alertd.imagethat.ui.components.SectionLabel
+import ai.alertd.imagethat.ui.components.TopBar
+import ai.alertd.imagethat.ui.theme.Palette
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.BackHandler
@@ -20,36 +40,37 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -57,23 +78,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.PopupProperties
-import androidx.compose.ui.window.SecureFlagPolicy
+import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 private const val THUMB_PX = 256
 
@@ -91,7 +116,6 @@ private class SessionOffline(private val session: Session) : OfflineAccess {
 }
 
 /** Grid of a vault folder with breadcrumb, multi-select actions, upload and the full-screen viewer. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowserScreen(
     session: Session,
@@ -110,7 +134,10 @@ fun BrowserScreen(
     BrowserContent(session, sourceId, source, activity, onBack, onSetOfflinePassword)
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+/** What the viewer is showing: the folder's media from [path] on, or just that one file when [single]. */
+private data class ViewerTarget(val path: String, val single: Boolean)
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun BrowserContent(
     session: Session,
@@ -128,10 +155,13 @@ private fun BrowserContent(
         }
     })
     val state by vm.state.collectAsState()
-    var viewer by remember { mutableStateOf<Pair<List<Item>, Int>?>(null) }
+    var viewer by remember { mutableStateOf<ViewerTarget?>(null) }
     var unlockOffline by remember { mutableStateOf(false) }
     var newFolder by remember { mutableStateOf<String?>(null) }
-    var menuOpen by remember { mutableStateOf(false) }
+    // "Select" entered with nothing picked yet; a long press or any selection also means selecting.
+    var selectMode by remember { mutableStateOf(false) }
+    val selecting = selectMode || state.selection.isNotEmpty()
+    val endSelection = { selectMode = false; vm.clearSelection() }
 
     LaunchedEffect(vm) {
         vm.events.collect { e ->
@@ -147,101 +177,59 @@ private fun BrowserContent(
         scope.launch(Dispatchers.IO) { vm.upload(uris.map { uploadSpec(context, it) }) }
     }
 
-    BackHandler(enabled = viewer == null && (state.selection.isNotEmpty() || state.path != "/")) {
-        if (state.selection.isNotEmpty()) vm.clearSelection() else vm.up()
+    BackHandler(enabled = viewer == null && (selecting || state.path != "/")) {
+        if (selecting) endSelection() else vm.up()
     }
 
-    viewer?.let { (list, index) ->
-        ViewerScreen(session, sourceId, source, list, index, onClose = { viewer = null })
-        return
-    }
-
-    Scaffold(
-        modifier = Modifier.testTag("browser-screen"),
-        topBar = {
-            if (state.selection.isEmpty()) {
-                TopAppBar(
-                    title = { Text(vm.rootLabel, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                    navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
-                )
-            } else {
-                TopAppBar(
-                    title = { Text("${state.selection.size} selected") },
-                    navigationIcon = { TextButton(onClick = vm::clearSelection) { Text("Cancel") } },
-                    actions = {
-                        if (state.canSaveOffline) {
-                            TextButton(onClick = vm::saveSelectedOffline, modifier = Modifier.testTag("action-save-offline")) { Text("Save offline") }
-                        }
-                        TextButton(onClick = vm::startMove, modifier = Modifier.testTag("action-move")) { Text("Move") }
-                        TextButton(onClick = vm::requestDelete, modifier = Modifier.testTag("action-delete")) { Text("Delete") }
-                    },
-                )
-            }
-        },
-        floatingActionButton = {
-            if (state.selection.isEmpty()) {
-                Box {
-                    FloatingActionButton(onClick = { menuOpen = true }, modifier = Modifier.testTag("fab")) { Text("+") }
-                    DropdownMenu(
-                        expanded = menuOpen,
-                        onDismissRequest = { menuOpen = false },
-                        properties = PopupProperties(focusable = true, securePolicy = SecureFlagPolicy.SecureOn),
-                    ) {
-                        DropdownMenuItem(text = { Text("Upload photos or videos") }, onClick = {
-                            menuOpen = false
-                            pickMedia(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
-                        })
-                        DropdownMenuItem(text = { Text("New folder") }, modifier = Modifier.testTag("menu-new-folder"), onClick = {
-                            menuOpen = false
-                            newFolder = ""
-                        })
-                        // Listings are served from memory; this asks the vault again (changes by other clients).
-                        DropdownMenuItem(text = { Text("Refresh") }, modifier = Modifier.testTag("menu-refresh"), onClick = {
-                            menuOpen = false
-                            vm.refresh(force = true)
-                        })
-                    }
-                }
-            }
-        },
-    ) { pad ->
-        Column(Modifier.fillMaxSize().padding(pad)) {
-            Breadcrumb(vm.rootLabel, state.path, vm::navigate)
-            if (state.busy != null) {
-                Text(state.busy!! + "…", Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
-                LinearProgressIndicator(Modifier.fillMaxWidth())
-            } else if (state.loading && state.items.isNotEmpty()) {
-                // A known (possibly stale) listing is on screen while the fresh one loads.
-                LinearProgressIndicator(Modifier.fillMaxWidth().testTag("browser-revalidating"))
-            }
-            state.error?.let {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.weight(1f).testTag("browser-error"))
-                    TextButton(onClick = { vm.dismissError(); vm.refresh() }) { Text("Retry") }
-                }
-            }
-            when {
-                state.loading && state.items.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                state.items.isEmpty() && state.error == null && !state.locked -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("This folder is empty", modifier = Modifier.testTag("browser-empty"))
-                }
-                else -> ItemGrid(sourceId, state, vm, onOpenFile = { item ->
-                    val media = state.items.filter { !it.isDir && it.media != MediaKind.OTHER }
-                    val idx = media.indexOfFirst { it.path == item.path }
-                    viewer = if (idx >= 0) media to idx else listOf(item) to 0
-                })
-            }
+    val target = viewer
+    if (target != null) {
+        // Live list: after a delete or move from the viewer the file drops out and the pager shows the next one.
+        val media = state.items.filter { !it.isDir && it.media != MediaKind.OTHER }
+        val list = if (target.single) state.items.filter { it.path == target.path } else media
+        val closeViewer = { viewer = null; vm.clearSelection() }
+        if (list.isEmpty()) {
+            LaunchedEffect(Unit) { closeViewer() }
+        } else {
+            val start = remember(target) { list.indexOfFirst { it.path == target.path }.coerceAtLeast(0) }
+            ViewerScreen(
+                session, sourceId, source, list, start,
+                onClose = closeViewer,
+                actions = ViewerActions(
+                    canSaveOffline = state.canSaveOffline,
+                    onSaveOffline = { vm.selectOnly(it); vm.saveSelectedOffline() },
+                    onMove = { vm.selectOnly(it); vm.startMove() },
+                    onDelete = { vm.selectOnly(it); vm.requestDelete() },
+                ),
+            )
         }
+    } else {
+        GalleryLayout(
+            session = session,
+            sourceId = sourceId,
+            state = state,
+            vm = vm,
+            selecting = selecting,
+            onBack = onBack,
+            onStartSelect = { selectMode = true },
+            onEndSelect = endSelection,
+            onUpload = { pickMedia(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)) },
+            onNewFolder = { newFolder = "" },
+            onAction = { selectMode = false },
+            onOpenFile = { item ->
+                val isMedia = item.media != MediaKind.OTHER
+                viewer = ViewerTarget(item.path, single = !isMedia)
+            },
+        )
     }
 
     state.confirmDelete?.let { items ->
         SecureAlertDialog(
             onDismissRequest = vm::cancelDelete,
             title = if (items.size == 1) "Delete ${items[0].name}?" else "Delete ${items.size} items?",
-            confirmButton = { TextButton(onClick = vm::confirmDelete, modifier = Modifier.testTag("delete-confirm")) { Text("Delete") } },
-            dismissButton = { TextButton(onClick = vm::cancelDelete) { Text("Cancel") } },
+            confirmButton = { DialogButton("Delete", vm::confirmDelete, Modifier.testTag("delete-confirm"), destructive = true) },
+            dismissButton = { DialogButton("Cancel", vm::cancelDelete, emphasized = false) },
         ) {
-            Text("This cannot be undone. Folders are deleted with everything in them.")
+            Text("This cannot be undone. Folders are deleted with everything in them.", style = MaterialTheme.typography.bodyMedium)
         }
     }
 
@@ -249,7 +237,7 @@ private fun BrowserContent(
         SecureAlertDialog(
             onDismissRequest = vm::dismissResult,
             title = r.title,
-            confirmButton = { TextButton(onClick = vm::dismissResult, modifier = Modifier.testTag("result-ok")) { Text("OK") } },
+            confirmButton = { DialogButton("OK", vm::dismissResult, Modifier.testTag("result-ok")) },
         ) { ResultBody(r) }
     }
 
@@ -258,38 +246,20 @@ private fun BrowserContent(
             onDismissRequest = { newFolder = null },
             title = "New folder",
             confirmButton = {
-                TextButton(enabled = name.isNotBlank(), onClick = { vm.newFolder(name); newFolder = null }, modifier = Modifier.testTag("folder-create")) { Text("Create") }
+                DialogButton("Create", { vm.newFolder(name); newFolder = null }, Modifier.testTag("folder-create"), enabled = name.isNotBlank())
             },
-            dismissButton = { TextButton(onClick = { newFolder = null }) { Text("Cancel") } },
+            dismissButton = { DialogButton("Cancel", { newFolder = null }, emphasized = false) },
         ) {
-            OutlinedTextField(name, { newFolder = it }, label = { Text("Name") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("folder-name"))
+            AppTextField(name, { newFolder = it }, placeholder = "Folder name", tag = "folder-name")
         }
     }
 
-    state.move?.let { m ->
-        SecureAlertDialog(
-            onDismissRequest = vm::cancelMove,
-            title = "Move to",
-            confirmButton = { TextButton(onClick = vm::confirmMove, enabled = !m.loading, modifier = Modifier.testTag("move-here")) { Text("Move here") } },
-            dismissButton = { TextButton(onClick = vm::cancelMove) { Text("Cancel") } },
-        ) {
-            Text(if (m.path == "/") vm.rootLabel else m.path, style = MaterialTheme.typography.bodySmall)
-            if (m.path != "/") {
-                TextButton(onClick = { vm.moveNavigate(m.path.trimEnd('/').substringBeforeLast('/').ifEmpty { "/" }) }) { Text("Up") }
-            }
-            if (m.loading) CircularProgressIndicator()
-            LazyColumn(Modifier.heightIn(max = 240.dp)) {
-                items(m.folders, key = { it.path }) { f ->
-                    Text(f.name, Modifier.fillMaxWidth().clickable { vm.moveNavigate(f.path) }.padding(vertical = 12.dp))
-                }
-            }
-        }
-    }
+    state.move?.let { m -> MoveDialog(vm, m) }
 
     if (unlockOffline) {
         LocalUnlock(
             session,
-            LocalTarget(OFFLINE_ID, "Offline vault") { pw -> session.local.openOffline(pw) },
+            LocalTarget(OFFLINE_ID, PasswordIds.OFFLINE, "Offline vault") { pw -> session.local.openOffline(pw) },
             activity,
             onUnlocked = { unlockOffline = false; vm.saveSelectedOffline() },
             onDismiss = { unlockOffline = false },
@@ -298,21 +268,215 @@ private fun BrowserContent(
 }
 
 @Composable
+private fun GalleryLayout(
+    session: Session,
+    sourceId: String,
+    state: BrowserState,
+    vm: BrowserViewModel,
+    selecting: Boolean,
+    onBack: () -> Unit,
+    onStartSelect: () -> Unit,
+    onEndSelect: () -> Unit,
+    onUpload: () -> Unit,
+    onNewFolder: () -> Unit,
+    onAction: () -> Unit,
+    onOpenFile: (Item) -> Unit,
+) {
+    Box(Modifier.fillMaxSize().background(Palette.Background).testTag("browser-screen")) {
+        Column(Modifier.fillMaxSize().statusBarsPadding()) {
+            if (selecting) {
+                SelectionHeader(state.selection.size, onCancel = onEndSelect, onSelectAll = vm::selectAll)
+            } else {
+                GalleryHeader(session, vm.rootLabel, state, onBack, onStartSelect, onNavigate = vm::navigate)
+            }
+            state.busy?.let { label ->
+                Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    CircularProgressIndicator(Modifier.size(14.dp), color = Palette.Accent, strokeWidth = 2.dp)
+                    Text("$label…", color = Palette.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                }
+                LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(CircleShape), color = Palette.Accent, trackColor = Palette.Raised)
+            }
+            if (state.busy == null && state.loading && state.items.isNotEmpty()) {
+                // A known (possibly stale) listing is on screen while the fresh one loads.
+                LinearProgressIndicator(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(CircleShape).testTag("browser-revalidating"),
+                    color = Palette.Accent, trackColor = Palette.Raised,
+                )
+            }
+            state.error?.let {
+                Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    ErrorText(it, Modifier.weight(1f).testTag("browser-error"))
+                    DialogButton("Retry", { vm.dismissError(); vm.refresh() })
+                }
+            }
+            when {
+                state.loading && state.items.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = Palette.Accent)
+                }
+                state.items.isEmpty() && state.error == null && !state.locked -> EmptyFolder()
+                else -> ItemGrid(sourceId, state, vm, selecting, onOpenFile)
+            }
+        }
+
+        val bottom = Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding()
+        if (selecting) {
+            val any = state.selection.isNotEmpty()
+            ActionBar(bottom.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
+                if (state.canSaveOffline) {
+                    ActionTile("Save offline", AppIcons.SaveOffline, { onAction(); vm.saveSelectedOffline() }, Modifier.testTag("action-save-offline"), tone = ActionTone.Accent, enabled = any)
+                }
+                ActionTile(
+                    "Move to…", AppIcons.MoveTo, { onAction(); vm.startMove() }, Modifier.testTag("action-move"),
+                    tone = if (state.canSaveOffline) ActionTone.Default else ActionTone.Accent, enabled = any,
+                )
+                ActionTile("Delete", AppIcons.Delete, { onAction(); vm.requestDelete() }, Modifier.testTag("action-delete"), tone = ActionTone.Destructive, enabled = any)
+            }
+        } else {
+            Row(
+                bottom.padding(end = 24.dp, bottom = 24.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // Listings are served from the cache; this asks the vault again (changes by other clients).
+                RoundIconButton(
+                    AppIcons.Refresh, "Refresh", { vm.refresh(force = true) }, Modifier.testTag("menu-refresh"),
+                    background = Palette.Surface, bordered = true, size = 56.dp, iconSize = 22.dp,
+                )
+                RoundIconButton(
+                    AppIcons.FolderPlus, "New folder", onNewFolder, Modifier.testTag("menu-new-folder"),
+                    background = Palette.Surface, bordered = true, size = 56.dp, iconSize = 22.dp,
+                )
+                PillButton("Upload", onUpload, Modifier.testTag("fab"), icon = AppIcons.Upload)
+            }
+        }
+    }
+}
+
+@Composable
+private fun GalleryHeader(
+    session: Session,
+    rootLabel: String,
+    state: BrowserState,
+    onBack: () -> Unit,
+    onStartSelect: () -> Unit,
+    onNavigate: (String) -> Unit,
+) {
+    Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        TopBar(onBack, backDescription = "Back", backTag = "browser-back") {
+            OutlinePill("Select", onStartSelect, Modifier.testTag("browser-select"), enabled = state.items.isNotEmpty())
+            RoundIconButton(
+                AppIcons.LockAction, "Lock all vaults", { session.lockAll() }, Modifier.testTag("browser-lock"),
+                tint = Palette.Accent, background = Palette.Surface, bordered = true, size = 40.dp, iconSize = 16.dp,
+            )
+        }
+        val folder = state.path.trimEnd('/').substringAfterLast('/').ifEmpty { rootLabel }
+        ScreenTitle(folder, Modifier.padding(horizontal = 8.dp), subtitle = gallerySubtitle(session, state))
+        if (state.path != "/") Breadcrumb(rootLabel, state.path, onNavigate)
+    }
+}
+
+/** "N items · unlocked · locks in m:ss", the countdown following the idle auto-lock deadline. */
+@Composable
+private fun gallerySubtitle(session: Session, state: BrowserState): String {
+    val remaining by produceState(session.idleRemainingMs(), session) {
+        while (true) {
+            value = session.idleRemainingMs()
+            delay(1_000)
+        }
+    }
+    val secs = (remaining + 999) / 1000
+    val count = when (val n = state.items.size) { 1 -> "1 item"; else -> "$n items" }
+    return "$count · unlocked · locks in ${secs / 60}:${"%02d".format(secs % 60)}"
+}
+
+@Composable
+private fun SelectionHeader(count: Int, onCancel: () -> Unit, onSelectAll: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 4.dp, end = 4.dp, top = 8.dp, bottom = 12.dp).heightIn(min = 44.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        DialogButton("Cancel", onCancel, Modifier.testTag("selection-cancel"), emphasized = false, color = Palette.Text)
+        Text(
+            if (count == 0) "Select items" else "$count selected",
+            Modifier.weight(1f), color = Palette.Text, textAlign = TextAlign.Center,
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+        )
+        DialogButton("Select all", onSelectAll, Modifier.testTag("selection-all"))
+    }
+}
+
+@Composable
+private fun EmptyFolder() {
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.CenterVertically),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        IconTile(AppIcons.Folder, tint = Palette.TextTertiary, background = Palette.Surface, border = Palette.Divider, size = 64.dp, radius = 20.dp, iconSize = 26.dp)
+        Text("This folder is empty", Modifier.testTag("browser-empty"), color = Palette.Text, style = MaterialTheme.typography.titleMedium)
+        Text("Upload photos or videos, or make a folder.", color = Palette.TextSecondary, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun MoveDialog(vm: BrowserViewModel, m: MoveState) {
+    SecureAlertDialog(
+        onDismissRequest = vm::cancelMove,
+        title = "Move to",
+        confirmButton = { DialogButton("Move here", vm::confirmMove, Modifier.testTag("move-here"), enabled = !m.loading) },
+        dismissButton = { DialogButton("Cancel", vm::cancelMove, emphasized = false) },
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Icon(AppIcons.Folder, null, Modifier.size(16.dp), tint = Palette.Accent)
+            Text(if (m.path == "/") vm.rootLabel else m.path, color = Palette.Text, style = MaterialTheme.typography.bodyMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        }
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Palette.Background).border(1.dp, Palette.Divider, RoundedCornerShape(16.dp))) {
+            if (m.path != "/") {
+                CardRow(
+                    "Up", onClick = { vm.moveNavigate(m.path.trimEnd('/').substringBeforeLast('/').ifEmpty { "/" }) },
+                    leading = { Icon(AppIcons.Back, null, Modifier.size(18.dp), tint = Palette.TextSecondary) },
+                    trailing = null,
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                )
+                if (m.folders.isNotEmpty() || m.loading) InsetDivider(inset = 14.dp)
+            }
+            if (m.loading) {
+                Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(Modifier.size(22.dp), color = Palette.Accent, strokeWidth = 2.dp)
+                }
+            } else if (m.folders.isEmpty()) {
+                Text("No folders here", Modifier.padding(14.dp), color = Palette.TextTertiary, style = MaterialTheme.typography.bodySmall)
+            }
+            LazyColumn(Modifier.heightIn(max = 240.dp)) {
+                itemsIndexed(m.folders, key = { _, f -> f.path }) { i, f ->
+                    if (i > 0) InsetDivider(inset = 14.dp)
+                    CardRow(
+                        f.name, onClick = { vm.moveNavigate(f.path) },
+                        leading = { Icon(AppIcons.Folder, null, Modifier.size(18.dp), tint = Palette.TextSecondary) },
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ResultBody(r: OpResult) {
     Column(Modifier.heightIn(max = 320.dp).verticalScrollable(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        r.note?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        if (r.ok.isEmpty() && r.failed.isEmpty() && r.skipped.isEmpty()) Text("Nothing was done.")
+        r.note?.let { ErrorText(it) }
+        if (r.ok.isEmpty() && r.failed.isEmpty() && r.skipped.isEmpty()) Text("Nothing was done.", style = MaterialTheme.typography.bodyMedium)
         if (r.ok.isNotEmpty()) {
-            Text("${r.ok.size} succeeded", style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("result-saved"))
-            r.ok.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+            SectionLabel("${r.ok.size} succeeded", Modifier.padding(top = 4.dp).testTag("result-saved"), color = Palette.Online)
+            r.ok.forEach { Text(it, color = Palette.Text, style = MaterialTheme.typography.bodySmall) }
         }
         if (r.skipped.isNotEmpty()) {
-            Text("${r.skipped.size} already saved", style = MaterialTheme.typography.titleSmall, modifier = Modifier.testTag("result-skipped"))
+            SectionLabel("${r.skipped.size} already saved", Modifier.padding(top = 8.dp).testTag("result-skipped"))
             r.skipped.forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
         }
         if (r.failed.isNotEmpty()) {
-            Text("${r.failed.size} failed", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("result-failed"))
-            r.failed.forEach { (name, why) -> Text("$name: $why", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            SectionLabel("${r.failed.size} failed", Modifier.padding(top = 8.dp).testTag("result-failed"), color = Palette.Destructive)
+            r.failed.forEach { (name, why) -> Text("$name: $why", style = MaterialTheme.typography.bodySmall, color = Palette.Destructive) }
         }
     }
 }
@@ -323,89 +487,153 @@ private fun Modifier.verticalScrollable(): Modifier = this.verticalScroll(rememb
 @Composable
 private fun Breadcrumb(root: String, path: String, onNavigate: (String) -> Unit) {
     val segs = path.split('/').filter { it.isNotEmpty() }
-    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp).testTag("breadcrumb"), verticalAlignment = Alignment.CenterVertically) {
-        TextButton(onClick = { onNavigate("/") }) { Text(root) }
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp).testTag("breadcrumb"),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Crumb(root, current = false) { onNavigate("/") }
         var acc = ""
-        segs.forEach { s ->
+        segs.forEachIndexed { i, s ->
             acc += "/$s"
             val target = acc
-            Text("/")
-            TextButton(onClick = { onNavigate(target) }) { Text(s) }
+            Chevron(Modifier.size(14.dp))
+            Crumb(s, current = i == segs.lastIndex) { onNavigate(target) }
+        }
+    }
+}
+
+@Composable
+private fun Crumb(text: String, current: Boolean, onClick: () -> Unit) {
+    Text(
+        text,
+        Modifier.clip(CircleShape).clickable(onClick = onClick).heightIn(min = 32.dp).padding(horizontal = 8.dp, vertical = 6.dp),
+        color = if (current) Palette.Text else Palette.TextSecondary,
+        style = MaterialTheme.typography.labelLarge.copy(fontSize = 13.sp),
+        maxLines = 1,
+    )
+}
+
+private val TileShape = RoundedCornerShape(6.dp)
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ItemGrid(sourceId: String, state: BrowserState, vm: BrowserViewModel, selecting: Boolean, onOpenFile: (Item) -> Unit) {
+    val haptic = LocalHapticFeedback.current
+    val folders = state.items.filter { it.isDir }
+    val files = state.items.filter { !it.isDir }
+    fun click(item: Item) = when {
+        selecting -> vm.toggle(item)
+        item.isDir -> vm.navigate(item.path)
+        else -> onOpenFile(item)
+    }
+    fun longClick(item: Item) {
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        vm.toggle(item)
+    }
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(3),
+        modifier = Modifier.fillMaxSize().testTag("browser-grid"),
+        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 128.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        // Row gaps come from each tile's bottom padding, so the folder card needs no gap trickery.
+    ) {
+        // Folders first, as one grouped card of rows spanning the grid.
+        if (folders.isNotEmpty()) {
+            item(key = "folders", span = { GridItemSpan(maxLineSpan) }) {
+                GroupCard(Modifier.padding(bottom = 12.dp)) {
+                    folders.forEachIndexed { i, item ->
+                        if (i > 0) InsetDivider()
+                        FolderRow(item, selected = item.path in state.selection, selecting = selecting, onClick = { click(item) }, onLongClick = { longClick(item) })
+                    }
+                }
+            }
+        }
+        items(files, key = { it.path }) { item ->
+            FileTile(sourceId, item, selected = item.path in state.selection, selecting = selecting, onClick = { click(item) }, onLongClick = { longClick(item) })
         }
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ItemGrid(sourceId: String, state: BrowserState, vm: BrowserViewModel, onOpenFile: (Item) -> Unit) {
-    val haptic = LocalHapticFeedback.current
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(110.dp),
-        modifier = Modifier.fillMaxSize().testTag("browser-grid"),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+private fun FolderRow(item: Item, selected: Boolean, selecting: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .testTag("item-${item.name}")
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        items(state.items, key = { it.path }) { item ->
-            val selected = item.path in state.selection
-            Box(
-                Modifier
-                    .aspectRatio(1f)
-                    .clip(MaterialTheme.shapes.small)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .then(if (selected) Modifier.border(3.dp, MaterialTheme.colorScheme.primary, MaterialTheme.shapes.small) else Modifier)
-                    .testTag("item-${item.name}")
-                    .combinedClickable(
-                        onClick = {
-                            when {
-                                state.selection.isNotEmpty() -> vm.toggle(item)
-                                item.isDir -> vm.navigate(item.path)
-                                else -> onOpenFile(item)
-                            }
-                        },
-                        onLongClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            vm.toggle(item)
-                        },
-                    ),
-            ) {
-                // Behind the thumbnail: stays visible when there is none (non-images, no preview, failures).
-                Text(
-                    when {
-                        item.isDir -> "Folder"
-                        item.media == MediaKind.VIDEO -> "Video"
-                        item.media == MediaKind.IMAGE -> "Image"
-                        else -> "File"
-                    },
-                    Modifier.align(Alignment.Center),
-                    style = MaterialTheme.typography.labelMedium,
+        IconTile(AppIcons.Folder, tint = Palette.Accent)
+        Text(item.name, Modifier.weight(1f), color = Palette.Text, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (selecting) SelectCheck(selected) else Chevron()
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FileTile(sourceId: String, item: Item, selected: Boolean, selecting: Boolean, onClick: () -> Unit, onLongClick: () -> Unit) {
+    Box(
+        Modifier
+            .padding(bottom = 3.dp)
+            .aspectRatio(1f)
+            .clip(TileShape)
+            .background(Palette.Surface)
+            .testTag("item-${item.name}")
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+    ) {
+        Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (selected) 0.6f else 1f }) {
+            // Behind the thumbnail: stays visible when there is none (non-images, no preview, failures).
+            Icon(
+                when (item.media) { MediaKind.VIDEO -> AppIcons.Play; MediaKind.IMAGE -> AppIcons.Image; MediaKind.OTHER -> AppIcons.File },
+                contentDescription = null,
+                modifier = Modifier.align(Alignment.Center).size(22.dp),
+                tint = Palette.TextTertiary,
+            )
+            if (item.media != MediaKind.OTHER) {
+                AsyncImage(
+                    model = VaultUri.build(sourceId, item.path, THUMB_PX),
+                    contentDescription = item.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
                 )
-                if (!item.isDir && item.media != MediaKind.OTHER) {
-                    AsyncImage(
-                        model = VaultUri.build(sourceId, item.path, THUMB_PX),
-                        contentDescription = item.name,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                }
+            } else {
                 Text(
                     item.name,
-                    Modifier.align(Alignment.BottomStart).fillMaxWidth().background(Color(0x99000000)).padding(4.dp),
-                    color = Color.White,
+                    Modifier.align(Alignment.BottomStart).fillMaxWidth().padding(6.dp),
+                    color = Palette.TextSecondary,
                     style = MaterialTheme.typography.labelSmall,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (selected) {
-                    Text(
-                        "Selected",
-                        Modifier.align(Alignment.TopEnd).padding(4.dp).background(MaterialTheme.colorScheme.primary).padding(horizontal = 4.dp),
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        style = MaterialTheme.typography.labelSmall,
-                    )
-                }
+            }
+            if (item.media == MediaKind.VIDEO) {
+                Box(
+                    Modifier.align(Alignment.BottomStart).padding(6.dp).size(22.dp).clip(CircleShape).background(Palette.Scrim),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(AppIcons.Play, "Video", Modifier.size(12.dp), tint = Palette.Text) }
             }
         }
+        if (selecting) SelectCheck(selected, Modifier.align(Alignment.TopEnd).padding(6.dp))
+    }
+}
+
+/** Selection circle: white ring, accent fill and check when selected. */
+@Composable
+private fun SelectCheck(selected: Boolean, modifier: Modifier = Modifier) {
+    Box(
+        modifier
+            .size(22.dp)
+            .clip(CircleShape)
+            .background(if (selected) Palette.Accent else Color(0x590E0F12))
+            .border(2.dp, Color.White, CircleShape)
+            .semantics { stateDescription = if (selected) "Selected" else "Not selected" },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (selected) Icon(AppIcons.Check, null, Modifier.size(12.dp), tint = Palette.OnAccent)
     }
 }
 
