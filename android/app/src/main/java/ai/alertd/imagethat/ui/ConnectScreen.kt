@@ -48,8 +48,12 @@ internal fun parseServerUrl(input: String): HttpUrl? {
     return (if ("://" in t) t else "https://$t").toHttpUrlOrNull()
 }
 
-internal const val PLAIN_HTTP_ERROR =
-    "Plain http:// connections are not allowed. Use https:// (the server can use a self-signed certificate)."
+/** Shown, not enforced: http is allowed (e.g. a home LAN), but the user should know what it means. */
+internal const val PLAIN_HTTP_WARNING =
+    "Not encrypted: with http:// your photos and video travel over the network unencrypted. " +
+        "Use https:// unless this is a network you trust."
+
+private fun isPlainHttp(input: String) = parseServerUrl(input)?.isHttps == false
 
 internal fun fingerprintDisplay(sha256: String) = sha256.chunked(2).joinToString(":").uppercase()
 
@@ -64,10 +68,6 @@ fun ConnectScreen(session: Session, onBack: () -> Unit, onConnected: (serverKey:
     var untrusted by remember { mutableStateOf<Pair<HttpUrl, String>?>(null) }
 
     fun connect(target: HttpUrl, pin: String?) {
-        if (!target.isHttps) {
-            error = PLAIN_HTTP_ERROR
-            return
-        }
         busy = true
         error = null
         scope.launch(Dispatchers.Main) {
@@ -114,6 +114,14 @@ fun ConnectScreen(session: Session, onBack: () -> Unit, onConnected: (serverKey:
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
                 modifier = Modifier.fillMaxWidth().testTag("connect-url"),
             )
+            if (isPlainHttp(url)) {
+                Text(
+                    PLAIN_HTTP_WARNING,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.testTag("connect-http-warning"),
+                )
+            }
             CheckRow("Remember this server", remember, { remember = it })
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("connect-error")) }
             untrusted?.let { (target, fp) ->

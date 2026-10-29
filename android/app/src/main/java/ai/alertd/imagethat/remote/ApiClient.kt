@@ -1,6 +1,8 @@
 package ai.alertd.imagethat.remote
 
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.Call
 import okhttp3.Callback
@@ -69,7 +71,7 @@ class ApiClient(private val baseUrl: HttpUrl, private val pinnedSha256: String?)
     private fun jsonBody(s: String) = s.toRequestBody(JSON)
 
     suspend fun vaults(): List<RemoteVault> =
-        call(Request.Builder().url(url("vaults")).get().build()).use {
+        fetch(Request.Builder().url(url("vaults")).get().build()) {
             json.decodeFromString<VaultsResponse>(it.body!!.string()).vaults
         }
 
@@ -81,18 +83,18 @@ class ApiClient(private val baseUrl: HttpUrl, private val pinnedSha256: String?)
     suspend fun unlock(id: String, password: CharArray) {
         val body = PasswordBody(password)
         try {
-            call(Request.Builder().url(vaultUrl(id, "unlock")).post(body).build(), unlock = true).close()
+            fetch(Request.Builder().url(vaultUrl(id, "unlock")).post(body).build(), unlock = true) {}
         } finally {
             body.wipe()
         }
     }
 
     suspend fun lock(id: String) {
-        call(Request.Builder().url(vaultUrl(id, "lock")).post(jsonBody("{}")).build()).close()
+        fetch(Request.Builder().url(vaultUrl(id, "lock")).post(jsonBody("{}")).build()) {}
     }
 
     suspend fun list(id: String, path: String): Listing =
-        call(Request.Builder().url(vaultUrl(id, "list", mapOf("path" to path))).get().build()).use {
+        fetch(Request.Builder().url(vaultUrl(id, "list", mapOf("path" to path))).get().build()) {
             json.decodeFromString<Listing>(it.body!!.string())
         }
 
@@ -108,28 +110,28 @@ class ApiClient(private val baseUrl: HttpUrl, private val pinnedSha256: String?)
 
     /** JPEG bytes; empty array when the server answers 204 (file cannot be previewed). */
     suspend fun thumb(id: String, path: String, size: Int): ByteArray =
-        call(Request.Builder().url(vaultUrl(id, "thumb", mapOf("path" to path, "size" to size.toString()))).get().build()).use {
+        fetch(Request.Builder().url(vaultUrl(id, "thumb", mapOf("path" to path, "size" to size.toString()))).get().build()) {
             if (it.code == 204) ByteArray(0) else it.body!!.bytes()
         }
 
     suspend fun upload(id: String, dir: String, name: String, body: RequestBody) {
-        call(Request.Builder().url(vaultUrl(id, "upload", mapOf("path" to dir, "name" to name))).post(body).build()).close()
+        fetch(Request.Builder().url(vaultUrl(id, "upload", mapOf("path" to dir, "name" to name))).post(body).build()) {}
     }
 
     suspend fun mkdir(id: String, path: String) {
-        call(Request.Builder().url(vaultUrl(id, "mkdir")).post(jsonBody(obj("path" to path))).build()).close()
+        fetch(Request.Builder().url(vaultUrl(id, "mkdir")).post(jsonBody(obj("path" to path))).build()) {}
     }
 
     suspend fun move(id: String, from: String, to: String) {
-        call(Request.Builder().url(vaultUrl(id, "move")).post(jsonBody(obj("from" to from, "to" to to))).build()).close()
+        fetch(Request.Builder().url(vaultUrl(id, "move")).post(jsonBody(obj("from" to from, "to" to to))).build()) {}
     }
 
     suspend fun delete(id: String, path: String) {
-        call(Request.Builder().url(vaultUrl(id, "entry", mapOf("path" to path))).delete().build()).close()
+        fetch(Request.Builder().url(vaultUrl(id, "entry", mapOf("path" to path))).delete().build()) {}
     }
 
     suspend fun logout() {
-        call(Request.Builder().url(url("logout")).post(jsonBody("{}")).build()).close()
+        fetch(Request.Builder().url(url("logout")).post(jsonBody("{}")).build()) {}
     }
 
     /** Forget the session cookie and drop pooled connections. */
@@ -140,6 +142,12 @@ class ApiClient(private val baseUrl: HttpUrl, private val pinnedSha256: String?)
 
     private fun obj(vararg pairs: Pair<String, String>) =
         pairs.joinToString(",", "{", "}") { (k, v) -> "\"$k\":${kotlinx.serialization.json.JsonPrimitive(v)}" }
+
+    // Reading or closing a response body is blocking socket I/O; callers are often on the main
+    // thread (Compose), so it runs on IO. (Over https StrictMode does not flag it; over http it
+    // throws NetworkOnMainThreadException.)
+    private suspend fun <T> fetch(request: Request, unlock: Boolean = false, read: (Response) -> T): T =
+        withContext(Dispatchers.IO) { call(request, unlock).use(read) }
 
     private suspend fun call(request: Request, unlock: Boolean = false): Response {
         val response = try {

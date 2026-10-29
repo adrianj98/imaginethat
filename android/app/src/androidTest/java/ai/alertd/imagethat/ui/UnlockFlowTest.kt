@@ -14,6 +14,9 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performTextClearance
+import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.printToLog
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -153,13 +156,21 @@ class UnlockFlowTest {
         assertTrue(fx.keys.state().wrapped.isEmpty())
     }
 
-    @Test fun plainHttpIsRejectedWithASpecificMessage() {
+    @Test fun plainHttpWarnsAndConnects() {
+        val s = MockWebServer().also { it.start(); server = it }
+        s.enqueue(json(vaultsLocked)) // connectivity check
+        s.enqueue(json(vaultsLocked)) // vault list
         createOffline()
         launch()
         rule.onNodeWithText("Connect…").performClick()
-        rule.onNodeWithTag("connect-url").performTextInput("http://192.168.1.5:8080")
+        rule.onNodeWithTag("connect-url").performTextInput("https://localhost:${s.port}")
+        rule.onAllNodesWithTag("connect-http-warning").assertCountEquals(0)
+        rule.onNodeWithTag("connect-url").performTextClearance()
+        rule.onNodeWithTag("connect-url").performTextInput("http://localhost:${s.port}")
+        rule.onNodeWithTag("connect-http-warning").assertIsDisplayed()
         rule.onNodeWithTag("connect-submit").performClick()
-        rule.onNodeWithText("Plain http:// connections are not allowed", substring = true).assertIsDisplayed()
+        waitForText("Holiday")
+        assertEquals("/api/vaults", s.takeRequest().path)
     }
 
     @Test fun rememberIsUntickedByDefault() {

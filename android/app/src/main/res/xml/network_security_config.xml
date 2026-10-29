@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The webserver may run on a home LAN without TLS, so plain http is allowed
+     for any host; the Connect screen warns that such traffic is unencrypted.
+     Trust stays the system CAs only — self-signed https servers go through the
+     app's own certificate pinning, not through user-installed CAs. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
