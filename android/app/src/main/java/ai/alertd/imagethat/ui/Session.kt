@@ -1,0 +1,211 @@
+package ai.alertd.imagethat.ui
+
+import ai.alertd.imagethat.data.VaultSource
+import ai.alertd.imagethat.keys.KeyVault
+import ai.alertd.imagethat.local.LocalVaults
+import ai.alertd.imagethat.remote.ApiClient
+import android.os.SystemClock
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
+
+/** Wakes the app after a delay even when its process is frozen (AlarmManager in the app). */
+interface LockAlarm {
+    fun schedule(delayMs: Long)
+    fun cancel()
+
+    object None : LockAlarm {
+        override fun schedule(delayMs: Long) = Unit
+        override fun cancel() = Unit
+    }
+}
+
+sealed interface SessionEvent {
+    /** A source reported it is locked (session expired); the UI goes back to its unlock prompt. */
+    data class SourceLocked(val id: String) : SessionEvent
+    object AllLocked : SessionEvent
+}
+
+/** A connected remote server; [key] is the saved server's id, or a random one for an unsaved server. */
+class RemoteServer(val key: String, val label: String, val url: String, val api: ApiClient)
+
+/**
+ * App-scoped holder of everything that is unlocked: open [VaultSource]s and
+ * connected [ApiClient]s. Nothing here is persisted. [lockAll] drops it all.
+ *
+ * Auto-lock is deadline based on an injectable [clock] (milliseconds): the app
+ * calls [tick] periodically and [onForeground] on return. A backgrounded
+ * process can be frozen (cached-app freezer), which stops [tick], so
+ * [onBackground] also arms [alarm]; its broadcast thaws the process and calls
+ * [onAlarm], which locks. [onForeground] stays the backstop.
+ */
+class Session(
+    val keys: KeyVault,
+    val local: LocalVaults,
+    private val clock: () -> Long = { SystemClock.elapsedRealtime() },
+    private val clearImageCache: () -> Unit = {},
+    /** True when a strong biometric is enrolled, so the "unlock with biometrics" shortcut can be offered. */
+    val biometricsAvailable: () -> Boolean = { false },
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    idleTimeoutMs: Long = IDLE_TIMEOUT_MS,
+    private val backgroundTimeoutMs: Long = BACKGROUND_TIMEOUT_MS,
+    private val alarm: LockAlarm = LockAlarm.None,
+) {
+    /** The configurable idle timeout (AppState.idleTimeoutMinutes); takes effect on the next [tick]. */
+    @Volatile var idleTimeoutMs: Long = idleTimeoutMs
+        private set
+
+    val idleTimeoutMinutes: Int get() = (idleTimeoutMs / 60_000L).toInt()
+
+    /** Applies the saved idle timeout. Reads the encrypted state file, so call it off the main thread. */
+    fun loadIdleTimeout() {
+        idleTimeoutMs = keys.state().idleTimeoutMinutes.coerceAtLeast(1) * 60_000L
+    }
+
+    /** Saves the idle timeout and applies it to this session. */
+    fun setIdleTimeoutMinutes(minutes: Int) {
+        require(minutes >= 1)
+        keys.store().update { it.copy(idleTimeoutMinutes = minutes) }
+        idleTimeoutMs = minutes * 60_000L
+    }
+
+    private class Open(val label: String, val source: VaultSource)
+
+    private val sources = LinkedHashMap<String, Open>()
+    private val servers = LinkedHashMap<String, RemoteServer>()
+    private val _openIds = MutableStateFlow<Set<String>>(emptySet())
+    private val _events = MutableSharedFlow<SessionEvent>(extraBufferCapacity = 16)
+    private var lastTouch = clock()
+    private var inBackground = false
+    private var backgroundSince: Long? = null
+    private var backgroundLockPaused = false
+
+    /** Ids of the unlocked sources. */
+    val openSourceIds: StateFlow<Set<String>> = _openIds
+    val events: SharedFlow<SessionEvent> = _events.asSharedFlow()
+
+    @Synchronized
+    fun registerSource(id: String, label: String, source: VaultSource) {
+        sources[id] = Open(label, source)
+        _openIds.value = sources.keys.toSet()
+    }
+
+    @Synchronized fun source(id: String): VaultSource? = sources[id]?.source
+
+    @Synchronized fun label(id: String): String? = sources[id]?.label
+
+    @Synchronized
+    fun registerServer(server: RemoteServer) {
+        servers.put(server.key, server)?.takeIf { it.api !== server.api }?.api?.close()
+    }
+
+    @Synchronized fun server(key: String): RemoteServer? = servers[key]
+
+    /**
+     * A source found its vault locked (401, or its Go vault was closed). Drops it, evicts decrypted
+     * thumbnails from the memory cache, and tells the UI to go back to unlock.
+     */
+    fun reportLocked(id: String) {
+        synchronized(this) {
+            sources.remove(id)
+            _openIds.value = sources.keys.toSet()
+        }
+        clearImageCache()
+        _events.tryEmit(SessionEvent.SourceLocked(id))
+    }
+
+    fun touch() = synchronized(this) { lastTouch = clock() }
+
+    fun onBackground() = synchronized(this) {
+        inBackground = true
+        if (backgroundLockPaused) {
+            // An app-launched picker is in front: no 1 minute background lock, but the idle
+            // timer still applies, and a frozen process could not tick, so wake at its deadline.
+            alarm.schedule(maxOf(0L, lastTouch + idleTimeoutMs - clock()))
+        } else {
+            backgroundSince = clock()
+            alarm.schedule(backgroundTimeoutMs)
+        }
+    }
+
+    fun onForeground() {
+        tick()
+        synchronized(this) {
+            inBackground = false
+            backgroundSince = null
+            lastTouch = clock()
+        }
+        alarm.cancel()
+    }
+
+    /**
+     * Call right before launching a system picker (photo picker, folder picker) whose result the
+     * app needs: leaving for it is not "backgrounded", so the 1 minute background lock is paused
+     * until [resumeBackgroundLock]. The idle timeout still applies.
+     */
+    fun pauseBackgroundLock() = synchronized(this) { backgroundLockPaused = true }
+
+    /** Call when the picker result (or cancellation) arrives. */
+    fun resumeBackgroundLock() = synchronized(this) {
+        backgroundLockPaused = false
+        if (inBackground && backgroundSince == null) {
+            backgroundSince = clock()
+            alarm.schedule(backgroundTimeoutMs)
+        }
+    }
+
+    /** The [LockAlarm] fired: the process was backgrounded past a deadline (and may have been frozen). */
+    fun onAlarm() {
+        val lockNow = synchronized(this) { inBackground && !backgroundLockPaused && backgroundSince != null }
+        if (lockNow) lockAll() else tick()
+    }
+
+    /** Locks if the idle or background deadline has passed and anything is open. */
+    fun tick() {
+        val now = clock()
+        val due = synchronized(this) {
+            val bg = backgroundSince.takeUnless { backgroundLockPaused }
+            val expired = now - lastTouch >= idleTimeoutMs || (bg != null && now - bg >= backgroundTimeoutMs)
+            expired && (sources.isNotEmpty() || servers.isNotEmpty() || local.hasOpen())
+        }
+        if (due) lockAll()
+    }
+
+    /** Closes Go vaults and HTTP sessions, clears the thumbnail memory cache, drops every source. */
+    fun lockAll() {
+        val closing = synchronized(this) {
+            sources.clear()
+            _openIds.value = emptySet()
+            servers.values.toList().also { servers.clear() }
+        }
+        local.closeAll()
+        for (s in closing) {
+            scope.launch {
+                try {
+                    withTimeout(LOGOUT_TIMEOUT_MS) { s.api.logout() }
+                } catch (_: Exception) {
+                    // best effort: the cookie is dropped by close() either way
+                } finally {
+                    s.api.close()
+                }
+            }
+        }
+        clearImageCache()
+        _events.tryEmit(SessionEvent.AllLocked)
+    }
+
+    companion object {
+        const val IDLE_TIMEOUT_MS = 5 * 60_000L
+        /** Choices offered for the idle timeout, in minutes. */
+        val IDLE_TIMEOUT_CHOICES = listOf(1, 2, 5, 10, 15, 30)
+        const val BACKGROUND_TIMEOUT_MS = 60_000L
+        private const val LOGOUT_TIMEOUT_MS = 3_000L
+    }
+}

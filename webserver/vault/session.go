@@ -12,6 +12,7 @@
 package vault
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -102,19 +103,62 @@ func OpenLocal(vaultPath, password string) (*Session, error) {
 		}
 		return nil, ErrNoConfig
 	}
-	cf, err := configfile.Load(confPath)
+	data, err := os.ReadFile(confPath)
 	if err != nil {
 		if errors.Is(err, fs.ErrPermission) {
 			return nil, fmt.Errorf("%w: %v", ErrPermission, err)
 		}
 		return nil, fmt.Errorf("%w: %v", ErrNoConfig, err)
 	}
+	cf, err := parseConfig(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNoConfig, err)
+	}
 	return newSession(cf, password, NewLocalFS(vaultPath))
+}
+
+// Open unlocks a vault whose ciphertext lives behind any VFS, such as a
+// storage backend that is not a local directory. Writes through the returned
+// session work only if v also implements WriteVFS.
+func Open(v VFS, password string) (*Session, error) {
+	data, err := v.ReadFile(configfile.ConfDefaultName)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, ErrNoConfig
+		}
+		if errors.Is(err, fs.ErrPermission) {
+			return nil, fmt.Errorf("%w: %v", ErrPermission, err)
+		}
+		return nil, fmt.Errorf("%w: %v", ErrNoConfig, err)
+	}
+	cf, err := parseConfig(data)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrNoConfig, err)
+	}
+	return newSession(cf, password, v)
+}
+
+// parseConfig is configfile.Load for a gocryptfs.conf already in memory; it
+// mirrors parseConfig in gocryptfs-lib/main.go.
+func parseConfig(data []byte) (*configfile.ConfFile, error) {
+	if len(data) == 0 {
+		return nil, errors.New("config file is empty")
+	}
+	var cf configfile.ConfFile
+	if err := json.Unmarshal(data, &cf); err != nil {
+		return nil, err
+	}
+	if err := cf.Validate(); err != nil {
+		return nil, err
+	}
+	return &cf, nil
 }
 
 // newSession mirrors openSession() in gocryptfs-lib/main.go.
 func newSession(cf *configfile.ConfFile, password string, fs VFS) (*Session, error) {
-	masterkey, err := cf.DecryptMasterKey([]byte(password))
+	pw := []byte(password)
+	defer wipe(pw)
+	masterkey, err := cf.DecryptMasterKey(pw)
 	if err != nil {
 		return nil, ErrWrongPassword
 	}

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- No android:permission: the instrumented app must be able to obtain a grant without
+         the picker. TestDocsProvider.attachInfo supplies the MANAGE_DOCUMENTS check that
+         DocumentsProvider insists on, so grants are still enforced on access. -->
+    <!-- Test-only SAF provider, so SafStorage can run against a real DocumentsProvider
+         without adding one to the app's own manifest. -->
+    <application>
+        <provider
+            android:name="ai.alertd.imagethat.local.TestDocsProvider"
+            android:authorities="ai.alertd.imagethat.test.docs"
+            android:exported="true"
+            android:grantUriPermissions="true">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+        <provider
+            android:name="ai.alertd.imagethat.local.TestDocsNoMoveProvider"
+            android:authorities="ai.alertd.imagethat.test.docs.nomove"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+        <provider
+            android:name="ai.alertd.imagethat.local.TestDocsReadOnlyProvider"
+            android:authorities="ai.alertd.imagethat.test.docs.ro"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+    </application>
+</manifest>

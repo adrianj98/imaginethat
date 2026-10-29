@@ -32,3 +32,9 @@ webserver/server/dist/*
 
 # Claude
 .claude/
+
+# Android
+android/app/libs/vaultcore.aar
+android/**/build/
+android/.gradle/
+android/local.properties
