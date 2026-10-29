@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/adrianm/imagethat/webserver/vault"
+	"github.com/adrianm/imagethat/core/vault"
 )
 
 const fixtureDir = "../vault/testdata/vault"

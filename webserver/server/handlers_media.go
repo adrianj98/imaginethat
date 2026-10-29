@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/adrianm/imagethat/webserver/vault"
+	"github.com/adrianm/imagethat/core/vault"
 )
 
 // noStore marks a response as never cacheable.

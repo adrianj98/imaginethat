@@ -5,7 +5,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/adrianm/imagethat/webserver/internal/gocryptfs/nametransform"
+	"github.com/adrianm/imagethat/core/internal/gocryptfs/nametransform"
 )
 
 // dirIVLen is the length of a gocryptfs.diriv file.
@@ -180,4 +180,30 @@ func (s *Session) decryptEntryName(cipherDir, cName string, dirIV []byte) (strin
 		return s.nameTransform.DecryptName(strings.TrimSpace(string(encName)), dirIV)
 	}
 	return s.nameTransform.DecryptName(cName, dirIV)
+}
+
+// EncryptName returns the ciphertext directory-entry name for plainName inside
+// the ciphertext directory cipherDir ("" is the vault root). Long names come
+// back in their hashed gocryptfs.longname.* form, which is how they appear on
+// disk. Hosts that write ciphertext themselves (a cloud backend that uploads
+// files by name) need it; nothing else should.
+func (s *Session) EncryptName(cipherDir, plainName string) (string, error) {
+	if err := s.checkOpen(); err != nil {
+		return "", err
+	}
+	if plainName == "" || plainName == "." || plainName == ".." ||
+		strings.ContainsAny(plainName, "/\\") || strings.ContainsRune(plainName, 0) {
+		return "", fmt.Errorf("%w: %q is not a single path component", ErrInvalidPath, plainName)
+	}
+	return s.encryptName(cipherDir, plainName)
+}
+
+// CipherPath maps a plaintext vault-relative path to the ciphertext path of
+// the same entry, as stored in the backend. The root maps to "".
+func (s *Session) CipherPath(plainPath string) (string, error) {
+	clean, err := CleanPath(plainPath)
+	if err != nil {
+		return "", err
+	}
+	return s.resolveCipherPath(clean)
 }

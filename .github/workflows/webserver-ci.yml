@@ -5,10 +5,12 @@ on:
     branches: ['**']
     paths:
       - 'webserver/**'
+      - 'core/**'
       - '.github/workflows/webserver-ci.yml'
   pull_request:
     paths:
       - 'webserver/**'
+      - 'core/**'
       - '.github/workflows/webserver-ci.yml'
   workflow_dispatch:
 
@@ -33,16 +35,18 @@ jobs:
           # Newest 1.26.x so builds get Go patch releases (go.mod toolchain is the floor).
           go-version: '1.26'
           check-latest: true
-          cache-dependency-path: webserver/go.sum
+          cache-dependency-path: |
+            webserver/go.sum
+            core/go.sum
 
       # gocryptfs' crypto lives in internal/ packages that another module
-      # cannot import, so they are copied in rather than committed.
+      # cannot import, so they are copied into ../core rather than committed.
       - name: Sync gocryptfs internal packages
         run: make sync
 
       - name: Check formatting
         run: |
-          unformatted="$(gofmt -l ./vault ./server ./cmd)"
+          unformatted="$(gofmt -l ./server ./cmd)"
           if [ -n "$unformatted" ]; then
             echo "These files need gofmt:"
             echo "$unformatted"
@@ -52,21 +56,13 @@ jobs:
       - name: Vet
         run: make vet
 
-      # The interop test mounts a vault with the real gocryptfs binary and
-      # checks it agrees with what this module wrote. Without it the write
-      # tests would only prove we can read back our own output.
-      - name: Install gocryptfs for interop tests
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y fuse3
-          go install -tags without_openssl github.com/rfjakob/gocryptfs/v2@v2.6.1
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-
+      # The vault engine's own tests (including the gocryptfs interop test)
+      # run in core-ci.yml; this job covers the HTTP layer.
       - name: Test
         run: make test
 
       - name: Test with race detector
-        run: go test -tags without_openssl -race ./vault/... ./server/...
+        run: go test -tags without_openssl -race ./server/...
 
       - name: Build
         run: make build
@@ -114,7 +110,9 @@ jobs:
           # Newest 1.26.x so builds get Go patch releases (go.mod toolchain is the floor).
           go-version: '1.26'
           check-latest: true
-          cache-dependency-path: webserver/go.sum
+          cache-dependency-path: |
+            webserver/go.sum
+            core/go.sum
 
       - name: Sync gocryptfs internal packages
         run: make sync

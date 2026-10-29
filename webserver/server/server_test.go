@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/adrianm/imagethat/webserver/vault"
+	"github.com/adrianm/imagethat/core/vault"
 )
 
 const (

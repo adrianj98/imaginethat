@@ -5,23 +5,13 @@ on:
     branches: [main]
     paths:
       - 'android/**'
-      - 'webserver/vault/**'
-      - 'webserver/mobile/**'
-      - 'webserver/go.mod'
-      - 'webserver/go.sum'
-      - 'webserver/Makefile'
-      - 'webserver/scripts/sync-gocryptfs.sh'
+      - 'core/**'
       - '.github/actions/android-setup/**'
       - '.github/workflows/android-ci.yml'
   pull_request:
     paths:
       - 'android/**'
-      - 'webserver/vault/**'
-      - 'webserver/mobile/**'
-      - 'webserver/go.mod'
-      - 'webserver/go.sum'
-      - 'webserver/Makefile'
-      - 'webserver/scripts/sync-gocryptfs.sh'
+      - 'core/**'
       - '.github/actions/android-setup/**'
       - '.github/workflows/android-ci.yml'
   workflow_dispatch:
@@ -46,15 +36,15 @@ jobs:
           # Newest 1.26.x so builds get Go patch releases (go.mod toolchain is the floor).
           go-version: '1.26'
           check-latest: true
-          cache-dependency-path: webserver/go.sum
+          cache-dependency-path: core/go.sum
 
       - name: Sync gocryptfs internal packages
         run: make sync
-        working-directory: webserver
+        working-directory: core
 
       - name: Test
         run: go test -short -tags without_openssl ./vault/... ./mobile/...
-        working-directory: webserver
+        working-directory: core
 
   app:
     name: Unit tests and debug build

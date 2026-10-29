@@ -11,7 +11,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/adrianm/imagethat/webserver/vault"
+	"github.com/adrianm/imagethat/core/vault"
 )
 
 // maxJSONBody bounds request bodies for the small JSON endpoints.

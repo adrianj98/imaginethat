@@ -4,7 +4,10 @@ macOS image/video explorer with gocryptfs encrypted vault support. Decrypted dat
 
 ## Build & Run
 
-Requires macOS 14+, Go, and Swift.
+Requires macOS 14+, Go, and Swift. The gocryptfs engine is the Go module in
+`core/`, shared with the Android app and the webserver; the Mac app links it
+through `gocryptfs-lib`, a thin cgo shim. See
+`docs/superpowers/specs/2026-10-29-go-core-design.md` for where this is going.
 
 ```
   make build    # compiles Go lib + Swift app
@@ -22,7 +25,7 @@ Requires macOS 14+, Go, and Swift.
 
 ## Android
 
-An Android app (`android/`, Kotlin + Compose, Android 10+) that opens gocryptfs vaults from a device folder and browses vaults served by `imagethat-web`. It embeds the same Go vault engine (`webserver/mobile`) through a gomobile-built `vaultcore.aar`.
+An Android app (`android/`, Kotlin + Compose, Android 10+) that opens gocryptfs vaults from a device folder and browses vaults served by `imagethat-web`. It embeds the same Go vault engine (`core/mobile`) through a gomobile-built `vaultcore.aar`.
 
 Build needs JDK 21, the Android SDK with NDK 26.1.10909125, Go, and `gomobile`/`gobind` on `PATH`:
 

@@ -235,38 +235,36 @@ public final class VaultSource: WritableMediaSource, @unchecked Sendable {
 
     public func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
         where S.Element == Data {
-        // Write directly to the vault filesystem (via the mounted FUSE path)
-        // gocryptfs handles encryption transparently at the filesystem level
-        // This avoids buffering the entire file in memory
-        let vaultFilePath = bridge.vaultPath.appendingPathComponent(destinationPath)
-
-        // Create parent directories if needed
-        let parentDir = vaultFilePath.deletingLastPathComponent()
-        try FileManager.default.createDirectory(at: parentDir, withIntermediateDirectories: true, attributes: nil)
-
-        // Create empty file
-        FileManager.default.createFile(atPath: vaultFilePath.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: vaultFilePath)
-        defer { try? handle.close() }
+        // Stream through the Go engine: each chunk is encrypted as it arrives
+        // and only ciphertext reaches the vault directory, with memory bounded
+        // by the chunk size. The entry appears when the writer finishes; an
+        // error or cancellation part-way discards it, leaving nothing behind.
+        let writer = try bridge.createFile(path: destinationPath)
 
         let startTime = Date()
         var totalWritten: Int64 = 0
         var lastReportTime = Date()
 
-        // Write chunks directly to the vault filesystem (encrypted by FUSE mount)
-        for try await chunk in chunks {
-            try handle.write(contentsOf: chunk)
-            totalWritten += Int64(chunk.count)
+        do {
+            for try await chunk in chunks {
+                try Task.checkCancellation()
+                try writer.write(chunk)
+                totalWritten += Int64(chunk.count)
 
-            // Report progress every 0.5 seconds
-            let now = Date()
-            if now.timeIntervalSince(lastReportTime) >= 0.5 {
-                lastReportTime = now
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
-                    object: (current: totalWritten, total: totalSize, startTime: startTime)
-                )
+                // Report progress every 0.5 seconds
+                let now = Date()
+                if now.timeIntervalSince(lastReportTime) >= 0.5 {
+                    lastReportTime = now
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
+                        object: (current: totalWritten, total: totalSize, startTime: startTime)
+                    )
+                }
             }
+            try writer.finish()
+        } catch {
+            writer.abort()
+            throw error
         }
 
         // Final progress update

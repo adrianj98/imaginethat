@@ -57,7 +57,7 @@ android {
     buildFeatures { compose = true }
 
     // The AES-SIV fixture vault is shared with the Go tests; SafStorageTest opens it.
-    sourceSets["androidTest"].assets.srcDir(rootProject.projectDir.parentFile.resolve("webserver/vault/testdata"))
+    sourceSets["androidTest"].assets.srcDir(rootProject.projectDir.parentFile.resolve("core/vault/testdata"))
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -104,9 +104,9 @@ dependencies {
 // (slow) gomobile bind only reruns when they change.
 val buildVaultcore by tasks.registering(Exec::class) {
     val repoRoot = rootProject.projectDir.parentFile
-    inputs.files(fileTree(File(repoRoot, "webserver")) {
+    inputs.files(fileTree(File(repoRoot, "core")) {
         include("**/*.go", "go.mod", "go.sum", "scripts/sync-gocryptfs.sh")
-        exclude("web/node_modules/**", "bin/**")
+        exclude("internal/**")
     })
     inputs.file(File(rootProject.projectDir, "vaultcore/build.sh"))
     outputs.file(layout.projectDirectory.file("libs/vaultcore.aar"))

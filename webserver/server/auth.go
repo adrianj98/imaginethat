@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/adrianm/imagethat/webserver/vault"
+	"github.com/adrianm/imagethat/core/vault"
 )
 
 // sessionCookieName holds the browser session token. The token identifies a

@@ -230,7 +230,20 @@ public final class GocryptfsBridge: @unchecked Sendable {
         }
     }
 
-    /// Write encrypted file data to the vault. Creates parent directories and handles long-name sidecars.
+    /// Describes a non-zero return code of the write exports (see libgocryptfs.h).
+    static func describeWriteCode(_ rc: Int32) -> String {
+        switch rc {
+        case -1: return "vault is locked or read-only"
+        case -2: return "not found"
+        case -3: return "invalid path"
+        case -4: return "already exists"
+        case -5: return "storage error"
+        default: return "error code \(rc)"
+        }
+    }
+
+    /// Replace (or create) a file from in-memory data. The parent directory must
+    /// exist. For anything large use `createFile(path:)`, which streams.
     public func writeFile(path: String, data: Data) throws {
         let result = data.withUnsafeBytes { ptr in
             path.withCString { pathPtr in
@@ -243,7 +256,73 @@ public final class GocryptfsBridge: @unchecked Sendable {
             }
         }
         guard result == 0 else {
-            throw GocryptfsError.writeFailed("error code \(result)")
+            throw GocryptfsError.writeFailed(Self.describeWriteCode(result))
         }
+    }
+
+    /// Start streaming a new file into the vault. The entry appears when the
+    /// returned writer is finished; see `VaultFileWriter`.
+    public func createFile(path: String) throws -> VaultFileWriter {
+        let id = path.withCString { ptr in
+            GocryptfsCreateFile(sessionID, UnsafeMutablePointer(mutating: ptr))
+        }
+        guard id > 0 else {
+            throw GocryptfsError.writeFailed(Self.describeWriteCode(id))
+        }
+        return VaultFileWriter(writerID: id, path: path)
+    }
+}
+
+/// Streams plaintext into a new vault file with bounded memory.
+///
+/// The Go engine encrypts each chunk as it arrives into a temporary ciphertext
+/// file and renames it into place on `finish()`. Nothing decrypted is written
+/// anywhere. `abort()`, or releasing the writer without finishing, discards the
+/// file and leaves no entry and no temp file behind.
+public final class VaultFileWriter: @unchecked Sendable {
+    private let writerID: Int32
+    public let path: String
+    private var ended = false
+
+    fileprivate init(writerID: Int32, path: String) {
+        self.writerID = writerID
+        self.path = path
+    }
+
+    deinit {
+        abort()
+    }
+
+    /// Append a chunk. Blocks until the engine has encrypted it.
+    public func write(_ chunk: Data) throws {
+        guard !ended else { throw GocryptfsError.writeFailed("writer already finished") }
+        var offset = 0
+        while offset < chunk.count {
+            let n = min(chunk.count - offset, Int(Int32.max))
+            let rc = chunk.withUnsafeBytes { ptr -> Int32 in
+                GocryptfsWriterWrite(
+                    writerID,
+                    UnsafeMutableRawPointer(mutating: ptr.baseAddress!.advanced(by: offset)),
+                    Int32(n)
+                )
+            }
+            guard rc == 0 else { throw GocryptfsError.writeFailed(GocryptfsBridge.describeWriteCode(rc)) }
+            offset += n
+        }
+    }
+
+    /// Commit the file. After this the writer cannot be used.
+    public func finish() throws {
+        guard !ended else { return }
+        ended = true
+        let rc = GocryptfsWriterClose(writerID)
+        guard rc == 0 else { throw GocryptfsError.writeFailed(GocryptfsBridge.describeWriteCode(rc)) }
+    }
+
+    /// Discard the file. Safe to call after `finish()` (no-op).
+    public func abort() {
+        guard !ended else { return }
+        ended = true
+        GocryptfsWriterAbort(writerID)
     }
 }

@@ -11,17 +11,16 @@ ADDR ?= 127.0.0.1:8347
 
 all: build
 
-# Copy the gocryptfs internal/ packages into this module. Required once after
-# cloning, and again whenever the pinned gocryptfs version changes.
+# The vault engine lives in ../core, which carries the generated copy of the
+# gocryptfs internal/ packages. Required once after cloning, and again
+# whenever the pinned gocryptfs version changes.
 sync:
-	./scripts/sync-gocryptfs.sh
+	$(MAKE) -C ../core sync
 
-# internal/gocryptfs is generated, so make the build depend on it existing
-# rather than failing with a confusing "no such package".
-internal/gocryptfs:
-	./scripts/sync-gocryptfs.sh
+../core/internal/gocryptfs:
+	$(MAKE) -C ../core sync
 
-deps: internal/gocryptfs
+deps: ../core/internal/gocryptfs
 
 # Build the SPA into server/dist, where go:embed picks it up.
 web:
@@ -34,17 +33,17 @@ run: build
 	./$(BIN) -root "$(ROOT)" -addr "$(ADDR)"
 
 test: deps
-	go test $(GOFLAGS) ./vault/... ./server/...
+	go test $(GOFLAGS) ./server/...
 
 # Skips the tests that need FUSE and the gocryptfs binary.
 test-short: deps
-	go test $(GOFLAGS) -short ./vault/... ./server/...
+	go test $(GOFLAGS) -short ./server/...
 
 vet: deps
-	go vet $(GOFLAGS) ./vault/... ./server/... ./cmd/...
+	go vet $(GOFLAGS) ./server/... ./cmd/...
 
 fmt:
-	gofmt -w ./vault ./server ./cmd
+	gofmt -w ./server ./cmd
 
 clean:
 	rm -rf bin server/dist/assets server/dist/index.html web/node_modules

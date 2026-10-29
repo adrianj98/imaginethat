@@ -1,20 +1,21 @@
 #!/bin/bash
 #
-# Materializes gocryptfs-lib/internal/ from the gocryptfs module cache.
+# Materializes core/internal/gocryptfs/ from the gocryptfs module cache.
 #
 # gocryptfs keeps its crypto in internal/ packages, which Go refuses to let
 # another module import. The only way to build against them is to copy the tree
-# into this module and rewrite the import paths — the same thing
-# webserver/scripts/sync-gocryptfs.sh does for the webserver.
+# into this module and rewrite the import paths — the same thing gocryptfs-lib/
+# does (its internal/ dir is gitignored and generated the same way).
 #
 set -euo pipefail
 
 GOCRYPTFS_VERSION="v2.6.1"
 SRC_MODULE="github.com/rfjakob/gocryptfs/v2"
-DST_IMPORT="github.com/adrianm/imagethat/gocryptfs-lib/internal"
+DST_IMPORT="github.com/adrianm/imagethat/core/internal/gocryptfs"
 
-# The transitive closure of what main.go actually imports, as reported by
-# `go list -deps`.
+# The transitive closure of what vault/ actually imports, as reported by
+# `go list -deps`. Copying only these keeps go-fuse, pflag and go-gitignore —
+# needed by fusefrontend/ctlsocksrv, which we do not use — out of the module.
 PACKAGES=(
     configfile
     contentenc
@@ -28,8 +29,8 @@ PACKAGES=(
 )
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-MODULE_DIR="$(dirname "$SCRIPT_DIR")/gocryptfs-lib"
-DST_DIR="${MODULE_DIR}/internal"
+MODULE_DIR="$(dirname "$SCRIPT_DIR")"
+DST_DIR="${MODULE_DIR}/internal/gocryptfs"
 
 if ! command -v go &> /dev/null; then
     echo "error: Go is not installed" >&2
@@ -77,18 +78,18 @@ find "$DST_DIR" -name '*_test.go' -type f -delete
 cat > "${DST_DIR}/README.md" <<EOF
 # Generated — do not edit
 
-Unmodified copies of these \`${SRC_MODULE}@${GOCRYPTFS_VERSION}\` \`internal/\`
-packages, with import paths rewritten to \`${DST_IMPORT}\`:
+Copies of these \`${SRC_MODULE}@${GOCRYPTFS_VERSION}\` \`internal/\` packages,
+with import paths rewritten to \`${DST_IMPORT}\`:
 
 $(printf -- '- %s\n' "${PACKAGES[@]}")
 
 Upstream \`internal/\` packages cannot be imported across module boundaries, so
-copying is the only way to build against gocryptfs' crypto. Anything this app
-needs beyond upstream belongs in main.go, not here — this directory is replaced
-on every sync.
+copying is the only way to build against gocryptfs' crypto. The list above is
+the transitive closure of what \`vault/\` imports; regenerate it with
+\`go list -deps ./vault/\` if the imports change.
 
-Regenerate with \`make golib-sync\` (or \`Scripts/sync-gocryptfs.sh\`). This
-directory is gitignored.
+Regenerate with \`make sync\` (or \`scripts/sync-gocryptfs.sh\`). This directory
+is gitignored.
 EOF
 
 echo "Done. ${#PACKAGES[@]} packages copied."

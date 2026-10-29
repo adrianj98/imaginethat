@@ -58,7 +58,9 @@ jobs:
           # Newest 1.26.x so builds get Go patch releases (go.mod toolchain is the floor).
           go-version: '1.26'
           check-latest: true
-          cache-dependency-path: webserver/go.sum
+          cache-dependency-path: |
+            webserver/go.sum
+            core/go.sum
 
       - uses: actions/setup-node@v4
         with:

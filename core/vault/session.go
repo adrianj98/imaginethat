@@ -20,10 +20,10 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/adrianm/imagethat/webserver/internal/gocryptfs/configfile"
-	"github.com/adrianm/imagethat/webserver/internal/gocryptfs/contentenc"
-	"github.com/adrianm/imagethat/webserver/internal/gocryptfs/cryptocore"
-	"github.com/adrianm/imagethat/webserver/internal/gocryptfs/nametransform"
+	"github.com/adrianm/imagethat/core/internal/gocryptfs/configfile"
+	"github.com/adrianm/imagethat/core/internal/gocryptfs/contentenc"
+	"github.com/adrianm/imagethat/core/internal/gocryptfs/cryptocore"
+	"github.com/adrianm/imagethat/core/internal/gocryptfs/nametransform"
 )
 
 // Errors returned by this package. Callers distinguish them with errors.Is.

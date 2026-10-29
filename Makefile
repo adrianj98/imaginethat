@@ -1,5 +1,5 @@
 .PHONY: build run golib clean app test test-logic test-e2e test-fixtures golib-sync \
-        web-build web-all web-run web-test android-aar android-debug android-test
+        core-test web-build web-all web-run web-test android-aar android-debug android-test
 
 BIN_DIR = $(shell swift build --show-bin-path)
 APP_BUNDLE = build/ImageThat.app
@@ -29,18 +29,27 @@ app: build
 	cp ImageThat/Resources/Info.plist $(APP_BUNDLE)/Contents/Info.plist
 	codesign --force --sign - $(APP_BUNDLE)
 
-# Copy the gocryptfs internal/ packages into gocryptfs-lib. Required once after
+# Copy the gocryptfs internal/ packages into core/. Required once after
 # cloning, and again whenever the pinned gocryptfs version changes.
 golib-sync:
-	./Scripts/sync-gocryptfs.sh
+	$(MAKE) -C core sync
 
-# internal/ is generated, so make the build depend on it existing rather than
-# failing with a confusing "no required module provides package".
-gocryptfs-lib/internal:
-	./Scripts/sync-gocryptfs.sh
+# core/internal/gocryptfs is generated, so make the build depend on it existing
+# rather than failing with a confusing "no required module provides package".
+core/internal/gocryptfs:
+	$(MAKE) -C core sync
 
-# Build the Go shared library
-golib: gocryptfs-lib/internal
+# --- Go core ---------------------------------------------------------------
+# core/ is the Go module shared by the macOS app (through gocryptfs-lib, a cgo
+# shim), the Android app (through gomobile) and the webserver.
+
+# Run the core's Go tests (skips the ones that need FUSE)
+core-test:
+	$(MAKE) -C core test-short
+	cd gocryptfs-lib && CGO_ENABLED=1 go test -tags 'without_openssl shimtest' ./...
+
+# Build the Go shared library the macOS app links: a cgo shim over core/vault
+golib: core/internal/gocryptfs
 	cd gocryptfs-lib && CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 		go build -tags without_openssl -buildmode=c-shared \
 		-o ../build/libgocryptfs.dylib .

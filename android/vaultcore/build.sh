@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds the Go vault engine (webserver/mobile) into android/app/libs/vaultcore.aar.
+# Builds the Go vault engine (core/mobile) into android/app/libs/vaultcore.aar.
 # Tool locations come from the environment; defaults match a standard macOS setup.
 set -euo pipefail
 
@@ -19,7 +19,7 @@ done
 [ -d "$ANDROID_NDK_HOME" ] || { echo "vaultcore: NDK not found at $ANDROID_NDK_HOME (set ANDROID_NDK_HOME)" >&2; exit 1; }
 
 mkdir -p "$HERE/../app/libs"
-cd "$REPO/webserver"
+cd "$REPO/core"
 make sync
 gomobile bind -target=android/arm64,android/amd64 -androidapi 29 \
     -tags without_openssl -ldflags=-s \

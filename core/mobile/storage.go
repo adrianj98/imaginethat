@@ -10,7 +10,7 @@ import (
 	"path"
 	"strings"
 
-	"github.com/adrianm/imagethat/webserver/vault"
+	"github.com/adrianm/imagethat/core/vault"
 )
 
 // Storage is implemented by the host (Kotlin, over Android SAF) to give the

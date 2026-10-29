@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/adrianm/imagethat/webserver/internal/gocryptfs/contentenc"
+	"github.com/adrianm/imagethat/core/internal/gocryptfs/contentenc"
 )
 
 // failingVFS wraps a VFS and fails ReadAt once the read offset reaches

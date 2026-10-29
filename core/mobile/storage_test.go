@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/adrianm/imagethat/webserver/vault"
+	"github.com/adrianm/imagethat/core/vault"
 )
 
 // dirStorage is a test Storage over a plain directory. It deliberately does

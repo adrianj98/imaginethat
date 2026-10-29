@@ -7,7 +7,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/adrianm/imagethat/webserver/internal/gocryptfs/contentenc"
+	"github.com/adrianm/imagethat/core/internal/gocryptfs/contentenc"
 )
 
 // File is an open, decrypted view of one file in the vault.

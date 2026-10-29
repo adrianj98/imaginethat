@@ -6,7 +6,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class RemoteVault(val id: String, val name: String, val unlocked: Boolean)
 
-/** Mirrors `vault.Entry` (webserver/vault/read.go). [mediaType] is "image", "video" or "". */
+/** Mirrors `vault.Entry` (core/vault/read.go). [mediaType] is "image", "video" or "". */
 @Serializable
 data class Entry(val name: String, val isDir: Boolean, val size: Long, val mediaType: String = "")
 

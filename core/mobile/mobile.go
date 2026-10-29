@@ -11,7 +11,7 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/adrianm/imagethat/webserver/vault"
+	"github.com/adrianm/imagethat/core/vault"
 )
 
 // wrapErr prefixes err with a stable code Kotlin can switch on:

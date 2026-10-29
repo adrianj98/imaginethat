@@ -8,24 +8,19 @@ go 1.26.0
 // Go 1.27 changes behaviour the vault fixture tests depend on.
 toolchain go1.26.10
 
-// The crypto dependencies (jacobsa-crypto, eme, x/crypto, go-fuse) match
-// gocryptfs-lib/go.mod, so the vault crypto here behaves like the crypto the
-// macOS app ships. x/sys, x/image and x/mobile are newer here; they do not
-// touch the crypto paths.
-require (
-	github.com/aperturerobotics/jacobsa-crypto v1.1.0
-	github.com/hanwen/go-fuse/v2 v2.8.0
-	github.com/rfjakob/eme v1.1.2
-	golang.org/x/crypto v0.33.0
-	golang.org/x/image v0.47.0
-	golang.org/x/sys v0.49.0
-	golang.org/x/term v0.29.0
-)
+// The gocryptfs engine, caches and bindings live in ../core and are shared
+// with the macOS and Android apps.
+require github.com/adrianm/imagethat/core v0.0.0
 
-require golang.org/x/mobile v0.0.0-20261011034528-197770444867
+replace github.com/adrianm/imagethat/core => ../core
+
+require golang.org/x/image v0.47.0
 
 require (
-	golang.org/x/mod v0.42.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/tools v0.52.0 // indirect
+	github.com/aperturerobotics/jacobsa-crypto v1.1.0 // indirect
+	github.com/hanwen/go-fuse/v2 v2.8.0 // indirect
+	github.com/rfjakob/eme v1.1.2 // indirect
+	golang.org/x/crypto v0.33.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/term v0.29.0 // indirect
 )

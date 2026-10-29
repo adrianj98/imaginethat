@@ -51,7 +51,19 @@ extern int GocryptfsRenameFile(int sessionID, char* sourcePath, char* destDirPat
 extern int GocryptfsMkdir(int sessionID, char* dirPath);
 extern int GocryptfsDeleteFile(int sessionID, char* filePath);
 extern int GocryptfsDeleteDir(int sessionID, char* dirPath);
+// Replace (or create) a file from an in-memory buffer. For large imports use the
+// streaming writer below so the plaintext is never held whole.
 extern int GocryptfsWriteFile(int sessionID, char* relativePath, void* data, int dataLen);
+// Streaming writer: CreateFile returns a writer id (> 0) or an error code (< 0).
+// Write chunks with WriterWrite, then WriterClose commits the file (the entry
+// appears only then) or WriterAbort discards it leaving nothing behind. Both
+// end the writer; its id must not be used again. Return codes: 0 ok, -1 invalid
+// session/writer or read-only vault, -2 not found, -3 invalid path, -4 already
+// exists, -5 backend error.
+extern int GocryptfsCreateFile(int sessionID, char* relativePath);
+extern int GocryptfsWriterWrite(int writerID, void* data, int dataLen);
+extern int GocryptfsWriterClose(int writerID);
+extern void GocryptfsWriterAbort(int writerID);
 // Resolve a plaintext vault path to its cipher equivalent. isDir=1 for directories.
 // Caller must free the returned string.
 extern char* GocryptfsResolveCipherPath(int sessionID, char* plainRelPath, int isDir);
