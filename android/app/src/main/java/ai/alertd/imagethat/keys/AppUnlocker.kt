@@ -62,7 +62,12 @@ class AppUnlocker(
         }
         master.delete()
         val enc = master.encryptCipher()
-        val ready = prompt(enc) ?: return AppUnlock.Cancelled
+        val ready = prompt(enc) ?: run {
+            // The new master key can't open the old wrapped key. Mark it unreadable so the next open
+            // comes straight here with one prompt (and still reports the passwords as cleared).
+            if (st.wrappedDek != null) store.update { it.copy(wrappedDek = UNREADABLE, savedPasswords = null) }
+            return AppUnlock.Cancelled
+        }
         val dek = SavedPasswords.newDek()
         try {
             val blob = Base64.getEncoder().encodeToString(ready.iv + ready.doFinal(dek))
@@ -106,5 +111,7 @@ class AppUnlocker(
 
     private companion object {
         const val IV_LEN = 12
+        /** A wrapped key known to be unopenable: too short to hold an IV, so it is never decrypted. */
+        const val UNREADABLE = ""
     }
 }

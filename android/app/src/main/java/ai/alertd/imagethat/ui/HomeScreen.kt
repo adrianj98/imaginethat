@@ -316,6 +316,7 @@ fun HomeScreen(
             onForget = { folderOptions = null; forgetting = PasswordIds.folder(f.id) to f.label },
             onRemove = {
                 session.forgetPassword(PasswordIds.folder(f.id))
+                session.closeRemoved({ it == folderSourceId(f) })
                 session.keys.store().update { st -> st.copy(folders = st.folders.filterNot { it.id == f.id }) }
                 folderOptions = null
                 refresh()
@@ -338,10 +339,14 @@ internal fun serverSubtitle(url: String): String {
     return "Port ${u.port} · ${if (u.isHttps) "https" else "http, not encrypted"}"
 }
 
-/** Forgets a remembered server and every saved password of its vaults. The vaults on the server are untouched. */
+/**
+ * Forgets a remembered server and every saved password of its vaults, and locks any of them that
+ * are open. The vaults on the server are untouched.
+ */
 internal fun removeServer(session: Session, id: String) {
     session.keys.store().update { st -> st.copy(servers = st.servers.filterNot { it.id == id }) }
     session.forgetPasswords { it.startsWith(PasswordIds.serverPrefix(id)) }
+    session.closeRemoved({ it.startsWith(remoteSourceId(id, "")) }, serverKey = id)
 }
 
 @Composable

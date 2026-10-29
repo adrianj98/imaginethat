@@ -530,6 +530,25 @@ class UnlockFlowTest {
         assertFalse(fx.session.hasSavedPassword(PasswordIds.server("s1", "v1")))
     }
 
+    @Test fun removingAServerLocksItsOpenVaultsOnly() {
+        val fake = FakeVaultServer("right")
+        savedServerWith(fake)
+        fx.unlockApp()
+        var closedRemote = 0
+        var closedFolder = 0
+        fx.session.registerSource(remoteSourceId("s1", "v1"), "Holiday", MemVault()) { closedRemote++ }
+        fx.session.registerSource("folder-f1", "Photos", MemVault()) { closedFolder++ }
+        launch()
+        rule.onNodeWithText("My server").performTouchInput { longClick() }
+        rule.onNodeWithTag("remove-confirm").performClick()
+        waitForText("Connect to a server")
+        assertNull(fx.session.source(remoteSourceId("s1", "v1")))
+        assertNull(fx.session.server("s1"))
+        assertEquals(1, closedRemote)
+        assertNotNull(fx.session.source("folder-f1"))
+        assertEquals(0, closedFolder)
+    }
+
     @Test fun searchFiltersTheServersVaults() {
         val s = savedServerHome()
         s.enqueue(json("""{"vaults":[{"id":"v1","name":"Holiday","unlocked":false},{"id":"v2","name":"Work","unlocked":false}]}"""))

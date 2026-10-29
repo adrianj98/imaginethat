@@ -254,7 +254,7 @@ fun LocalUnlock(
                 // does not know about.
                 withContext(NonCancellable) {
                     val vault = withContext(Dispatchers.Default) { target.open(password) }
-                    session.registerSource(target.sourceId, target.label, LocalSource(MobileVaultApi(vault)))
+                    session.registerSource(target.sourceId, target.label, LocalSource(MobileVaultApi(vault))) { session.local.close(vault) }
                     // A failed save only means the password is asked for again next time.
                     if (toSave != null) withContext(Dispatchers.IO) { runCatching { session.savePassword(target.passwordId, toSave) } }
                 }

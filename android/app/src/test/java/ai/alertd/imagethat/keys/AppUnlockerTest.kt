@@ -127,7 +127,10 @@ class AppUnlockerTest {
         cancel = true
         assertSame(AppUnlock.Cancelled, unlock())
         cancel = false
+        prompted.clear()
         assertTrue(ok().cleared)
+        // The cancelled attempt replaced the master key; the next open must not try the old wrapped key first.
+        assertEquals(1, prompted.size)
     }
 
     @Test fun unreadableWrappedKeyStartsOver() {

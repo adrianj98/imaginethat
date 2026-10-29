@@ -80,7 +80,7 @@ class Session(
         idleTimeoutMs = minutes * 60_000L
     }
 
-    private class Open(val label: String, val source: VaultSource)
+    private class Open(val label: String, val source: VaultSource, val close: () -> Unit)
 
     private val sources = LinkedHashMap<String, Open>()
     private val servers = LinkedHashMap<String, RemoteServer>()
@@ -141,8 +141,8 @@ class Session(
     @Synchronized fun forgetPasswords(match: (String) -> Boolean) { passwords?.removeIf(match) }
 
     @Synchronized
-    fun registerSource(id: String, label: String, source: VaultSource) {
-        sources[id] = Open(label, source)
+    fun registerSource(id: String, label: String, source: VaultSource, close: () -> Unit = {}) {
+        sources[id] = Open(label, source, close)
         _openIds.value = sources.keys.toSet()
     }
 
@@ -156,6 +156,23 @@ class Session(
     }
 
     @Synchronized fun server(key: String): RemoteServer? = servers[key]
+
+    /**
+     * Locks what a removed server or folder had open: the sources matching [sourceIds] (closing
+     * their Go vaults) and, with [serverKey], that server's HTTP session.
+     */
+    fun closeRemoved(sourceIds: (String) -> Boolean, serverKey: String? = null) {
+        val (closing, server) = synchronized(this) {
+            val ids = sources.keys.filter(sourceIds)
+            val closing = ids.map { id -> id to sources.remove(id)!! }
+            _openIds.value = sources.keys.toSet()
+            closing to serverKey?.let { servers.remove(it) }
+        }
+        for ((_, open) in closing) runCatching { open.close() }
+        server?.let(::logoutAndClose)
+        if (closing.isNotEmpty()) clearImageCache()
+        for ((id, _) in closing) _events.tryEmit(SessionEvent.SourceLocked(id))
+    }
 
     /**
      * A source found its vault locked (401, or its Go vault was closed). Drops it, evicts decrypted
@@ -244,19 +261,21 @@ class Session(
             servers.values.toList().also { servers.clear() }
         }
         local.closeAll()
-        for (s in closing) {
-            scope.launch {
-                try {
-                    withTimeout(LOGOUT_TIMEOUT_MS) { s.api.logout() }
-                } catch (_: Exception) {
-                    // best effort: the cookie is dropped by close() either way
-                } finally {
-                    s.api.close()
-                }
-            }
-        }
+        closing.forEach(::logoutAndClose)
         clearImageCache()
         _events.tryEmit(SessionEvent.AllLocked)
+    }
+
+    private fun logoutAndClose(s: RemoteServer) {
+        scope.launch {
+            try {
+                withTimeout(LOGOUT_TIMEOUT_MS) { s.api.logout() }
+            } catch (_: Exception) {
+                // best effort: the cookie is dropped by close() either way
+            } finally {
+                s.api.close()
+            }
+        }
     }
 
     companion object {

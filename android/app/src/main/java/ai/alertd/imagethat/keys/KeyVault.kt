@@ -5,7 +5,9 @@ import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
+import android.security.keystore.UserNotAuthenticatedException
 import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
+import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK
 import androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
 import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
@@ -26,8 +28,10 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 /**
  * Android Keystore-backed secrets. [stateCipher] uses a key that needs no authentication (the
  * state file holds what exists, and saved passwords only as ciphertext). The master key
- * ([masterAlias]) needs authentication for every use (biometric strong, or the device PIN /
- * pattern / password on API 30+) and is invalidated by biometric enrolment; it wraps the data key
+ * ([masterAlias]) needs authentication for every use on API 30+ (biometric strong or the device PIN
+ * / pattern / password). API 29 cannot bind a screen-lock prompt to a cipher, so there the key is
+ * usable for [AUTH_WINDOW_SECONDS] after the prompt instead, which lets phones with a screen lock
+ * but no strong biometric open the app. It is invalidated by biometric enrolment and wraps the data key
  * of the saved-password map (see [AppUnlocker]). [requireAuth] = false exists only for tests on
  * emulators with no enrolled biometrics or screen lock.
  */
@@ -54,8 +58,19 @@ class KeyVault(
      * The app-open authentication: one prompt yields the saved passwords for this session.
      * Throws [IllegalStateException] for a biometric error other than cancel (lockout, none enrolled).
      */
-    suspend fun unlockApp(activity: FragmentActivity?): AppUnlock =
-        AppUnlocker(master, store) { cipher -> prompt(activity, cipher) }.unlock()
+    suspend fun unlockApp(activity: FragmentActivity?): AppUnlock {
+        if (!timeBound()) return AppUnlocker(master, store) { cipher -> prompt(activity, cipher) }.unlock()
+        authenticate(activity, null) ?: return AppUnlock.Cancelled
+        return try {
+            AppUnlocker(master, store) { cipher -> cipher }.unlock()
+        } catch (e: UserNotAuthenticatedException) {
+            // A weak biometric (some face unlocks) does not authorise Keystore keys on API 29.
+            throw AuthError(BiometricPrompt.ERROR_HW_UNAVAILABLE, "Unlock with your PIN, pattern or password instead.")
+        }
+    }
+
+    /** API 29 with a real prompt: the master key is time-bound and the prompt runs before the cipher exists. */
+    private fun timeBound() = requireAuth && authenticator == null && Build.VERSION.SDK_INT < Build.VERSION_CODES.R
 
     /** Deletes the master key and the saved passwords (they are unreadable without it). */
     fun clearSavedPasswords() {
@@ -98,7 +113,7 @@ class KeyVault(
 
     private suspend fun prompt(activity: FragmentActivity?, cipher: Cipher): Cipher? = when {
         authenticator != null -> authenticator.invoke(activity, cipher)
-        requireAuth -> authenticate(activity, cipher)
+        requireAuth -> authenticate(activity, cipher)?.cryptoObject?.cipher
         else -> cipher
     }
 
@@ -110,9 +125,12 @@ class KeyVault(
         if (requireAuth) {
             b.setUserAuthenticationRequired(true)
             b.setInvalidatedByBiometricEnrollment(true)
-            // Auth per use (timeout 0). API 29 can only express biometric-per-use (the default).
+            // Auth per use (timeout 0). API 29 can't bind the screen lock to a use, so a short window.
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 b.setUserAuthenticationParameters(0, KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL)
+            } else if (authenticator == null) {
+                @Suppress("DEPRECATION")
+                b.setUserAuthenticationValidityDurationSeconds(AUTH_WINDOW_SECONDS)
             }
         }
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
@@ -130,14 +148,14 @@ class KeyVault(
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").apply { init(spec) }.generateKey()
     }
 
-    /** Shows the biometric prompt bound to [cipher]; null if the user cancelled. */
-    private suspend fun authenticate(activity: FragmentActivity?, cipher: Cipher): Cipher? {
+    /** Shows the biometric prompt, bound to [cipher] when given; null if the user cancelled. */
+    private suspend fun authenticate(activity: FragmentActivity?, cipher: Cipher?): BiometricPrompt.AuthenticationResult? {
         requireNotNull(activity) { "an activity is required for biometric authentication" }
         return suspendCancellableCoroutine { cont ->
             val prompt = BiometricPrompt(activity, ContextCompat.getMainExecutor(activity),
                 object : BiometricPrompt.AuthenticationCallback() {
                     override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                        if (cont.isActive) cont.resume(result.cryptoObject!!.cipher)
+                        if (cont.isActive) cont.resume(result)
                     }
 
                     override fun onAuthenticationError(code: Int, msg: CharSequence) {
@@ -153,10 +171,9 @@ class KeyVault(
             val info = BiometricPrompt.PromptInfo.Builder()
                 .setTitle("Unlock ImageThat")
                 .setAllowedAuthenticators(appLockAuthenticators())
-                .apply { if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) setNegativeButtonText("Cancel") }
                 .build()
             cont.invokeOnCancellation { prompt.cancelAuthentication() }
-            prompt.authenticate(info, BiometricPrompt.CryptoObject(cipher))
+            if (cipher == null) prompt.authenticate(info) else prompt.authenticate(info, BiometricPrompt.CryptoObject(cipher))
         }
     }
 
@@ -178,9 +195,16 @@ class KeyVault(
     class AuthError(val code: Int, message: String) : IllegalStateException(message)
 
     companion object {
-        /** API 30+: a strong biometric or the device credential. API 29: strong biometric only. */
+        /**
+         * API 30+: a strong biometric or the device credential, bound to the cipher. API 29: any
+         * biometric or the device credential, unbound (androidx supports only that pair there).
+         */
         fun appLockAuthenticators(): Int =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) BIOMETRIC_STRONG or DEVICE_CREDENTIAL else BIOMETRIC_STRONG
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) BIOMETRIC_STRONG or DEVICE_CREDENTIAL
+            else BIOMETRIC_WEAK or DEVICE_CREDENTIAL
+
+        /** How long the API 29 master key stays usable after the prompt. */
+        const val AUTH_WINDOW_SECONDS = 30
 
         const val MASTER_ALIAS = "imagethat.vault-master"
         private const val STATE_ALIAS = "imagethat.state"

@@ -141,7 +141,7 @@ copied into a `[]byte` and wiped after key derivation.
 | `remote/ApiClient` | OkHttp client for the webserver JSON API (`/api/vaults`, `unlock`, `lock`, `list`, `file`, `thumb`, `upload`, `mkdir`, `move`, `entry`, `logout`); in-memory cookie jar; optional pinned cert | OkHttp, kotlinx.serialization |
 | `local/LocalVaults` | Opens/creates vaults via `vaultcore`; owns the built-in vault | `vaultcore.aar`, `keys` |
 | `local/SafStorage` | `mobile.Storage` over a persisted SAF tree URI | `DocumentsContract` |
-| `keys/KeyVault` | Keystore keys: the state-file key (no auth) and the master key `imagethat.vault-master` (auth per use; biometric strong, or device credential on API 30+; invalidated by biometric enrolment). The app-open prompt authorises a master-key cipher that unwraps (or, first run, wraps) the saved-password data key (`keys/AppUnlocker`, `keys/SavedPasswords`) | `androidx.biometric` |
+| `keys/KeyVault` | Keystore keys: the state-file key (no auth) and the master key `imagethat.vault-master` (API 30+: auth per use, biometric strong or device credential; API 29: usable for 30 s after a biometric or device-credential prompt; invalidated by biometric enrolment). The app-open prompt authorises a master-key cipher that unwraps (or, first run, wraps) the saved-password data key (`keys/AppUnlocker`, `keys/SavedPasswords`) | `androidx.biometric` |
 | `data/VaultRepository` | One interface for UI: `list`, `open stream`, `thumbnail`, `upload`, `mkdir`, `move`, `delete`, `saveOffline` — backed by a remote or local source | the above |
 | `media/VaultDataSource` | Media3 `DataSource` that reads ranges from a local vault; remote video uses OkHttp data source with the session cookie | Media3 |
 | `ui/*` | Compose screens | `VaultRepository` |
@@ -160,7 +160,9 @@ passwords as ciphertext:
 - `wrappedDek` — a random 256-bit data key (DEK), AES-GCM-wrapped by the
   Keystore master key `imagethat.vault-master`, which needs authentication for
   every use (`setUserAuthenticationParameters(0, BIOMETRIC_STRONG |
-  DEVICE_CREDENTIAL)` on API 30+, biometric-per-use on API 29) and is
+  DEVICE_CREDENTIAL)` on API 30+; on API 29, where androidx can't bind a
+  device-credential prompt to a cipher, a 30-second validity window after the
+  prompt) and is
   invalidated by biometric enrolment.
 - `savedPasswords` — one AES-GCM blob under the DEK holding the map
   id → password, ids `offline`, `folder:<folderId>`,
@@ -180,7 +182,7 @@ deleted on the first unlock of this version. Nothing else is written.
    1 minute in the background, the lock alarm, "Lock all") in place of
    everything else, Home included. It shows only the app name and an
    "Unlock" button; the prompt (biometric strong, or the screen-lock PIN /
-   pattern / password on API 30+; biometric only on API 29) shows by itself.
+   pattern / password; on API 29 any biometric or the screen lock) shows by itself.
    With no biometric and no screen lock set up it says "Set up a fingerprint,
    face or screen lock in Android settings" with a Retry button; it never
    silently lets the user in.
