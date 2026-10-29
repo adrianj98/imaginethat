@@ -103,6 +103,20 @@ public final class DriveVaultSource: WritableMediaSource, @unchecked Sendable {
         return playerItem
     }
 
+    /// The ciphertext ranges of this file held on disk by the Drive caches,
+    /// as fractions of the file. Ciphertext and plaintext offsets differ only
+    /// by gocryptfs' fixed per-block overhead, so the fractions carry over.
+    public func cachedRanges(for item: MediaItem) async -> [ClosedRange<Double>] {
+        guard let cipherPath = bridge.cipherPath(forPlainPath: item.url.path),
+              let entry = bridge.fs.getFileEntry(path: cipherPath), entry.size > 0 else { return [] }
+        if await DriveCache.shared.contains(fileId: entry.id, modifiedTime: entry.modifiedTime) {
+            return [0...1]
+        }
+        let size = Double(entry.size)
+        return DriveRangeCache.shared.cachedIntervals(fileId: entry.id, modifiedTime: entry.modifiedTime)
+            .map { max(0, Double($0.start) / size)...min(1, Double($0.end) / size) }
+    }
+
     // MARK: - WritableMediaSource
 
     public func saveImage(_ imageData: Data, for item: MediaItem) async throws {

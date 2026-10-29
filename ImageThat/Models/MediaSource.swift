@@ -40,10 +40,16 @@ public protocol MediaSource: Sendable {
 
     /// Default chunk size for streaming reads (256 KB)
     static var defaultChunkSize: Int { get }
+
+    /// Parts of the file held in a persistent local cache, as fractions of
+    /// its length (0...1). Empty when the source has no such cache.
+    func cachedRanges(for item: MediaItem) async -> [ClosedRange<Double>]
 }
 
 public extension MediaSource {
     static var defaultChunkSize: Int { 262_144 }
+
+    func cachedRanges(for item: MediaItem) async -> [ClosedRange<Double>] { [] }
 }
 
 /// Protocol for media sources that support writing/saving edited images.

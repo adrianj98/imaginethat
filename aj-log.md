@@ -1,5 +1,13 @@
 # aj-log
 
+## 2026-10-29 — Video progress bar shows what is cached
+- User asked to see on the video progress what is cached.
+- `TransportBarView.swift`: a 3 px strip under the scrubber: green = held in the persistent disk cache, faint white = loaded into memory by AVPlayer, track behind. Tooltip explains the colours.
+- `VideoPlayerView.swift`: memory ranges from `AVPlayerItem.loadedTimeRanges` each 0.5 s tick; disk ranges polled every 2 s from the source while the video is open (`watchCache`), cancelled on close or item change.
+- `MediaSource.swift`: `cachedRanges(for:)` (fractions 0...1), default empty. `DriveVaultSource` implements it: whole file when the whole-file cache holds it, else the range cache's intervals over the ciphertext size (ciphertext and plaintext differ only by per-block overhead). `DriveRangeCache.cachedIntervals`, `DriveCache.contains` (index lookup, no file read).
+- Only Drive vaults have a disk cache today, so only they show green. Byte ranges are drawn at their byte fraction of the timeline, which is approximate for variable-bitrate video.
+- Verified: app builds; Swift integration 61/61. The bar itself was not exercised by a test.
+
 ## 2026-10-29 — imagethat-web can send a vault encrypted or decrypted
 - User asked for the server to send either encrypted or decrypted data, so clients can cache ciphertext (the remote-vault cache discussion: caching the plaintext the server sends would break the no-plaintext-on-disk rule).
 - `webserver/server/handlers_raw.go` (new), routes in `handlers_fs.go`: `GET/HEAD /api/vaults/{id}/raw/list?path=` (ciphertext listing) and `/raw/file?path=` (ciphertext bytes via `http.ServeContent`, Range; `gocryptfs.conf` is a file there). Same unlocked-session requirement as every endpoint (conf + ciphertext would allow offline guessing). Paths cleaned with `vault.CleanPath`, resolved with `EvalSymlinks`, refused if they leave the vault dir. `no-store`. The decrypted endpoints are unchanged; writes keep using them.

@@ -5,13 +5,20 @@ public struct TransportBarView: View {
     var player: AVPlayer
     @Binding var currentTime: Double
     @Binding var duration: Double
+    /// Parts of the file in a persistent local cache, as fractions (0...1).
+    var cached: [ClosedRange<Double>]
+    /// Parts the player has loaded into memory, as fractions (0...1).
+    var buffered: [ClosedRange<Double>]
     @State private var isScrubbing = false
     @State private var scrubPosition: Double = 0
 
-    public init(player: AVPlayer, currentTime: Binding<Double>, duration: Binding<Double>) {
+    public init(player: AVPlayer, currentTime: Binding<Double>, duration: Binding<Double>,
+                cached: [ClosedRange<Double>] = [], buffered: [ClosedRange<Double>] = []) {
         self.player = player
         self._currentTime = currentTime
         self._duration = duration
+        self.cached = cached
+        self.buffered = buffered
     }
 
     public var body: some View {
@@ -65,6 +72,14 @@ public struct TransportBarView: View {
                         currentTime = scrubPosition
                     }
                 }
+                .overlay(alignment: .bottom) {
+                    RangeStrip(cached: cached, buffered: buffered)
+                        .frame(height: 3)
+                        .padding(.horizontal, 2)
+                        .offset(y: 4)
+                        .allowsHitTesting(false)
+                        .help("Bright: cached on disk · Faint: loaded in memory")
+                }
 
                 // Time display
                 Text("\(formatTime(currentTime)) / \(formatTime(duration))")
@@ -91,6 +106,33 @@ public struct TransportBarView: View {
         let target = max(0, min(duration, currentTime + delta))
         player.seek(to: CMTime(seconds: target, preferredTimescale: 1000))
         currentTime = target
+    }
+
+    /// Draws ranges given as fractions of the timeline.
+    private struct RangeStrip: View {
+        let cached: [ClosedRange<Double>]
+        let buffered: [ClosedRange<Double>]
+
+        var body: some View {
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.12))
+                    segments(buffered, width: geo.size.width, color: .white.opacity(0.35))
+                    segments(cached, width: geo.size.width, color: .green.opacity(0.85))
+                }
+            }
+        }
+
+        private func segments(_ ranges: [ClosedRange<Double>], width: CGFloat, color: Color) -> some View {
+            ZStack(alignment: .leading) {
+                ForEach(Array(ranges.enumerated()), id: \.offset) { _, r in
+                    Rectangle()
+                        .fill(color)
+                        .frame(width: max(1, CGFloat(r.upperBound - r.lowerBound) * width))
+                        .offset(x: CGFloat(r.lowerBound) * width)
+                }
+            }
+        }
     }
 
     private func formatTime(_ seconds: Double) -> String {

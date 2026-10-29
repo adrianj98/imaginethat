@@ -70,6 +70,11 @@ public actor DriveCache {
         evictIfNeeded()
     }
 
+    /// Whether this file version is held whole, without reading it.
+    public func contains(fileId: String, modifiedTime: String) -> Bool {
+        index[fileId]?.modifiedTime == modifiedTime
+    }
+
     public func invalidate(fileId: String) {
         try? FileManager.default.removeItem(at: fileDir.appendingPathComponent(fileId))
         index.removeValue(forKey: fileId)
