@@ -1,5 +1,12 @@
 # aj-log
 
+## 2026-10-29 — Client-decrypt mode, step 4: Go client (core/remote) and app exports
+- `core/remote/client.go`: `Info` (mode from `/api/info`; servers without it count as server-decrypt), `Login(accessPassword)` (`ErrWrongAccessPassword`, `ErrNotClientDecrypt`), `OpenVault` skips `/unlock` after `Login` and unlocks locally (vault `ErrWrongPassword`/`ErrNoConfig` mapped to `ErrWrongPassword`/`ErrNotFound`), and on a 401 logs in again with the in-memory access password instead of re-unlocking. Server-decrypt behaviour unchanged.
+- `gocryptfs-lib/main.go` + `CLibGocryptfs/libgocryptfs.h`: `GocryptfsOpenRemote` gains a trailing `accessPassword` ("" = server-decrypt; -7 = wrong access password); new `GocryptfsServerMode` (0 server-decrypt, 1 client-decrypt). Error mapping shared in `remoteRC`. No Swift caller existed yet, so nothing else changes.
+- `core/mobile/mobile.go`: `OpenRemote(baseURL, vaultID, password, pin, accessPassword)`, new `ServerMode`, error code `wrong_access_password:`. No Kotlin caller existed yet.
+- Tests: `webserver/server/remote_client_decrypt_test.go` (Info, wrong access password, no access before login, wrong vault password, unknown vault, every fixture file equal to a local session, no vault ever unlocked on the server, re-login after the server drops sessions; Login refused by a server-decrypt server). `gocryptfs-lib/remote_test.go` (cgo: server mode 0/1, -7, -2, a file equal to local). `core/mobile` can't import the server in tests (module cycle), so its thin wrappers rely on the `core/remote` tests.
+- Verified: `go test` webserver, core `test-short`, gocryptfs-lib shimtest all pass.
+
 ## 2026-10-29 — Client-decrypt mode, step 3: browser UI
 - `web/src/backend.ts` (new): one `Backend` interface, `serverBackend` (today's API, unchanged behaviour) and `clientBackend`. `App.tsx` reads `/api/info` and picks one; components (`VaultList`, `Browser`, `Lightbox`, `Thumbnail`) take it as a prop instead of calling `api` directly. Write actions (upload, drop, new folder, rename, delete) only render when `backend.canWrite`.
 - `components/Login.tsx` (new): server access password screen when a client-decrypt server answers 401; "Log out" in the top bar drops the login and every key.

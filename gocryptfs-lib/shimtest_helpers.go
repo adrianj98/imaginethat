@@ -211,10 +211,22 @@ func tThumbCacheSize(dir string) int64 {
 }
 
 func tOpenRemote(base, vaultID, password, pin string) int {
-	b, v, p, pn := cstr(base), cstr(vaultID), cstr(password), cstr(pin)
+	return tOpenRemoteAccess(base, vaultID, password, pin, "")
+}
+
+func tOpenRemoteAccess(base, vaultID, password, pin, access string) int {
+	b, v, p, pn, a := cstr(base), cstr(vaultID), cstr(password), cstr(pin), cstr(access)
 	defer C.free(unsafe.Pointer(b))
 	defer C.free(unsafe.Pointer(v))
 	defer C.free(unsafe.Pointer(p))
 	defer C.free(unsafe.Pointer(pn))
-	return int(GocryptfsOpenRemote(b, v, p, pn))
+	defer C.free(unsafe.Pointer(a))
+	return int(GocryptfsOpenRemote(b, v, p, pn, a))
+}
+
+func tServerMode(base string) int {
+	b, pn := cstr(base), cstr("")
+	defer C.free(unsafe.Pointer(b))
+	defer C.free(unsafe.Pointer(pn))
+	return int(GocryptfsServerMode(b, pn))
 }

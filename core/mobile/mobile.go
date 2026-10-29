@@ -72,25 +72,56 @@ func OpenLocal(dir, password string) (*Vault, error) {
 // OpenRemote opens a vault on an imagethat-web server in ciphertext mode: the
 // server sends the vault's encrypted files and decryption happens here.
 // pinnedSHA256 is the hex SHA-256 of a self-signed server's certificate, or
-// "". The vault is read-only; writes go through the server's API. Errors
-// carry the usual codes plus "cert_mismatch:".
-func OpenRemote(baseURL, vaultID, password, pinnedSHA256 string) (*Vault, error) {
+// "". accessPassword is the server access password of a client-decrypt
+// server (see ServerMode), after which the vault password never leaves the
+// device; pass "" for a server-decrypt server. The vault is read-only; writes
+// go through the server's API. Errors carry the usual codes plus
+// "cert_mismatch:" and "wrong_access_password:".
+func OpenRemote(baseURL, vaultID, password, pinnedSHA256, accessPassword string) (*Vault, error) {
 	c, err := remote.New(baseURL, remote.Options{PinnedSHA256: pinnedSHA256})
 	if err != nil {
 		return nil, wrapErr(err)
 	}
-	s, err := c.OpenVault(context.Background(), vaultID, password)
-	switch {
-	case err == nil:
-		return &Vault{s: s}, nil
-	case errors.Is(err, remote.ErrWrongPassword):
-		return nil, fmt.Errorf("wrong_password: %w", err)
-	case errors.Is(err, remote.ErrNotFound):
-		return nil, fmt.Errorf("not_found: %w", err)
-	case errors.Is(err, remote.ErrCertMismatch):
-		return nil, fmt.Errorf("cert_mismatch: %w", err)
+	ctx := context.Background()
+	if accessPassword != "" {
+		if err := c.Login(ctx, accessPassword); err != nil {
+			return nil, wrapRemoteErr(err)
+		}
 	}
-	return nil, wrapErr(err)
+	s, err := c.OpenVault(ctx, vaultID, password)
+	if err != nil {
+		return nil, wrapRemoteErr(err)
+	}
+	return &Vault{s: s}, nil
+}
+
+// ServerMode reports how an imagethat-web server works: "server-decrypt"
+// (send it the vault password) or "client-decrypt" (log in with its access
+// password and decrypt here).
+func ServerMode(baseURL, pinnedSHA256 string) (string, error) {
+	c, err := remote.New(baseURL, remote.Options{PinnedSHA256: pinnedSHA256})
+	if err != nil {
+		return "", wrapErr(err)
+	}
+	mode, err := c.Info(context.Background())
+	if err != nil {
+		return "", wrapRemoteErr(err)
+	}
+	return mode, nil
+}
+
+func wrapRemoteErr(err error) error {
+	switch {
+	case errors.Is(err, remote.ErrWrongAccessPassword):
+		return fmt.Errorf("wrong_access_password: %w", err)
+	case errors.Is(err, remote.ErrWrongPassword):
+		return fmt.Errorf("wrong_password: %w", err)
+	case errors.Is(err, remote.ErrNotFound):
+		return fmt.Errorf("not_found: %w", err)
+	case errors.Is(err, remote.ErrCertMismatch):
+		return fmt.Errorf("cert_mismatch: %w", err)
+	}
+	return wrapErr(err)
 }
 
 // List returns the directory's entries as a JSON array of vault.Entry.
