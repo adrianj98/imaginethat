@@ -2,6 +2,7 @@ import SwiftUI
 
 public struct ContentView: View {
     @EnvironmentObject var appState: AppState
+    @State private var sidebarBeforeDetail: NavigationSplitViewVisibility = .all
 
     public init() {}
 
@@ -12,7 +13,7 @@ public struct ContentView: View {
 
     @ViewBuilder
     private var innerBody: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $appState.sidebarVisibility) {
             SidebarView()
         } detail: {
             Group {
@@ -85,6 +86,16 @@ public struct ContentView: View {
             Text(appState.errorMessage ?? "")
         }
         .toolbar(.hidden, for: .windowToolbar)
+        .onChange(of: appState.viewMode) { _, mode in
+            withAnimation(.easeOut(duration: 0.2)) {
+                if mode == .detail {
+                    sidebarBeforeDetail = appState.sidebarVisibility
+                    appState.sidebarVisibility = .detailOnly
+                } else {
+                    appState.sidebarVisibility = sidebarBeforeDetail
+                }
+            }
+        }
     }
 
     private var emptyState: some View {

@@ -35,6 +35,25 @@ extension View {
     }
 }
 
+/// Toolbar capsule button that shows or hides the sidebar (⌃⌘S).
+struct SidebarToggle: View {
+    @EnvironmentObject var appState: AppState
+    var dark = false
+
+    var body: some View {
+        GlassIconButton(systemImage: "sidebar.left",
+                        help: appState.sidebarVisibility == .detailOnly ? "Show Sidebar" : "Hide Sidebar",
+                        dark: dark) {
+            withAnimation(.easeOut(duration: 0.2)) {
+                appState.sidebarVisibility = appState.sidebarVisibility == .detailOnly ? .all : .detailOnly
+            }
+        }
+        .keyboardShortcut("s", modifiers: [.control, .command])
+        .padding(.horizontal, 4)
+        .glassCapsule(dark: dark)
+    }
+}
+
 /// A round 32pt icon button for inside a toolbar capsule.
 struct GlassIconButton: View {
     let systemImage: String

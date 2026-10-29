@@ -68,6 +68,7 @@ public struct BrowserView: View {
                     .frame(width: 268)
                     .padding(16)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
                     .task(id: item.id) {
                         selectedPreview = nil
                         selectedPreview = await appState.loadThumbnail(for: item, size: CGSize(width: 200, height: 200))
@@ -96,6 +97,8 @@ public struct BrowserView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
+            SidebarToggle()
+
             if appState.canGoUp {
                 HStack(spacing: 2) {
                     GlassIconButton(systemImage: "chevron.left", help: "Go Up") { appState.goUp() }
@@ -127,9 +130,10 @@ public struct BrowserView: View {
                     GlassIconButton(systemImage: "square.and.arrow.down", help: "Import") { importFiles() }
                     GlassIconButton(systemImage: "folder.badge.plus", help: "New Folder") { showNewFolderDialog = true }
                 }
-                GlassIconButton(systemImage: "info.circle", help: "Show Info", isOn: showInfo) {
+                GlassIconButton(systemImage: "sidebar.right", help: showInfo ? "Hide Info" : "Show Info", isOn: showInfo) {
                     withAnimation(.easeOut(duration: 0.2)) { showInfo.toggle() }
                 }
+                .keyboardShortcut("i", modifiers: [.option, .command])
             }
             .padding(.horizontal, 4)
             .glassCapsule()

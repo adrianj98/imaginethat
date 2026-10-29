@@ -414,3 +414,9 @@ User request: update the Mac app with the design canvas (Browser, Viewer, Edit m
 
 ## 2026-10-29 — Mac app: import crash fix
 - **AppState.handleFileTransferProgress:** the progress notification is posted from the source's write task. Setting `fileTransferProgress` there changed a `@Published` value off the main thread, and SwiftUI then crashed while updating the main menu ("modification of a menu's items on a non-main thread"). It now hops to the main queue. *Why:* importing a file into a vault crashed the app after the first chunk. Found while reproducing the video report.
+
+## 2026-10-29 — Mac app: collapsible left and right panels
+User request: "the left and right panels should collapse".
+- **AppState.sidebarVisibility (new) + ContentView:** the NavigationSplitView is bound to it. Opening the viewer collapses the sidebar (as in the design) and going back to the grid restores what it was. *Why:* hiding the window toolbar for the redesign also removed the system sidebar toggle.
+- **Glass.SidebarToggle (new):** a "sidebar.left" capsule at the start of the browser and viewer toolbars, ⌃⌘S.
+- **BrowserView/DetailView:** the Info toggle is now a "sidebar.right" icon with Show/Hide Info help, ⌥⌘I. The card slides in and out from the right.

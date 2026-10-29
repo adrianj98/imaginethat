@@ -97,6 +97,7 @@ public struct DetailView: View {
                 .frame(width: 284)
                 .padding(16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
 
             if isEditing {
@@ -183,6 +184,8 @@ public struct DetailView: View {
 
     private var viewHeader: some View {
         HStack(spacing: 10) {
+            SidebarToggle(dark: true)
+
             Button(action: { appState.exitDetail() }) {
                 Label("Grid", systemImage: "square.grid.2x2")
                     .font(.system(size: 13))
@@ -242,9 +245,10 @@ public struct DetailView: View {
                 }
                 .disabled(appState.selectedItem?.mediaType != .image)
                 .opacity(appState.selectedItem?.mediaType == .image ? 1 : 0.4)
-                GlassIconButton(systemImage: "info.circle", help: "Show Info", isOn: showInfo, dark: true) {
+                GlassIconButton(systemImage: "sidebar.right", help: showInfo ? "Hide Info" : "Show Info", isOn: showInfo, dark: true) {
                     withAnimation(.easeOut(duration: 0.2)) { showInfo.toggle() }
                 }
+                .keyboardShortcut("i", modifiers: [.option, .command])
             }
             .padding(.horizontal, 4)
             .glassCapsule(dark: true)

@@ -30,6 +30,8 @@ public class AppState: ObservableObject {
     // Sidebar state
     @Published public var sidebarItems: [SidebarItem] = []
     @Published public var selectedSidebarItem: SidebarItem?
+    /// Left column; the viewer collapses it and the grid restores it.
+    @Published public var sidebarVisibility: NavigationSplitViewVisibility = .all
 
     // Google Drive state
     @Published public var googleDriveConnected = false
