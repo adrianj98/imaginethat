@@ -7,8 +7,12 @@
 #   sudo sh imagethat-web.sh restart
 #   sudo sh imagethat-web.sh status
 #   sudo sh imagethat-web.sh update    # install the latest release if newer, then restart
+#   sudo sh imagethat-web.sh install-file <tarball> <SHA256SUMS>
 #
-# The repository is private, so downloads go through the GitHub API with a
+# Easiest: run Scripts/synology/deploy.sh on your Mac — it downloads the release
+# with gh and pushes it over SSH, so the NAS needs no GitHub token.
+#
+# For `install`/`update` on the NAS itself the repository is private, so downloads go through the GitHub API with a
 # token (fine-grained, "Contents: read" on adrianj98/imaginethat). Put it in
 # $BASE/github-token (chmod 600) or export GITHUB_TOKEN.
 #
@@ -121,17 +125,41 @@ cmd_install() {
     say "downloading $name"
     download_asset "$url" "$tmp/$name"
     download_asset "$sums" "$tmp/SHA256SUMS"
+    install_tarball "$tmp/$name" "$tmp/SHA256SUMS"
+}
+
+# Verify $1 against SHA256SUMS file $2 and install the binary inside it.
+# Used by `install` and by `install-file` (archives copied over by deploy.sh).
+install_tarball() {
+    tarball=$1 sumsfile=$2
+    name=$(basename "$tarball")
+    dir=$(dirname "$tarball")
+    case "$name" in imagethat-web_v*_linux_*.tar.gz) ;; *) die "unexpected archive name $name" ;; esac
+    [ "${name##*_linux_}" = "$(arch).tar.gz" ] || die "$name is not for this CPU ($(arch))"
 
     say "verifying checksum"
-    (cd "$tmp" && grep " \./$name\$\| $name\$" SHA256SUMS | sed "s| \./| |" | sha256sum -c -) \
-        || die "checksum mismatch for $name — not installing"
+    # SHA256SUMS lines look like "<hash>  ./<name>". Compare explicitly rather
+    # than via `sha256sum -c`: some builds accept empty input as success.
+    want=$(awk -v n="$name" '{f=$2; sub(/^\*?\.\//, "", f); if (f == n) {print $1; exit}}' "$sumsfile")
+    [ -n "$want" ] || die "$name is not listed in SHA256SUMS — not installing"
+    got=$(sha256sum "$tarball" | awk '{print $1}')
+    [ "$got" = "$want" ] || die "checksum mismatch for $name — not installing"
 
-    tar -xzf "$tmp/$name" -C "$tmp"
+    x=$(mktemp -d)
+    tar -xzf "$tarball" -C "$x"
+    top=${name%.tar.gz}
     mkdir -p "$BASE/bin"
-    install -m 755 "$tmp/imagethat-web_${tag}_linux_${a}/imagethat-web" "$BIN.new"
+    install -m 755 "$x/$top/imagethat-web" "$BIN.new"
     mv -f "$BIN.new" "$BIN"
-    cp -f "$tmp/imagethat-web_${tag}_linux_${a}/README.md" "$BASE/README.md" 2>/dev/null || true
+    cp -f "$x/$top/README.md" "$BASE/README.md" 2>/dev/null || true
+    rm -rf "$x"
     say "installed $("$BIN" -version)"
+}
+
+cmd_install_file() {
+    load_conf
+    [ $# -eq 2 ] || die "usage: $0 install-file <imagethat-web_vX.Y.Z_linux_ARCH.tar.gz> <SHA256SUMS>"
+    install_tarball "$1" "$2"
 }
 
 pid() { [ -f "$PIDFILE" ] && cat "$PIDFILE" || true; }
@@ -189,11 +217,13 @@ cmd_status() {
 
 case "${1:-}" in
     install) cmd_install ;;
+    install-file) shift; cmd_install_file "$@" ;;
+    arch)    arch ;;
     start)   cmd_start ;;
     stop)    cmd_stop ;;
     restart) cmd_stop; cmd_start ;;
     status)  cmd_status ;;
     update)  before=$(installed_version); cmd_install
              if [ "$(installed_version)" != "$before" ] && running; then cmd_stop; cmd_start; fi ;;
-    *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+    *) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
