@@ -296,6 +296,13 @@ private fun GalleryLayout(
                 }
                 LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(CircleShape), color = Palette.Accent, trackColor = Palette.Raised)
             }
+            if (state.busy == null && state.loading && state.items.isNotEmpty()) {
+                // A known (possibly stale) listing is on screen while the fresh one loads.
+                LinearProgressIndicator(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(CircleShape).testTag("browser-revalidating"),
+                    color = Palette.Accent, trackColor = Palette.Raised,
+                )
+            }
             state.error?.let {
                 Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     ErrorText(it, Modifier.weight(1f).testTag("browser-error"))
@@ -330,6 +337,11 @@ private fun GalleryLayout(
                 horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                // Listings are served from the cache; this asks the vault again (changes by other clients).
+                RoundIconButton(
+                    AppIcons.Refresh, "Refresh", { vm.refresh(force = true) }, Modifier.testTag("menu-refresh"),
+                    background = Palette.Surface, bordered = true, size = 56.dp, iconSize = 22.dp,
+                )
                 RoundIconButton(
                     AppIcons.FolderPlus, "New folder", onNewFolder, Modifier.testTag("menu-new-folder"),
                     background = Palette.Surface, bordered = true, size = 56.dp, iconSize = 22.dp,

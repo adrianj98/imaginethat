@@ -1,5 +1,6 @@
 package ai.alertd.imagethat.ui
 
+import ai.alertd.imagethat.data.CachingSource
 import ai.alertd.imagethat.data.Item
 import ai.alertd.imagethat.data.LocalSource
 import ai.alertd.imagethat.data.SaveInterrupted
@@ -117,12 +118,26 @@ class BrowserViewModel(
         return true
     }
 
-    fun refresh() {
+    /**
+     * Reloads the current folder. A cached source answers from memory or its encrypted disk layer;
+     * a listing it only knows as stale is shown at once while the fresh one is fetched. [force] (the
+     * Refresh menu item) makes it ask the vault again, for changes made by other clients.
+     */
+    fun refresh(force: Boolean = false) {
         val path = _state.value.path
+        val cached = source as? CachingSource
         loadJob?.cancel()
         _state.update { it.copy(loading = true, error = null, locked = false) }
         loadJob = scope.launch {
             try {
+                if (force) {
+                    cached?.invalidateListing(path)
+                } else {
+                    cached?.peekListing(path)?.let { known ->
+                        val stale = known.sortedWith(ORDER)
+                        _state.update { if (it.path == path) it.copy(items = stale) else it }
+                    }
+                }
                 val items = source.list(path).sortedWith(ORDER)
                 _state.update { if (it.path == path) it.copy(items = items, loading = false) else it }
             } catch (e: CancellationException) {

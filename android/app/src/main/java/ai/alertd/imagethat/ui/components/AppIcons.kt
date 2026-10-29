@@ -57,6 +57,8 @@ object AppIcons {
     val Eye = icon("Eye", EYE, circle(12f, 12f, 3f))
     val EyeOff = icon("EyeOff", EYE, circle(12f, 12f, 3f), "M3 3l18 18")
     val Search = icon("Search", circle(11f, 11f, 7f), "M20 20l-3.5-3.5")
+    /** Circular arrow: ask the server again instead of the cache. */
+    val Refresh = icon("Refresh", "M4 12a8 8 0 0 1 13.7-5.7L20 8.5", "M20 4v4.5h-4.5", "M20 12a8 8 0 0 1-13.7 5.7L4 15.5", "M4 20v-4.5h4.5")
     val Server = icon("Server", rect(3f, 4f, 18f, 7f, 2f), rect(3f, 13f, 18f, 7f, 2f), "M7 7.5h.01M7 16.5h.01")
     val Phone = icon("Phone", rect(5f, 2f, 14f, 20f, 2f), "M11 18h2")
     val Fingerprint = icon(

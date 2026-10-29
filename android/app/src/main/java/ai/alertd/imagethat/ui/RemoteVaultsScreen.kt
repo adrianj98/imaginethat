@@ -1,5 +1,6 @@
 package ai.alertd.imagethat.ui
 
+import ai.alertd.imagethat.data.CachingSource
 import ai.alertd.imagethat.data.RemoteSource
 import ai.alertd.imagethat.keys.PasswordIds
 import ai.alertd.imagethat.remote.RemoteError
@@ -90,12 +91,16 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
     var autoUnlocking by remember { mutableStateOf<String?>(null) }
     var forgetting by remember { mutableStateOf<RemoteVault?>(null) }
 
-    fun refresh() {
+    /** Shows the remembered list when it is recent; [force] (Refresh, Retry) always asks the server. */
+    fun refresh(force: Boolean = false) {
         if (server == null) return
+        if (!force) {
+            server.cachedVaults()?.let { load = Load.Loaded(it); return }
+        }
         scope.launch(Dispatchers.Main) {
             load = try {
                 // The server forgets sessions when it restarts and then reports unlocked = false: that is just "locked" here.
-                Load.Loaded(server.api.vaults())
+                Load.Loaded(server.api.vaults().also { server.rememberVaults(it) })
             } catch (e: CancellationException) {
                 throw e
             } catch (e: RemoteError.CertMismatch) {
@@ -109,7 +114,12 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
 
     fun open(vault: RemoteVault) {
         val id = remoteSourceId(serverKey, vault.id)
-        if (session.source(id) == null) session.registerSource(id, vault.name, RemoteSource(server!!.api, vault.id))
+        // CachingSource: listings, thumbnails, images and video pieces are kept in memory and encrypted
+        // on disk under a key from the vault password (derived in unlock below; without it the disk
+        // layer stays locked), so browsing does not hit the server for the same thing twice.
+        if (session.source(id) == null) {
+            session.registerSource(id, vault.name, CachingSource(RemoteSource(server!!.api, vault.id), disk = session.diskCache(id)))
+        }
         onOpen(id)
     }
 
@@ -123,6 +133,10 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
             try {
                 server!!.api.unlock(v.id, pw)
                 if (!fromSaved) withContext(Dispatchers.IO) { runCatching { session.savePassword(passwordId, pw) } }
+                // The disk cache is keyed from the same password (PBKDF2: a few hundred ms, off the main thread).
+                session.diskCache(remoteSourceId(serverKey, v.id))?.let { d -> withContext(Dispatchers.Default) { d.unlock(pw) } }
+                server.markUnlocked(v.id)
+                (load as? Load.Loaded)?.let { l -> load = Load.Loaded(l.vaults.map { if (it.id == v.id) it.copy(unlocked = true) else it }) }
                 unlocking = null
                 open(v)
             } catch (e: CancellationException) {
@@ -182,6 +196,12 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
                     containerColor = Palette.Surface,
                     properties = PopupProperties(focusable = true, securePolicy = SecureFlagPolicy.SecureOn),
                 ) {
+                    // The vault list is remembered for a few minutes; this asks the server again.
+                    DropdownMenuItem(
+                        text = { Text("Refresh") },
+                        onClick = { menu = false; load = Load.Loading; refresh(force = true) },
+                        modifier = Modifier.testTag("vaults-refresh"),
+                    )
                     DropdownMenuItem(
                         text = { Text("Remove server", color = Palette.Destructive) },
                         onClick = { menu = false; removing = true },
@@ -225,7 +245,7 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
                 is Load.Unreachable -> GroupCard {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         ErrorText(l.message)
-                        OutlinePill("Retry", { load = Load.Loading; refresh() })
+                        OutlinePill("Retry", { load = Load.Loading; refresh(force = true) })
                     }
                 }
                 is Load.Loaded -> {

@@ -1,11 +1,15 @@
 package ai.alertd.imagethat.ui
 
+import ai.alertd.imagethat.data.CachingSource
+import ai.alertd.imagethat.data.EncryptedDiskCache
+import ai.alertd.imagethat.data.VaultDiskCache
 import ai.alertd.imagethat.data.VaultSource
 import ai.alertd.imagethat.keys.AppUnlock
 import ai.alertd.imagethat.keys.KeyVault
 import ai.alertd.imagethat.keys.SavedPasswords
 import ai.alertd.imagethat.local.LocalVaults
 import ai.alertd.imagethat.remote.ApiClient
+import ai.alertd.imagethat.remote.RemoteVault
 import android.os.SystemClock
 import androidx.fragment.app.FragmentActivity
 import kotlinx.coroutines.CoroutineScope
@@ -36,8 +40,42 @@ sealed interface SessionEvent {
     object AllLocked : SessionEvent
 }
 
-/** A connected remote server; [key] is the saved server's id, or a random one for an unsaved server. */
-class RemoteServer(val key: String, val label: String, val url: String, val api: ApiClient)
+/**
+ * A connected remote server; [key] is the saved server's id, or a random one for an unsaved server.
+ *
+ * The server's vault list is remembered in memory for [VAULTS_TTL_MS] so going back to the list does
+ * not ask the server again. The lock state of a vault this app unlocks is patched in with
+ * [markUnlocked]; a vault found locked (session expired) drops the list via [forgetVaults].
+ */
+class RemoteServer(val key: String, val label: String, val url: String, val api: ApiClient) {
+    private var vaults: List<RemoteVault>? = null
+    private var vaultsAt = 0L
+
+    /** The vault list fetched less than [VAULTS_TTL_MS] ago, or null. */
+    @Synchronized
+    fun cachedVaults(now: Long = monotonicMs()): List<RemoteVault>? = vaults?.takeIf { now - vaultsAt < VAULTS_TTL_MS }
+
+    @Synchronized
+    fun rememberVaults(list: List<RemoteVault>, now: Long = monotonicMs()) {
+        vaults = list
+        vaultsAt = now
+    }
+
+    @Synchronized
+    fun markUnlocked(vaultId: String) {
+        vaults = vaults?.map { if (it.id == vaultId) it.copy(unlocked = true) else it }
+    }
+
+    @Synchronized
+    fun forgetVaults() {
+        vaults = null
+    }
+
+    companion object {
+        const val VAULTS_TTL_MS = 5 * 60_000L
+        private fun monotonicMs() = System.nanoTime() / 1_000_000
+    }
+}
 
 /**
  * App-scoped holder of everything that is unlocked: the app lock itself (with the saved passwords
@@ -61,7 +99,12 @@ class Session(
     idleTimeoutMs: Long = IDLE_TIMEOUT_MS,
     private val backgroundTimeoutMs: Long = BACKGROUND_TIMEOUT_MS,
     private val alarm: LockAlarm = LockAlarm.None,
+    /** Encrypted on-disk cache of remote vault reads; null (tests) means memory-only caching. */
+    private val diskCache: EncryptedDiskCache? = null,
 ) {
+    /** The disk cache of one remote vault (same instance each time); null when there is no disk cache. */
+    fun diskCache(sourceId: String): VaultDiskCache? = diskCache?.forVault(sourceId)
+
     /** The configurable idle timeout (AppState.idleTimeoutMinutes); takes effect on the next [tick]. */
     @Volatile var idleTimeoutMs: Long = idleTimeoutMs
         private set
@@ -168,8 +211,15 @@ class Session(
             _openIds.value = sources.keys.toSet()
             closing to serverKey?.let { servers.remove(it) }
         }
-        for ((_, open) in closing) runCatching { open.close() }
-        server?.let(::logoutAndClose)
+        for ((id, open) in closing) {
+            runCatching { open.close() }
+            (open.source as? CachingSource)?.let { cache ->
+                cache.clear()
+                // A removed server's vaults leave nothing behind on disk either.
+                if (serverKey != null) scope.launch { runCatching { diskCache(id)?.wipe() } }
+            }
+        }
+        server?.let { it.forgetVaults(); logoutAndClose(it) }
         if (closing.isNotEmpty()) clearImageCache()
         for ((id, _) in closing) _events.tryEmit(SessionEvent.SourceLocked(id))
     }
@@ -179,10 +229,14 @@ class Session(
      * thumbnails from the memory cache, and tells the UI to go back to unlock.
      */
     fun reportLocked(id: String) {
-        synchronized(this) {
-            sources.remove(id)
+        val dropped = synchronized(this) {
+            val d = sources.remove(id)
             _openIds.value = sources.keys.toSet()
+            // The server's vault list said "unlocked" for this one; it will be fetched again.
+            servers.values.filter { id.startsWith("${it.key}:") }.forEach { it.forgetVaults() }
+            d
         }
+        (dropped?.source as? CachingSource)?.clear()
         clearImageCache()
         _events.tryEmit(SessionEvent.SourceLocked(id))
     }
@@ -248,20 +302,25 @@ class Session(
     }
 
     /**
-     * Closes Go vaults and HTTP sessions, clears the thumbnail memory cache, drops every source,
-     * zeroes the saved passwords held in memory and shows the app lock again.
+     * Closes Go vaults and HTTP sessions, clears every in-memory cache (and locks the disk ones),
+     * drops every source, zeroes the saved passwords held in memory and shows the app lock again.
      */
     fun lockAll() {
-        val closing = synchronized(this) {
+        val (dropped, closing) = synchronized(this) {
             passwords?.wipe()
             passwords = null
             _appLocked.value = true
+            val d = sources.values.map { it.source }
             sources.clear()
             _openIds.value = emptySet()
-            servers.values.toList().also { servers.clear() }
+            d to servers.values.toList().also { servers.clear() }
         }
         local.closeAll()
-        closing.forEach(::logoutAndClose)
+        for (d in dropped) (d as? CachingSource)?.clear()
+        for (s in closing) {
+            s.forgetVaults()
+            logoutAndClose(s)
+        }
         clearImageCache()
         _events.tryEmit(SessionEvent.AllLocked)
     }

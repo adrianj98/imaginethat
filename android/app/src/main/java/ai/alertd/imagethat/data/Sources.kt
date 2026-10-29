@@ -14,6 +14,7 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
@@ -27,6 +28,8 @@ import kotlin.coroutines.coroutineContext
 
 enum class MediaKind { IMAGE, VIDEO, OTHER }
 
+/** Serializable so [CachingSource] can keep listings on its encrypted disk layer. */
+@Serializable
 data class Item(val path: String, val name: String, val isDir: Boolean, val size: Long, val media: MediaKind)
 
 /** Remote and local failures in one vocabulary. Anything unrecognised is [Other]. */

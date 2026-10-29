@@ -1,11 +1,12 @@
 package ai.alertd.imagethat.ui
 
 import ai.alertd.imagethat.R
+import ai.alertd.imagethat.data.CachingSource
 import ai.alertd.imagethat.data.Item
 import ai.alertd.imagethat.data.MediaKind
-import ai.alertd.imagethat.data.RemoteSource
 import ai.alertd.imagethat.data.SourceError
 import ai.alertd.imagethat.data.VaultSource
+import ai.alertd.imagethat.data.remoteSource
 import ai.alertd.imagethat.media.VaultDataSource
 import ai.alertd.imagethat.ui.components.AccentChip
 import ai.alertd.imagethat.ui.components.ActionTile
@@ -410,9 +411,12 @@ private fun VideoPage(session: Session, sourceId: String, source: VaultSource, i
     var playing by remember(item.path) { mutableStateOf(false) }
 
     val player = remember(item.path) {
-        // No CacheDataSource anywhere: decrypted bytes only ever live in player memory.
-        val (factory: DataSource.Factory, uri) = if (source is RemoteSource) {
-            OkHttpDataSource.Factory(source.httpClient) to Uri.parse(source.fileUrl(item.path))
+        // No Media3 CacheDataSource anywhere: decrypted bytes only ever live in player memory. A
+        // CachingSource (every remote vault) streams through VaultDataSource so it can keep the
+        // video's pieces encrypted on its disk layer; a bare RemoteSource streams straight over OkHttp.
+        val remote = source.remoteSource()
+        val (factory: DataSource.Factory, uri) = if (remote != null && source !is CachingSource) {
+            OkHttpDataSource.Factory(remote.httpClient) to Uri.parse(remote.fileUrl(item.path))
         } else {
             DataSource.Factory { VaultDataSource(source) } to Uri.parse("vault://local").buildUpon().path(item.path).build()
         }
@@ -433,7 +437,9 @@ private fun VideoPage(session: Session, sourceId: String, source: VaultSource, i
             }
             override fun onPlayerError(e: PlaybackException) {
                 val http = e.cause as? HttpDataSource.InvalidResponseCodeException
-                if (http?.responseCode == 401) {
+                // 401 straight from OkHttp, or SourceError.Locked wrapped by VaultDataSource.
+                val locked = http?.responseCode == 401 || generateSequence(e.cause) { it.cause }.any { it is SourceError.Locked }
+                if (locked) {
                     session.reportLocked(sourceId)
                     error = "The vault is locked."
                 } else {
