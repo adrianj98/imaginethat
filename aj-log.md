@@ -193,3 +193,7 @@
 
 ## 2026-10-28 — Merged android-app into main
 - Merged the Android app branch (12 tasks + final-review fixes). aj-log.md conflict resolved by keeping both sides' entries (kunj blueprint log + Android log).
+
+## 2026-10-28 — Synology install script
+- Added Scripts/synology/imagethat-web.sh: install/update/start/stop/restart/status for imagethat-web on a Synology NAS (DSM 7). Why: the user runs the webserver on a Synology; DSM has no gh/jq, so the script uses curl + the GitHub API with a token (repo is private), picks linux amd64/arm64 from uname, verifies SHA256SUMS before installing, keeps everything under /volume1/imagethat, and serves HTTPS with the DSM default certificate (copied on each start) because a LAN bind requires TLS. Boot start via DSM Task Scheduler.
+- Tested the install path on the Mac against the real v0.1.0 release (lookup, download, checksum, extract).
