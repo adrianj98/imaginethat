@@ -5,8 +5,9 @@
 #   sh build-on-nas.sh v0.1.0     # a specific release
 #
 # Needs git (DSM "Git Server" package) and an SSH key GitHub accepts in
-# ~/.ssh (default ~/.ssh/id_rsa; override with SSH_KEY=...). Go is downloaded
-# from go.dev (public, no login) into ./go-toolchain on first run.
+# ~/.ssh (default ~/.ssh/id_rsa; override with SSH_KEY=...). Go (go.dev) and
+# Node (nodejs.org) are downloaded — public, no login — into ./go-toolchain
+# and ./node-toolchain on first run; Node builds the browser UI.
 # Result: ./imagethat-web
 set -eu
 
@@ -27,9 +28,27 @@ if [ ! -x go-toolchain/bin/go ]; then
     mkdir -p go-toolchain
     curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" | tar -xz -C go-toolchain --strip-components=1
 fi
-export PATH="$PWD/go-toolchain/bin:$PATH" GOTOOLCHAIN=local GOPATH="$PWD/go-path" GOCACHE="$PWD/go-cache"
+
+# Node builds the browser UI, which go:embed compiles into the binary (the
+# release job does the same). Latest Node 22, as in CI, checksum-verified.
+if [ ! -x node-toolchain/bin/npm ]; then
+    case "$ARCH" in amd64) NARCH=x64 ;; arm64) NARCH=arm64 ;; esac
+    NODE_DIST="https://nodejs.org/dist/latest-v22.x"
+    LINE=$(curl -fsSL "$NODE_DIST/SHASUMS256.txt" | grep " node-v[0-9.]*-linux-$NARCH\.tar\.gz\$")
+    FILE=${LINE##* }
+    echo "Downloading $FILE"
+    curl -fsSL -o "$FILE" "$NODE_DIST/$FILE"
+    [ "$(sha256sum "$FILE" | cut -d' ' -f1)" = "${LINE%% *}" ] || { echo "Node checksum mismatch"; exit 1; }
+    mkdir -p node-toolchain && tar -xzf "$FILE" -C node-toolchain --strip-components=1 && rm -f "$FILE"
+fi
+export PATH="$PWD/go-toolchain/bin:$PWD/node-toolchain/bin:$PATH" GOTOOLCHAIN=local GOPATH="$PWD/go-path" GOCACHE="$PWD/go-cache"
+export npm_config_cache="$PWD/npm-cache" npm_config_update_notifier=false
+export GOFLAGS=-modcacherw   # keep the module cache deletable with plain rm -rf
 
 rm -rf src && git clone --quiet --depth 1 --branch "$TAG" "$REPO" src
+echo "Building web UI"
+(cd src/webserver/web && npm ci --no-audit --no-fund --loglevel=error && npm run build >/dev/null)
+echo "Building server"
 (cd src/webserver && sh scripts/sync-gocryptfs.sh >/dev/null && \
     CGO_ENABLED=0 go build -tags without_openssl -trimpath -ldflags "-s -w -X main.version=$TAG" \
     -o ../../imagethat-web ./cmd/imagethat-web)
