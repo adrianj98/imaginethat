@@ -66,5 +66,6 @@ object AppIcons {
     )
     val Image = icon("Image", rect(3f, 4f, 18f, 16f, 2f), circle(9f, 10f, 1.5f), "M21 16l-5-5-9 9")
     val File = icon("File", "M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z", "M14 3v5h5")
+    val Clock = icon("Clock", circle(12f, 12f, 9f), "M12 7v5l3 2")
     val Shield = icon("Shield", "M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z")
 }

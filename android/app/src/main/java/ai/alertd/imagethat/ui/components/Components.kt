@@ -48,7 +48,10 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.text
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
@@ -73,7 +76,8 @@ private val SecondaryStyle @Composable get() = MaterialTheme.typography.bodySmal
 fun SectionLabel(text: String, modifier: Modifier = Modifier, color: Color = Palette.TextSecondary) {
     Text(
         text.uppercase(),
-        modifier.padding(horizontal = 2.dp).semantics { heading() },
+        // Read (and found) as written, not as all-caps letters.
+        modifier.padding(horizontal = 2.dp).clearAndSetSemantics { heading(); this.text = AnnotatedString(text) },
         color = color,
         style = MaterialTheme.typography.labelMedium.copy(letterSpacing = 0.08.em),
     )
@@ -550,8 +554,8 @@ fun ErrorText(text: String, modifier: Modifier = Modifier) {
 
 /** Small tertiary footer text, e.g. "Decrypted only in memory…". */
 @Composable
-fun FootnoteText(text: String, modifier: Modifier = Modifier) {
-    Text(text, modifier, color = Palette.TextTertiary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Normal, lineHeight = 18.sp))
+fun FootnoteText(text: String, modifier: Modifier = Modifier, textAlign: androidx.compose.ui.text.style.TextAlign? = null) {
+    Text(text, modifier, textAlign = textAlign, color = Palette.TextTertiary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Normal, lineHeight = 18.sp))
 }
 
 /** Text button for dialogs and headers: accent, [destructive] coral, or secondary when not [emphasized]; [color] overrides. */

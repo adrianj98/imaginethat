@@ -188,10 +188,10 @@ class NoPlaintextOnDiskTest {
         rule.onNodeWithText("Offline vault").performClick()
         waitForTag("browser-screen")
         rule.runOnUiThread { nav.popBackStack(Routes.HOME, false) }
-        waitForText("Connect…")
+        waitForText("Connect to a server")
 
         // Connect to the remote server (remembered automatically, encrypted).
-        rule.onNodeWithText("Connect…").performClick()
+        rule.onNodeWithText("Connect to a server").performClick()
         rule.onNodeWithTag("connect-url").performTextInput("https://localhost:${s.port}")
         rule.onNodeWithTag("connect-submit").performClick()
         waitForText("Trust this certificate")

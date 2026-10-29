@@ -2,15 +2,20 @@ package ai.alertd.imagethat.ui
 
 import ai.alertd.imagethat.keys.KeyVault
 import androidx.biometric.BiometricPrompt
+import ai.alertd.imagethat.ui.components.AppIcons
+import ai.alertd.imagethat.ui.components.ErrorText
+import ai.alertd.imagethat.ui.components.FootnoteText
+import ai.alertd.imagethat.ui.components.IconTile
+import ai.alertd.imagethat.ui.components.PillButton
+import ai.alertd.imagethat.ui.theme.Palette
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -80,28 +85,55 @@ fun AppLockScreen(session: Session, activity: FragmentActivity?) {
         if (available) unlock()
     }
 
-    Surface(Modifier.fillMaxSize().testTag("app-lock")) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(Palette.Background)
+            .systemBarsPadding()
+            .padding(horizontal = 24.dp, vertical = 24.dp)
+            .testTag("app-lock"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
         Column(
-            Modifier.fillMaxSize().padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically),
+            Modifier.weight(1f).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterVertically),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text("ImageThat", style = MaterialTheme.typography.headlineMedium)
-            if (!available) {
-                Text("A screen lock is required", style = MaterialTheme.typography.titleMedium)
-                Text(SCREEN_LOCK_REQUIRED, textAlign = TextAlign.Center)
-                Button(
-                    onClick = {
-                        available = session.appLockAvailable()
-                        if (available) unlock()
-                    },
-                    modifier = Modifier.testTag("app-lock-retry"),
-                ) { Text("Retry") }
-            } else {
-                Button(onClick = ::unlock, enabled = !busy, modifier = Modifier.testTag("app-unlock")) { Text("Unlock") }
-                if (busy) CircularProgressIndicator(Modifier.size(24.dp))
-                error?.let { Text(it, color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center) }
+            IconTile(
+                if (available) AppIcons.LockKeyhole else AppIcons.Fingerprint,
+                tint = if (available) Palette.Accent else Palette.Destructive,
+                background = Palette.Surface, border = Palette.Divider, size = 88.dp, radius = 28.dp, iconSize = 38.dp,
+            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("ImageThat", color = Palette.Text, style = MaterialTheme.typography.headlineMedium)
+                if (!available) {
+                    Text("A screen lock is required", color = Palette.Text, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+                    Text(SCREEN_LOCK_REQUIRED, color = Palette.TextSecondary, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
+                } else {
+                    Text("Locked", color = Palette.TextSecondary, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                if (!available) {
+                    PillButton(
+                        "Retry",
+                        {
+                            available = session.appLockAvailable()
+                            if (available) unlock()
+                        },
+                        Modifier.fillMaxWidth().testTag("app-lock-retry"),
+                    )
+                } else {
+                    PillButton("Unlock", ::unlock, Modifier.fillMaxWidth().testTag("app-unlock"), icon = AppIcons.Fingerprint, loading = busy)
+                    error?.let { ErrorText(it, Modifier.fillMaxWidth()) }
+                }
             }
         }
+        FootnoteText(
+            if (available) "Fingerprint, face or screen lock. Your vaults stay encrypted until you unlock."
+            else "ImageThat asks for it each time it opens, before showing anything.",
+            Modifier.fillMaxWidth(),
+            textAlign = TextAlign.Center,
+        )
     }
 }

@@ -4,34 +4,46 @@ import ai.alertd.imagethat.keys.SavedServer
 import ai.alertd.imagethat.remote.ApiClient
 import ai.alertd.imagethat.remote.RemoteError
 import ai.alertd.imagethat.remote.probeCertificate
+import ai.alertd.imagethat.ui.components.AppIcons
+import ai.alertd.imagethat.ui.components.AppTextField
+import ai.alertd.imagethat.ui.components.ErrorText
+import ai.alertd.imagethat.ui.components.FootnoteText
+import ai.alertd.imagethat.ui.components.Gap
+import ai.alertd.imagethat.ui.components.GroupCard
+import ai.alertd.imagethat.ui.components.IconTile
+import ai.alertd.imagethat.ui.components.OutlinePill
+import ai.alertd.imagethat.ui.components.PillButton
+import ai.alertd.imagethat.ui.components.ScreenTitle
+import ai.alertd.imagethat.ui.components.SectionLabel
+import ai.alertd.imagethat.ui.components.TopBar
+import ai.alertd.imagethat.ui.theme.Palette
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
@@ -57,7 +69,6 @@ private fun isPlainHttp(input: String) = parseServerUrl(input)?.isHttps == false
 
 internal fun fingerprintDisplay(sha256: String) = sha256.chunked(2).joinToString(":").uppercase()
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConnectScreen(session: Session, onBack: () -> Unit, onConnected: (serverKey: String) -> Unit) {
     val scope = rememberCoroutineScope()
@@ -98,52 +109,63 @@ fun ConnectScreen(session: Session, onBack: () -> Unit, onConnected: (serverKey:
         }
     }
 
-    Scaffold(topBar = {
-        TopAppBar(title = { Text("Connect") }, navigationIcon = { TextButton(onClick = onBack) { Text("Back") } })
-    }) { pad ->
-        Column(
-            Modifier.fillMaxSize().padding(pad).padding(16.dp).verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            OutlinedTextField(
-                value = url,
-                onValueChange = { url = it; untrusted = null; error = null },
-                label = { Text("Server address") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
-                modifier = Modifier.fillMaxWidth().testTag("connect-url"),
+    fun submit() {
+        val target = parseServerUrl(url)
+        if (target == null) error = "Enter a valid server address." else connect(target, null)
+    }
+
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(Palette.Background)
+            .verticalScroll(rememberScrollState())
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp),
+    ) {
+        TopBar(onBack, backTag = "connect-back")
+        Column(Modifier.padding(horizontal = 8.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Gap(4.dp)
+            ScreenTitle("Connect to a server", subtitle = "The address of your ImageThat server")
+            AppTextField(
+                url,
+                { url = it; untrusted = null; error = null },
+                label = "Server address",
+                placeholder = "192.168.1.5:8347",
+                tag = "connect-url",
+                leadingIcon = AppIcons.Server,
+                isError = error != null,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false, imeAction = ImeAction.Go),
+                keyboardActions = KeyboardActions(onGo = { if (url.isNotBlank() && !busy) submit() }),
             )
-            if (isPlainHttp(url)) {
-                Text(
-                    PLAIN_HTTP_WARNING,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.testTag("connect-http-warning"),
-                )
-            }
-            error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("connect-error")) }
+            if (isPlainHttp(url)) ErrorText(PLAIN_HTTP_WARNING, Modifier.testTag("connect-http-warning"))
+            error?.let { ErrorText(it, Modifier.testTag("connect-error")) }
             untrusted?.let { (target, fp) ->
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("This server's certificate is not signed by a trusted authority.")
-                        Text("SHA-256 fingerprint", style = MaterialTheme.typography.labelMedium)
-                        Text(fingerprintDisplay(fp), style = MaterialTheme.typography.bodySmall)
-                        Text("Only trust it if this matches the fingerprint your server shows.")
-                        Button(onClick = { connect(target, fp) }, enabled = !busy) { Text("Trust this certificate") }
+                GroupCard {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            IconTile(AppIcons.Shield, tint = Palette.Accent)
+                            Text(
+                                "This server's certificate is not signed by a trusted authority.",
+                                Modifier.weight(1f), color = Palette.Text, style = MaterialTheme.typography.titleSmall,
+                            )
+                        }
+                        SectionLabel("SHA-256 fingerprint")
+                        Text(fingerprintDisplay(fp), color = Palette.Text, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace))
+                        Text(
+                            "Only trust it if this matches the fingerprint your server shows.",
+                            color = Palette.TextSecondary, style = MaterialTheme.typography.bodySmall,
+                        )
+                        OutlinePill("Trust this certificate", { connect(target, fp) }, Modifier.fillMaxWidth(), enabled = !busy, height = 48.dp, contentColor = Palette.Accent)
                     }
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = {
-                        val target = parseServerUrl(url)
-                        if (target == null) error = "Enter a valid server address." else connect(target, null)
-                    },
-                    enabled = url.isNotBlank() && !busy,
-                    modifier = Modifier.testTag("connect-submit"),
-                ) { Text("Connect") }
-                if (busy) CircularProgressIndicator(Modifier.size(24.dp))
-            }
+            PillButton(
+                "Connect", ::submit, Modifier.fillMaxWidth().testTag("connect-submit"),
+                enabled = url.isNotBlank(), loading = busy,
+            )
+            FootnoteText("Servers you connect to are remembered, with their certificate. Vault passwords are asked for once and saved encrypted.")
         }
     }
 }

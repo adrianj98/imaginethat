@@ -3,22 +3,32 @@ package ai.alertd.imagethat.ui
 import ai.alertd.imagethat.data.LocalSource
 import ai.alertd.imagethat.data.MobileVaultApi
 import ai.alertd.imagethat.local.LocalError
+import ai.alertd.imagethat.ui.components.AppIcons
+import ai.alertd.imagethat.ui.components.DialogButton
+import ai.alertd.imagethat.ui.components.ErrorText
+import ai.alertd.imagethat.ui.components.FootnoteText
+import ai.alertd.imagethat.ui.components.Gap
+import ai.alertd.imagethat.ui.components.IconTile
+import ai.alertd.imagethat.ui.components.OutlinePill
+import ai.alertd.imagethat.ui.components.PasswordInput
+import ai.alertd.imagethat.ui.components.PillButton
+import ai.alertd.imagethat.ui.components.SectionLabel
+import ai.alertd.imagethat.ui.components.TopBar
 import ai.alertd.imagethat.ui.theme.Palette
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -27,13 +37,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.SecureFlagPolicy
 import androidx.fragment.app.FragmentActivity
@@ -82,64 +94,103 @@ private fun Modifier.touchReporting(touch: () -> Unit): Modifier = pointerInput(
     }
 }
 
-/** Password text lives in plain (non-saveable) state: saved state can be written out in a Bundle. */
-@Composable
-internal fun PasswordField(
-    value: String,
-    onValueChange: (String) -> Unit,
-    label: String,
-    tag: String,
-    modifier: Modifier = Modifier,
-) = OutlinedTextField(
-    value = value,
-    onValueChange = onValueChange,
-    label = { Text(label) },
-    singleLine = true,
-    visualTransformation = PasswordVisualTransformation(),
-    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, autoCorrectEnabled = false),
-    modifier = modifier.fillMaxWidth().testTag(tag),
+/** Full-screen dialog window (the unlock screen): edge to edge, FLAG_SECURE like every other dialog. */
+internal val SecureFullScreenDialogProperties = DialogProperties(
+    usePlatformDefaultWidth = false,
+    decorFitsSystemWindows = false,
+    securePolicy = SecureFlagPolicy.SecureOn,
 )
 
+internal fun minutesLabel(m: Int) = if (m == 1) "1 minute" else "$m minutes"
+
+/** The unlock screen's footer, with the real idle timeout. */
+internal fun unlockFootnote(idleMinutes: Int) =
+    "Decrypted only in memory. Locks again after ${minutesLabel(idleMinutes)} without a touch."
+
 /**
- * Password prompt shared by every vault. A password that unlocks is saved automatically (by the
- * caller), so this is only shown the first time, or after a saved password stopped working.
+ * Password screen shared by every vault, shown as a full-screen secure dialog: lock tile, vault
+ * name, where it lives ([place]), password, Unlock. A password that unlocks is saved automatically
+ * (by the caller), so this is only shown the first time, or after a saved password stopped working.
+ * [opening]: the saved password is being tried, so there is nothing to type yet.
  */
 @Composable
 fun UnlockDialog(
-    title: String,
+    vaultName: String,
+    place: String,
+    idleMinutes: Int,
     notice: String? = null,
     error: String? = null,
     busy: Boolean = false,
     onSubmit: (password: CharArray) -> Unit,
     onDismiss: () -> Unit,
     extraButton: @Composable (() -> Unit)? = null,
+    opening: Boolean = false,
 ) {
+    // Plain (non-saveable) state: saved state can be written out in a Bundle.
     var password by remember { mutableStateOf("") }
     // A rejected password is cleared so the next attempt starts empty.
     LaunchedEffect(busy) { if (!busy && error != null) password = "" }
-    SecureAlertDialog(
-        onDismissRequest = { if (!busy) onDismiss() },
-        title = title,
-        confirmButton = {
-            TextButton(
-                onClick = { onSubmit(password.toCharArray()) },
-                enabled = password.isNotEmpty() && !busy,
-                modifier = Modifier.testTag("unlock-submit"),
-            ) { Text("Unlock") }
-        },
-        dismissButton = {
-            Row {
-                extraButton?.invoke()
-                TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") }
+    val submit = { if (password.isNotEmpty() && !busy) onSubmit(password.toCharArray()) }
+    Dialog(onDismissRequest = { if (!busy && !opening) onDismiss() }, properties = SecureFullScreenDialogProperties) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(Palette.Background)
+                .touchReporting(LocalTouch.current)
+                .systemBarsPadding()
+                .imePadding()
+                .padding(start = 16.dp, end = 24.dp, top = 8.dp, bottom = 24.dp)
+                .testTag("unlock-screen"),
+        ) {
+            TopBar(
+                onBack = if (busy || opening) null else onDismiss,
+                backDescription = "Cancel",
+                backTag = "unlock-cancel",
+                center = { SectionLabel(place) },
+            )
+            Column(
+                Modifier.weight(1f).fillMaxWidth().padding(start = 8.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(28.dp, Alignment.CenterVertically),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Gap(8.dp)
+                IconTile(
+                    AppIcons.LockKeyhole, tint = Palette.Accent, background = Palette.Surface, border = Palette.Divider,
+                    size = 88.dp, radius = 28.dp, iconSize = 38.dp,
+                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        vaultName, color = Palette.Text, style = MaterialTheme.typography.headlineMedium,
+                        textAlign = TextAlign.Center, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        if (opening) "Opening with the saved password…" else "Enter the password once. It is saved for next time.",
+                        color = Palette.TextSecondary, style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center,
+                    )
+                }
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    if (notice != null) {
+                        Text(notice, Modifier.testTag("unlock-notice"), color = Palette.Accent, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (opening) {
+                        PillButton("Unlock", {}, Modifier.fillMaxWidth(), loading = true)
+                    } else {
+                        PasswordInput(
+                            password, { password = it },
+                            tag = "unlock-password", isError = error != null, enabled = !busy,
+                            onImeAction = submit,
+                        )
+                        if (error != null) ErrorText(error, Modifier.testTag("unlock-error"))
+                        PillButton(
+                            "Unlock", submit, Modifier.fillMaxWidth().testTag("unlock-submit"),
+                            enabled = password.isNotEmpty(), loading = busy,
+                        )
+                        extraButton?.invoke()
+                    }
+                }
             }
-        },
-    ) {
-        if (notice != null) Text(notice, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("unlock-notice"))
-        PasswordField(password, { password = it }, "Password", "unlock-password")
-        if (error != null) {
-            Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("unlock-error"))
+            FootnoteText(unlockFootnote(idleMinutes), Modifier.fillMaxWidth().padding(start = 8.dp, top = 16.dp), textAlign = TextAlign.Center)
         }
-        if (busy) CircularProgressIndicator(Modifier.size(24.dp))
     }
 }
 
@@ -148,11 +199,14 @@ fun UnlockDialog(
 internal fun ForgetPasswordDialog(label: String, onForget: () -> Unit, onDismiss: () -> Unit) = SecureAlertDialog(
     onDismissRequest = onDismiss,
     title = "Forget the saved password for $label?",
-    confirmButton = { TextButton(onClick = onForget, modifier = Modifier.testTag("forget-confirm")) { Text("Forget") } },
-    dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    confirmButton = { DialogButton("Forget", onForget, Modifier.testTag("forget-confirm"), destructive = true) },
+    dismissButton = { DialogButton("Cancel", onDismiss, emphasized = false) },
 ) {
-    Text("You will be asked for the password the next time you open it.")
+    Text("You will be asked for the password the next time you open it.", style = MaterialTheme.typography.bodyMedium)
 }
+
+/** Where local vaults live, shown above their name on the unlock screen. */
+internal const val LOCAL_PLACE = "On this phone"
 
 /** A vault the local unlock flow can open: the built-in one or a picked folder. */
 class LocalTarget(
@@ -236,26 +290,24 @@ fun LocalUnlock(
             val saved = session.savedPassword(target.passwordId)
             if (saved == null) stage = Stage.Password else attempt(saved, fromSaved = true)
         }
-        SecureAlertDialog(
-            onDismissRequest = {},
-            title = "Unlock ${target.label}",
-            confirmButton = {},
-        ) {
-            Text("Opening with the saved password…")
-            CircularProgressIndicator(Modifier.size(24.dp))
-        }
+        UnlockDialog(
+            vaultName = target.label, place = LOCAL_PLACE, idleMinutes = session.idleTimeoutMinutes,
+            onSubmit = {}, onDismiss = {}, opening = true,
+        )
         return
     }
 
     UnlockDialog(
-        title = "Unlock ${target.label}",
+        vaultName = target.label,
+        place = LOCAL_PLACE,
+        idleMinutes = session.idleTimeoutMinutes,
         notice = notice,
         error = error,
         busy = busy,
         onSubmit = { pw -> attempt(pw, fromSaved = false) },
         onDismiss = onDismiss,
         extraButton = if (unavailable && onPickAgain != null) {
-            { TextButton(onClick = onPickAgain) { Text("Pick again") } }
+            { OutlinePill("Pick again", onPickAgain, Modifier.fillMaxWidth().testTag("unlock-pick-again"), height = 52.dp) }
         } else null,
     )
 }

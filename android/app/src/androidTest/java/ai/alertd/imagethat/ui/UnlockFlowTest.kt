@@ -285,7 +285,7 @@ class UnlockFlowTest {
         s.enqueue(json(vaultsLocked)) // vault list
         createOffline()
         launch()
-        rule.onNodeWithText("Connect…").performClick()
+        rule.onNodeWithText("Connect to a server").performClick()
         rule.onNodeWithTag("connect-url").performTextInput("https://localhost:${s.port}")
         rule.onAllNodesWithTag("connect-http-warning").assertCountEquals(0)
         rule.onNodeWithTag("connect-url").performTextClearance()
@@ -299,7 +299,7 @@ class UnlockFlowTest {
     @Test fun connectHasNoRememberCheckbox() {
         createOffline()
         launch()
-        rule.onNodeWithText("Connect…").performClick()
+        rule.onNodeWithText("Connect to a server").performClick()
         rule.onAllNodes(androidx.compose.ui.test.isToggleable()).assertCountEquals(0)
     }
 
@@ -351,7 +351,7 @@ class UnlockFlowTest {
         launch()
         // First launch asks for the offline password; skip it to reach Home.
         rule.onNodeWithText("Not now").performClick()
-        rule.onNodeWithText("Connect…").performClick()
+        rule.onNodeWithText("Connect to a server").performClick()
         rule.onNodeWithTag("connect-url").performTextInput("https://localhost:${s.port}")
         rule.onNodeWithTag("connect-submit").performClick()
         waitForText("Trust this certificate")
@@ -522,10 +522,41 @@ class UnlockFlowTest {
         fx.session.savePassword(PasswordIds.server("s1", "v1"), "right".toCharArray())
         fx.session.savePassword(PasswordIds.OFFLINE, TestFixture.PASSWORD.toCharArray())
         launch()
-        rule.onNodeWithText("Remove").performClick()
-        waitForText("Connect…")
+        rule.onNodeWithText("My server").performTouchInput { longClick() }
+        rule.onNodeWithTag("remove-confirm").performClick()
+        waitForText("Connect to a server")
         assertTrue(fx.keys.state().servers.isEmpty())
         assertTrue(fx.session.hasSavedPassword(PasswordIds.OFFLINE))
+        assertFalse(fx.session.hasSavedPassword(PasswordIds.server("s1", "v1")))
+    }
+
+    @Test fun searchFiltersTheServersVaults() {
+        val s = savedServerHome()
+        s.enqueue(json("""{"vaults":[{"id":"v1","name":"Holiday","unlocked":false},{"id":"v2","name":"Work","unlocked":false}]}"""))
+        launch()
+        rule.onNodeWithText("My server").performClick()
+        waitForText("Work")
+        rule.onNodeWithTag("vault-search").performTextInput("hol")
+        waitForText("Holiday")
+        rule.onAllNodesWithText("Work").assertCountEquals(0)
+        rule.onNodeWithTag("vault-search").performTextClearance()
+        waitForText("Work")
+    }
+
+    @Test fun serverScreenMenuRemovesTheServer() {
+        val fake = FakeVaultServer("right")
+        savedServerWith(fake)
+        fx.unlockApp()
+        fx.session.savePassword(PasswordIds.server("s1", "v1"), "right".toCharArray())
+        launch()
+        rule.onNodeWithText("My server").performClick()
+        waitForText("Holiday")
+        rule.onNodeWithTag("server-menu").performClick()
+        waitForTag("server-remove")
+        rule.onNodeWithTag("server-remove").performClick()
+        rule.onNodeWithTag("remove-confirm").performClick()
+        waitForText("Connect to a server")
+        assertTrue(fx.keys.state().servers.isEmpty())
         assertFalse(fx.session.hasSavedPassword(PasswordIds.server("s1", "v1")))
     }
 }

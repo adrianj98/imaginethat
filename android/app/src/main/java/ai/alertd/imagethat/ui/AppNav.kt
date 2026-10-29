@@ -1,16 +1,13 @@
 package ai.alertd.imagethat.ui
 
-import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import ai.alertd.imagethat.ui.components.DialogButton
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.runtime.remember
@@ -33,10 +30,6 @@ internal object Routes {
     fun servers(key: String) = "servers/${Uri.encode(key)}"
     fun browser(id: String) = "browser/${Uri.encode(id)}"
 }
-
-@Composable
-fun ImageThatTheme(content: @Composable () -> Unit) =
-    MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme(), content = content)
 
 @Composable
 fun AppNav(session: Session, activity: FragmentActivity? = null, nav: NavHostController = rememberNavController()) {
@@ -72,8 +65,8 @@ fun AppNav(session: Session, activity: FragmentActivity? = null, nav: NavHostCon
         SecureAlertDialog(
             onDismissRequest = session::dismissNotice,
             title = "Saved passwords cleared",
-            confirmButton = { TextButton(onClick = session::dismissNotice, modifier = Modifier.testTag("notice-ok")) { Text("OK") } },
-        ) { Text(it) }
+            confirmButton = { DialogButton("OK", session::dismissNotice, Modifier.testTag("notice-ok")) },
+        ) { Text(it, style = MaterialTheme.typography.bodyMedium) }
     }
     NavHost(nav, startDestination = start) {
         composable(Routes.SET_OFFLINE) {

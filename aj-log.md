@@ -1,5 +1,15 @@
 # aj-log
 
+## 2026-10-28 — Android redesign part B: Home, Connect, server vaults, unlock, app lock, dialogs
+- `HomeScreen.kt`: rebuilt with the shared redesign components — big "ImageThat" title with a live summary ("1 server · 2 vaults unlocked" / "all locked"), "Lock all" pill, grouped cards Servers / On this phone / Settings. Server rows show "Port N · https" (online state is only known on the server screen); "Connect to a server" row with dashed tile; Offline vault row with a "Set up" chip until it exists; folder rows with an options button (forget saved password / remove from list); Open folder | New vault split row; Settings has the Auto-lock row (value + chevron) and an informational "App lock" row (no toggle). Why: user asked for the new design; app lock is always on.
+  - Server removal moved from an inline "Remove" button to long-press on Home and the server screen's overflow menu, both with a confirm dialog (`RemoveServerDialog`, tag `remove-confirm`). Why: the design has chevrons, not inline buttons; removing also forgets saved passwords so it deserves a confirmation.
+- `RemoteVaultsScreen.kt`: back + overflow (Remove server, secure popup), server title with status dot ("Online · port N · K vaults" / Unreachable / Certificate changed), client-side vault search (`vault-search`), rows with lock tile, "Locked"/"Unlocked" and "Password saved". Why: Server mockup; no counts/sizes since the API has none.
+- `UnlockDialog.kt`: the password prompt is now a full-screen secure dialog (FLAG_SECURE, edge to edge) following Unlock.dc.html: place label (server name or "On this phone"), accent lock tile, vault name, PasswordInput with eye, accent Unlock pill, inline error, footer with the real idle timeout. No fingerprint button. The saved-password stage uses the same screen with a spinner. Forget-password dialog restyled. Password stays in plain `remember` state.
+- `ConnectScreen.kt`, `SetOfflinePasswordScreen.kt`, `AppLockScreen.kt`, auto-lock picker, new-vault and notice dialogs: restyled with Palette, AppTextField/PasswordInput, PillButton/OutlinePill, DialogButton. The lock screen still shows no vault or server names.
+- `AppNav.kt`: deleted the old unused Material `ImageThatTheme`.
+- `components/Components.kt`: `SectionLabel` now exposes its original text to semantics (reads "On this phone", not spelled-out capitals; tests find it); `FootnoteText` takes `textAlign`. `AppIcons.Clock` added.
+- Tests: "Connect…" → "Connect to a server"; server removal test uses long-press + confirm; new instrumented tests for vault search and removal from the server menu; new JVM `HomeHelpersTest`. Spec "Screens" updated.
+
 ## 2026-10-28 — Task 4 fix round 1
 - `.github/workflows/webserver-ci.yml`, `release.yml`: setup-go now uses `go-version-file: webserver/go.mod` instead of '1.24'. Why: go.mod now says go 1.26.0, so CI must follow it.
 - `VaultcoreSmokeTest.kt`: Kotlin `assert` replaced by `assertTrue`. Why: JVM assertions are disabled on ART, so the check did nothing on device.

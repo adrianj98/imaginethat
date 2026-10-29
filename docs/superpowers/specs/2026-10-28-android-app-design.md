@@ -184,24 +184,33 @@ deleted on the first unlock of this version. Nothing else is written.
    With no biometric and no screen lock set up it says "Set up a fingerprint,
    face or screen lock in Android settings" with a Retry button; it never
    silently lets the user in.
-1. **Home** — three sections: *Servers* (remembered + "Connect…", each with
-   Remove, which also forgets its saved passwords), *On this phone* (Offline
-   vault, picked folders, "Open folder…", "New vault…"), lock-all button.
-   Long-press the offline vault or a folder to forget its saved password.
+1. **Home** — "ImageThat" title with a summary ("1 server · 2 vaults
+   unlocked") and a "Lock all" pill; three grouped cards: *Servers*
+   (remembered servers + "Connect to a server"; long-press a server to remove
+   it, which also forgets its saved passwords), *On this phone* (Offline vault
+   with a "Set up" chip until it exists, picked folders with an options button
+   — forget saved password / remove from the list —, "Open folder" and "New
+   vault"), *Settings* (Auto-lock picker; an informational "App lock" row —
+   it is always on). Long-press the offline vault to forget its saved password.
 2. **Connect** — URL, optional "trust this certificate" (shows SHA-256 of a
    self-signed cert on first contact). Every server that connects is
    remembered.
-3. **Vault list** (server) — the server's vaults with lock state; tap opens
+3. **Vault list** (server) — server name with an online / unreachable status
+   line, a search field filtering the vaults by name (client side), and the
+   vaults with lock state ("Locked" / "Unlocked", "Password saved"); tap opens
    with the saved password (no prompt) or asks for it once and saves it;
-   long-press forgets the saved password.
+   long-press forgets the saved password. The overflow menu removes the server.
 4. **Browser** — grid of thumbnails + folders; breadcrumb; multi-select bar:
    *Save offline*, *Move*, *Delete*; FAB: *Upload* (system photo picker),
    *New folder*.
 5. **Viewer** — swipeable full-screen images (pinch zoom) and video (Media3
    player with seek).
 6. **Unlock prompts** — one flow for every vault: a saved password opens it
-   with no prompt; otherwise a password dialog, and a password that unlocks is
-   saved automatically (no checkbox). Forgetting a password is a confirm
+   with no prompt; otherwise a full-screen password screen (lock tile, vault
+   name, where it lives, password with show/hide, Unlock, and the footer
+   "Decrypted only in memory. Locks again after N minutes without a touch."
+   with the real idle timeout), and a password that unlocks is saved
+   automatically (no checkbox). Forgetting a password is a confirm
    dialog: "Forget the saved password for X?". First launch asks the user to
    set the offline vault's password (entered twice, minimum 8 characters,
    saved automatically) before anything can be saved offline.
