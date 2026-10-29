@@ -1,5 +1,14 @@
 # aj-log
 
+## 2026-10-29 — Client-decrypt mode, step 2: browser crypto
+- `webserver/web/src/crypto/` (new), WebCrypto only apart from scrypt:
+  - `content.ts`: header parse, `plainSize`, `cipherRange` (plaintext range → whole ciphertext blocks), `decryptBlock(s)` (AES-256-GCM, 16-byte nonce, AAD = blockNo BE ‖ fileID; full-length all-zero block = hole, as in Go), `decryptFile`.
+  - `names.ts`: EME filename decryption ported from rfjakob/eme, single-block AES built from AES-CBC (zero IV to encrypt; crafted padding block to decrypt), base64url with or without padding, pad16, name validation; long-name and special-file helpers.
+  - `vault.ts`: `unlock(conf, password)`: scrypt (`@noble/hashes` 1.8.0, async) → HKDF wrap key → master key → non-extractable content (AES-GCM) and name (AES-CBC) keys; scrypt output and master key wiped. Refuses AES-SIV, XChaCha, FIDO2, pre-HKDF vaults and scrypt N above 2^20 with a clear message, before running scrypt. `WrongPasswordError`.
+- Tests: `crypto.test.ts` (vitest 2.1.9) against `testdata/manifest.json`; Go `server/browsercrypto_manifest_test.go` writes that manifest from native decryption (`-update-browser-manifest`) and fails when it goes stale, so the two can't drift. Covers wrong password, unsupported vaults, non-extractable keys, every name incl. long names, every file's hash and size, 100 random ranges, bit flip, truncation, swapped blocks.
+- `tsconfig.json` excludes `*.test.ts` (they use Node APIs); `package.json` `test` script; CI runs `npm test` in the frontend job.
+- Verified: vitest 8/8, `tsc -b` clean, Go manifest test passes.
+
 ## 2026-10-29 — Client-decrypt mode, step 1: the server
 - User asked whether gocryptfs could run in the browser, then chose: decrypt in every client so the server never sees a vault password; a separate server access password; read-only first; keep today's mode behind a flag. Design and research in `docs/superpowers/specs/2026-10-29-client-decrypt-design.md` (Go→wasm worked at 35 MB/s; WebCrypto AES-GCM ~450–530 MB/s in Chrome and was chosen; EME names on WebCrypto verified against native Go).
 - `webserver/server/server.go`: `Config.Mode` (`server-decrypt` default, `client-decrypt`), `AccessPasswordHash` (bcrypt; required in client-decrypt, refused otherwise), `Version`.
