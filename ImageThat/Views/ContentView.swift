@@ -22,6 +22,8 @@ public struct ContentView: View {
                     emptyState
                 } else if appState.isLoading {
                     ProgressView("Loading...")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(Glass.lightCanvas)
                 } else {
                     switch appState.viewMode {
                     case .grid:
@@ -69,9 +71,9 @@ public struct ContentView: View {
                     .foregroundStyle(.secondary)
                 }
                 .padding()
-                .background(Color(nsColor: .controlBackgroundColor))
-                .cornerRadius(8)
-                .padding()
+                .frame(maxWidth: 520)
+                .glassCard()
+                .padding(20)
             }
         }
         .alert("Error", isPresented: .init(
@@ -82,33 +84,7 @@ public struct ContentView: View {
         } message: {
             Text(appState.errorMessage ?? "")
         }
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                if appState.canGoUp {
-                    Button(action: { appState.goUp() }) {
-                        Label("Go Up", systemImage: "chevron.up")
-                    }
-                }
-                Button(action: { appState.openFolder() }) {
-                    Label("Open Folder", systemImage: "folder")
-                }
-            }
-            ToolbarItemGroup(placement: .principal) {
-                if appState.viewMode == .detail {
-                    Button(action: { appState.exitDetail() }) {
-                        Label("Back", systemImage: "square.grid.2x2")
-                    }
-                    if let item = appState.selectedItem {
-                        Text(item.name)
-                            .font(.headline)
-                            .lineLimit(1)
-                    }
-                    Text(appState.currentItemLabel)
-                        .foregroundStyle(.secondary)
-                        .font(.subheadline)
-                }
-            }
-        }
+        .toolbar(.hidden, for: .windowToolbar)
     }
 
     private var emptyState: some View {
@@ -120,7 +96,9 @@ public struct ContentView: View {
                 .font(.title3)
                 .foregroundStyle(.secondary)
             Button("Open Folder") { appState.openFolder() }
+                .buttonStyle(PillButtonStyle(kind: .prominent, height: 36))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Glass.lightCanvas)
     }
 }

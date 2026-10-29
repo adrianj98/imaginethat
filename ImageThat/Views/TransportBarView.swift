@@ -22,76 +22,84 @@ public struct TransportBarView: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                // Skip back 10s
-                Button(action: { seekBy(-10) }) {
-                    Image(systemName: "gobackward.10")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.white)
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
-                .help("Back 10 seconds")
-
-                // Play/pause button
-                Button(action: togglePlayPause) {
-                    Image(systemName: player.rate > 0 ? "pause.fill" : "play.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white)
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
-
-                // Skip forward 10s
-                Button(action: { seekBy(10) }) {
-                    Image(systemName: "goforward.10")
-                        .font(.system(size: 14))
-                        .foregroundStyle(.white)
-                        .frame(width: 24, height: 24)
-                }
-                .buttonStyle(.plain)
-                .help("Forward 10 seconds")
-
-                // Scrubber slider - only seek on explicit user drag
-                Slider(
-                    value: Binding(
-                        get: { isScrubbing ? scrubPosition : currentTime },
-                        set: { newValue in
-                            if isScrubbing { scrubPosition = newValue }
-                        }
-                    ),
-                    in: 0...max(duration, 0.1)
-                ) { editing in
-                    if editing {
-                        isScrubbing = true
-                        scrubPosition = currentTime
-                    } else {
-                        isScrubbing = false
-                        player.seek(to: CMTime(seconds: scrubPosition, preferredTimescale: 1000))
-                        currentTime = scrubPosition
-                    }
-                }
-                .overlay(alignment: .bottom) {
-                    RangeStrip(cached: cached, buffered: buffered)
-                        .frame(height: 3)
-                        .padding(.horizontal, 2)
-                        .offset(y: 4)
-                        .allowsHitTesting(false)
-                        .help("Bright: cached on disk · Faint: loaded in memory")
-                }
-
-                // Time display
-                Text("\(formatTime(currentTime)) / \(formatTime(duration))")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .frame(minWidth: 60)
+        HStack(spacing: 8) {
+            Button(action: { seekBy(-10) }) {
+                Image(systemName: "gobackward.10")
+                    .font(.system(size: 16))
+                    .frame(width: 34, height: 34)
+                    .contentShape(Circle())
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .buttonStyle(.plain)
+            .help("Back 10 seconds")
+
+            Button(action: togglePlayPause) {
+                Image(systemName: player.rate > 0 ? "pause.fill" : "play.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Glass.darkCanvas)
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(Color.white.opacity(0.96)))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help(player.rate > 0 ? "Pause" : "Play")
+
+            Button(action: { seekBy(10) }) {
+                Image(systemName: "goforward.10")
+                    .font(.system(size: 16))
+                    .frame(width: 34, height: 34)
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Forward 10 seconds")
+
+            Text(formatTime(isScrubbing ? scrubPosition : currentTime))
+                .monospacedDigit()
+                .foregroundStyle(Color.white.opacity(0.82))
+                .padding(.leading, 4)
+
+            // Scrubber slider - only seek on explicit user drag
+            Slider(
+                value: Binding(
+                    get: { isScrubbing ? scrubPosition : currentTime },
+                    set: { newValue in
+                        if isScrubbing { scrubPosition = newValue }
+                    }
+                ),
+                in: 0...max(duration, 0.1)
+            ) { editing in
+                if editing {
+                    isScrubbing = true
+                    scrubPosition = currentTime
+                } else {
+                    isScrubbing = false
+                    player.seek(to: CMTime(seconds: scrubPosition, preferredTimescale: 1000))
+                    currentTime = scrubPosition
+                }
+            }
+            .tint(.white)
+            .controlSize(.small)
+            .frame(width: 260)
+            .overlay(alignment: .bottom) {
+                RangeStrip(cached: cached, buffered: buffered)
+                    .frame(height: 3)
+                    .padding(.horizontal, 2)
+                    .offset(y: 5)
+                    .allowsHitTesting(false)
+                    .help("Bright: cached on disk · Faint: loaded in memory")
+            }
+
+            Text(formatTime(duration))
+                .monospacedDigit()
+                .foregroundStyle(Glass.label)
+                .padding(.trailing, 6)
         }
-        .frame(height: 32)
-        .background(Color.black.opacity(0.5))
+        .font(.system(size: 12))
+        .foregroundStyle(.white)
+        .padding(.leading, 10)
+        .padding(.trailing, 8)
+        .frame(height: 48)
+        .glassCard(dark: true, radius: 24)
+        .padding(.bottom, 20)
     }
 
     private func togglePlayPause() {
@@ -117,8 +125,8 @@ public struct TransportBarView: View {
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.white.opacity(0.12))
-                    segments(buffered, width: geo.size.width, color: .white.opacity(0.35))
-                    segments(cached, width: geo.size.width, color: .green.opacity(0.85))
+                    segments(buffered, width: geo.size.width, color: .white.opacity(0.28))
+                    segments(cached, width: geo.size.width, color: .white.opacity(0.6))
                 }
             }
         }

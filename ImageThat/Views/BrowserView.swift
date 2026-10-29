@@ -6,32 +6,43 @@ public struct BrowserView: View {
     @ObservedObject private var shortcuts = ShortcutManager.shared
     @State private var showNewFolderDialog = false
     @State private var newFolderName = ""
+    @State private var searchText = ""
+    @AppStorage("browserShowInfo") private var showInfo = true
+    @State private var selectedPreview: NSImage?
 
     private let columns = [
-        GridItem(.adaptive(minimum: 160, maximum: 200), spacing: 12)
+        GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 12)
     ]
+
+    /// Items matching the search, with their index in `appState.mediaItems`.
+    private var visibleItems: [(index: Int, item: MediaItem)] {
+        appState.mediaItems.enumerated()
+            .filter { searchText.isEmpty || $0.element.name.localizedCaseInsensitiveContains(searchText) }
+            .map { (index: $0.offset, item: $0.element) }
+    }
 
     public init() {}
 
     public var body: some View {
-        VStack {
+        ZStack(alignment: .top) {
+            Glass.lightCanvas.ignoresSafeArea()
+
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(Array(appState.mediaItems.enumerated()), id: \.element.id) { index, item in
-                        ThumbnailCell(item: item, index: index, isInVault: appState.mediaSource is VaultSource)
+                    ForEach(visibleItems, id: \.item.id) { entry in
+                        ThumbnailCell(item: entry.item, index: entry.index, isInVault: appState.mediaSource is VaultSource)
                             .onTapGesture(count: 2) {
-                                appState.enterDetail(at: index)
+                                appState.enterDetail(at: entry.index)
                             }
                             .onTapGesture(count: 1) {
-                                appState.selectedIndex = index
+                                appState.selectedIndex = entry.index
                             }
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(appState.selectedIndex == index ? Color.accentColor : Color.clear, lineWidth: 3)
-                            )
                     }
                 }
-                .padding()
+                .padding(.top, 76)
+                .padding(.leading, 16)
+                .padding(.trailing, showInfo ? 300 : 16)
+                .padding(.bottom, 24)
             }
             .dropDestination(for: URL.self) { urls, _ in
                 guard appState.mediaSource is WritableMediaSource else { return false }
@@ -44,6 +55,23 @@ public struct BrowserView: View {
                         showNewFolderDialog = true
                     }
                 }
+            }
+
+            header
+                .padding(.top, 16)
+                .padding(.leading, 16)
+                .padding(.trailing, showInfo ? 300 : 16)
+
+            if showInfo, let item = appState.selectedItem {
+                ItemInfoCard(item: item, preview: selectedPreview,
+                             footnote: appState.mediaSource is VaultSource ? "Decrypted in memory only" : nil)
+                    .frame(width: 268)
+                    .padding(16)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .task(id: item.id) {
+                        selectedPreview = nil
+                        selectedPreview = await appState.loadThumbnail(for: item, size: CGSize(width: 200, height: 200))
+                    }
             }
         }
         .focusable()
@@ -62,6 +90,83 @@ public struct BrowserView: View {
                 newFolderName = ""
             }
         }
+    }
+
+    // MARK: - Floating toolbar
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            if appState.canGoUp {
+                HStack(spacing: 2) {
+                    GlassIconButton(systemImage: "chevron.left", help: "Go Up") { appState.goUp() }
+                }
+                .padding(.horizontal, 4)
+                .glassCapsule()
+            }
+
+            breadcrumb
+                .padding(.horizontal, 14)
+                .glassCapsule()
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Glass.label)
+                TextField("Search", text: $searchText)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+            }
+            .padding(.horizontal, 14)
+            .frame(width: 200)
+            .glassCapsule()
+
+            HStack(spacing: 2) {
+                if appState.mediaSource is WritableMediaSource {
+                    GlassIconButton(systemImage: "square.and.arrow.down", help: "Import") { importFiles() }
+                    GlassIconButton(systemImage: "folder.badge.plus", help: "New Folder") { showNewFolderDialog = true }
+                }
+                GlassIconButton(systemImage: "info.circle", help: "Show Info", isOn: showInfo) {
+                    withAnimation(.easeOut(duration: 0.2)) { showInfo.toggle() }
+                }
+            }
+            .padding(.horizontal, 4)
+            .glassCapsule()
+        }
+        .frame(height: 48)
+    }
+
+    private var breadcrumb: some View {
+        let source = appState.mediaSource
+        let components = (source?.currentPath ?? "").split(separator: "/").map(String.init)
+        let root = source?.rootDisplayName ?? ""
+        let title = components.last ?? root
+        let parent = components.count > 1 ? components[components.count - 2] : (components.isEmpty ? nil : root)
+        return HStack(spacing: 6) {
+            if let parent, !parent.isEmpty {
+                Text(parent).font(.system(size: 13)).foregroundStyle(.secondary).lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.tertiary)
+            }
+            Text(title).font(.system(size: 15, weight: .semibold)).lineLimit(1)
+            Text(appState.mediaItems.count == 1 ? "1 item" : "\(appState.mediaItems.count) items")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .padding(.leading, 6)
+                .fixedSize()
+        }
+    }
+
+    private func importFiles() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.message = "Choose photos and videos to import"
+        guard panel.runModal() == .OK, !panel.urls.isEmpty else { return }
+        appState.importFiles(panel.urls, into: appState.mediaSource)
     }
 }
 
@@ -83,40 +188,54 @@ public struct ThumbnailCell: View {
     }
 
     var cellContent: some View {
-        VStack(spacing: 4) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.gray.opacity(0.1))
-                    .aspectRatio(1, contentMode: .fit)
+        ZStack {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.black.opacity(0.05))
 
-                if let thumbnail {
-                    Image(nsImage: thumbnail)
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                } else if thumbnailLoadFailed {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 28))
-                        .foregroundStyle(.secondary)
-                } else {
-                    ProgressView()
-                }
-
-                if item.mediaType == .video {
-                    Image(systemName: "play.circle.fill")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.white)
-                        .shadow(radius: 2)
-                }
+            if let thumbnail {
+                Image(nsImage: thumbnail)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+            } else if thumbnailLoadFailed {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 28))
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView()
             }
-            .aspectRatio(1, contentMode: .fit)
-
-            Text(item.name)
-                .font(.caption)
-                .lineLimit(1)
-                .truncationMode(.middle)
         }
+        .aspectRatio(1, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(alignment: .bottomLeading) {
+            if item.mediaType == .video {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 9, weight: .bold))
+                    .frame(width: 22, height: 22)
+                    .background(.regularMaterial, in: Circle())
+                    .padding(10)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if isSelected {
+                Image(systemName: "checkmark")
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundStyle(.white)
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.accentColor))
+                    .overlay(Circle().stroke(Color.white.opacity(0.9), lineWidth: 2))
+                    .padding(10)
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 3)
+        )
+        .shadow(color: .black.opacity(isSelected ? 0.18 : 0.08), radius: isSelected ? 12 : 1.5, y: isSelected ? 8 : 1)
+        .scaleEffect(isSelected ? 0.97 : 1)
+        .animation(.easeOut(duration: 0.16), value: isSelected)
+        .help(item.name)
+        .accessibilityLabel(item.name)
         .contextMenu {
             if isInVault {
                 Button("Delete", role: .destructive) {

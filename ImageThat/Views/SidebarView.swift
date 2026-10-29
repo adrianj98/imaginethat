@@ -15,6 +15,17 @@ public struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .navigationTitle("Folders")
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if appState.mediaSource is VaultSource || appState.mediaSource is DriveVaultSource
+                || appState.mediaSource is RemoteVaultSource {
+                Label("Decrypted in memory only", systemImage: "lock")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Glass.label)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 12)
+            }
+        }
         .sheet(isPresented: $appState.showGoogleDriveSetup) {
             GoogleDriveSetupView()
                 .environmentObject(appState)
@@ -38,7 +49,7 @@ public struct SidebarView: View {
         if !appState.favorites.isEmpty {
             Section("Favorites") {
                 ForEach(appState.favorites) { item in
-                    Label(item.name, systemImage: "star.fill")
+                    Label(item.name, systemImage: "folder")
                         .tag(item)
                         .padding(.vertical, 4)
                         .padding(.horizontal, 6)

@@ -19,7 +19,50 @@ public struct PreferencesView: View {
                     Label("Google Drive", systemImage: "externaldrive.badge.icloud")
                 }
         }
-        .frame(width: 450, height: 400)
+        .frame(width: 600, height: 500)
+        .background(Glass.lightCanvas)
+    }
+}
+
+/// White rounded group for settings rows, with an optional heading above.
+struct SettingsGroup<Content: View>: View {
+    var title: String?
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let title {
+                SectionHeading(title: title).padding(.leading, 12)
+            }
+            VStack(spacing: 0) { content }
+                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color(nsColor: .controlBackgroundColor)))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.black.opacity(0.08), lineWidth: 0.5))
+        }
+    }
+}
+
+/// One 44pt settings row: title, optional subtitle, trailing controls.
+struct SettingsRow<Trailing: View>: View {
+    let title: String
+    var subtitle: String?
+    var subtitleColor: Color = Glass.label
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.system(size: 13))
+                if let subtitle {
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(subtitleColor)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+            }
+            Spacer(minLength: 8)
+            trailing
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 6)
+        .frame(minHeight: 44)
     }
 }
 
@@ -31,25 +74,29 @@ public struct ShortcutsTab: View {
     public init() {}
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(ShortcutAction.allCases) { action in
-                ShortcutRow(action: action, binding: manager.bindings[action] ?? ShortcutManager.defaultBinding(for: action))
-                if action != ShortcutAction.allCases.last {
-                    Divider()
+        VStack(alignment: .leading, spacing: 8) {
+            SettingsGroup(title: "Click a key and press a new one to change it") {
+                ForEach(ShortcutAction.allCases) { action in
+                    ShortcutRow(action: action, binding: manager.bindings[action] ?? ShortcutManager.defaultBinding(for: action))
+                        .padding(.horizontal, 14)
+                    if action != ShortcutAction.allCases.last {
+                        Divider().padding(.leading, 14)
+                    }
                 }
             }
-
-            Spacer()
 
             HStack {
                 Spacer()
                 Button("Restore Defaults") {
                     manager.resetToDefaults()
                 }
+                .buttonStyle(.link)
             }
-            .padding(.top, 12)
+            .padding(.horizontal, 12)
+
+            Spacer()
         }
-        .padding()
+        .padding(24)
     }
 }
 
@@ -62,81 +109,76 @@ public struct SecurityTab: View {
     public init() {}
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Password Storage")
-                    .font(.headline)
-                Toggle("Store passwords without encryption (debug mode)", isOn: $plaintextMode)
-                    .onChange(of: plaintextMode) { _, newValue in
-                        PasswordStore.encryptionDisabled = newValue
-                    }
-                Text("When disabled, passwords require Touch ID on first vault access.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Divider()
-
-            Text("Saved Vault Passwords")
-                .font(.headline)
-
-            if savedVaults.isEmpty {
-                Text("No vault passwords saved.")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-                    .padding(.vertical, 20)
-            } else {
-                List {
-                    ForEach(savedVaults, id: \.self) { path in
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text(URL(fileURLWithPath: path).lastPathComponent)
-                                    .fontWeight(.medium)
-                                Text(path)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 8) {
+                    SettingsGroup(title: "Saved vault passwords") {
+                        if savedVaults.isEmpty {
+                            SettingsRow(title: "No vault passwords saved.") { EmptyView() }
+                                .foregroundStyle(.secondary)
+                        }
+                        ForEach(savedVaults, id: \.self) { path in
+                            HStack(spacing: 12) {
+                                Image(systemName: "lock.shield")
+                                    .foregroundStyle(Color.accentColor)
+                                SettingsRow(title: URL(fileURLWithPath: path).lastPathComponent, subtitle: path) {
+                                    Button("Forget") {
+                                        forgetVault(path: path)
+                                    }
+                                    .buttonStyle(PillButtonStyle(height: 28))
+                                    .font(.system(size: 12))
+                                }
+                                .padding(.leading, -14)
                             }
-                            Spacer()
-                            Button("Forget") {
-                                forgetVault(path: path)
+                            .padding(.leading, 14)
+                            if path != savedVaults.last {
+                                Divider().padding(.leading, 44)
                             }
-                            .foregroundStyle(.red)
                         }
                     }
+                    HStack {
+                        Text("Encrypted with a master key in the Keychain, behind Touch ID.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Glass.label)
+                        Spacer()
+                        Button("Forget All") {
+                            PasswordStore.shared.deleteAll()
+                            KeychainManager.shared.deleteMasterKey()
+                            savedVaults = []
+                        }
+                        .buttonStyle(.link)
+                        .disabled(savedVaults.isEmpty)
+                    }
+                    .padding(.horizontal, 12)
                 }
-                .listStyle(.bordered)
-            }
 
-            Divider()
+                SettingsGroup(title: "Thumbnail cache") {
+                    SettingsRow(title: cacheSizeLabel, subtitle: "Encrypted with each vault's own key") {
+                        Button("Clear") {
+                            try? GocryptfsThumbnails.clearCache(at: AppPaths.thumbnailCache)
+                            updateCacheSize()
+                        }
+                        .buttonStyle(PillButtonStyle(height: 28))
+                        .font(.system(size: 12))
+                    }
+                }
 
-            Text("Thumbnail Cache")
-                .font(.headline)
-
-            HStack {
-                Text(cacheSizeLabel)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Clear Cache") {
-                    try? GocryptfsThumbnails.clearCache(at: AppPaths.thumbnailCache)
-                    updateCacheSize()
+                SettingsGroup {
+                    SettingsRow(title: "Store passwords unencrypted",
+                                subtitle: "Debug only — saved passwords become readable on disk.",
+                                subtitleColor: Color(red: 0xB3 / 255, green: 0x26 / 255, blue: 0x1E / 255)) {
+                        Toggle("Store passwords unencrypted", isOn: $plaintextMode)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                            .onChange(of: plaintextMode) { _, newValue in
+                                PasswordStore.encryptionDisabled = newValue
+                            }
+                    }
                 }
             }
-
-            Spacer()
-
-            HStack {
-                Spacer()
-                Button("Forget All Passwords") {
-                    PasswordStore.shared.deleteAll()
-                    KeychainManager.shared.deleteMasterKey()
-                    savedVaults = []
-                }
-                .disabled(savedVaults.isEmpty)
-            }
+            .padding(24)
         }
-        .padding()
         .onAppear {
             loadSavedVaults()
             updateCacheSize()
@@ -162,7 +204,7 @@ public struct SecurityTab: View {
         let bytes = cacheBytes
         if bytes == 0 { return "No cached thumbnails" }
         let formatter = ByteCountFormatter()
-        return "Cache: \(formatter.string(fromByteCount: bytes))"
+        return "\(formatter.string(fromByteCount: bytes)) on disk"
     }
 
     @State private var cacheBytes: Int64 = 0
@@ -189,34 +231,33 @@ public struct GoogleDriveTab: View {
     public init() {}
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Drive Cache")
-                .font(.headline)
-
-            Picker("Maximum cache size", selection: $selectedLimit) {
-                ForEach(limitOptions, id: \.bytes) { option in
-                    Text(option.label).tag(option.bytes)
-                }
-            }
-            .onChange(of: selectedLimit) { _, newValue in
-                DriveCache.maxBytes = newValue
-            }
-
-            HStack {
-                Text(cacheLabel)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Clear Cache") {
-                    Task {
-                        await DriveCache.shared.clear()
-                        cacheBytes = await DriveCache.shared.currentSize()
+        VStack(alignment: .leading, spacing: 18) {
+            SettingsGroup(title: "Drive cache") {
+                SettingsRow(title: cacheLabel, subtitle: "Vault contents stay encrypted in the cache") {
+                    Picker("Maximum", selection: $selectedLimit) {
+                        ForEach(limitOptions, id: \.bytes) { option in
+                            Text(option.label).tag(option.bytes)
+                        }
                     }
+                    .font(.system(size: 12))
+                    .fixedSize()
+                    .onChange(of: selectedLimit) { _, newValue in
+                        DriveCache.maxBytes = newValue
+                    }
+                    Button("Clear") {
+                        Task {
+                            await DriveCache.shared.clear()
+                            cacheBytes = await DriveCache.shared.currentSize()
+                        }
+                    }
+                    .buttonStyle(PillButtonStyle(height: 28))
+                    .font(.system(size: 12))
                 }
             }
 
             Spacer()
         }
-        .padding()
+        .padding(24)
         .task {
             selectedLimit = DriveCache.maxBytes
             cacheBytes = await DriveCache.shared.currentSize()
@@ -227,7 +268,7 @@ public struct GoogleDriveTab: View {
         if cacheBytes == 0 { return "No files cached" }
         let f = ByteCountFormatter()
         f.countStyle = .file
-        return "Cache: \(f.string(fromByteCount: cacheBytes))"
+        return "\(f.string(fromByteCount: cacheBytes)) on disk"
     }
 }
 
@@ -256,9 +297,9 @@ public struct ShortcutRow: View {
                     ShortcutManager.shared.updateBinding(for: action, to: newBinding)
                 }
             )
-            .frame(width: 160)
+            .frame(width: 120)
         }
-        .padding(.vertical, 6)
+        .frame(minHeight: 44)
     }
 }
 
@@ -282,16 +323,18 @@ public struct KeyRecorderButton: View {
             isRecording = true
         } label: {
             Text(isRecording ? "Press a key..." : binding.displayString)
+                .font(.system(size: 12, weight: .medium))
+                .monospacedDigit()
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 4)
-                .padding(.horizontal, 8)
+                .frame(height: 26)
+                .padding(.horizontal, 10)
                 .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(isRecording ? Color.accentColor.opacity(0.15) : Color(nsColor: .controlBackgroundColor))
+                    Capsule()
+                        .fill(isRecording ? Color.accentColor.opacity(0.15) : Color.black.opacity(0.06))
                 )
                 .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(isRecording ? Color.accentColor : Color.gray.opacity(0.3), lineWidth: 1)
+                    Capsule()
+                        .stroke(isRecording ? Color.accentColor : Color.clear, lineWidth: 1)
                 )
         }
         .buttonStyle(.plain)
