@@ -198,3 +198,14 @@ func TestRawListCarriesDirIVAndLongNames(t *testing.T) {
 		t.Fatal("fixture has no long names to check")
 	}
 }
+
+// /decrypted/ belongs to the browser's service worker. If a request reaches
+// the server the worker is not running, and the SPA's HTML must not be handed
+// to an <img> or <video> in its place.
+func TestDecryptedPathsAreNotTheSPA(t *testing.T) {
+	srv, _ := newClientDecryptServer(t)
+	rec := newClient(t, srv).do(http.MethodGet, "/decrypted/abc/def?name=x.jpg", nil)
+	if rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "<html") {
+		t.Errorf("/decrypted/ = %d %q, want a plain 404", rec.Code, rec.Body.String())
+	}
+}

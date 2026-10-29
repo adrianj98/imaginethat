@@ -56,6 +56,20 @@ async function request<T>(input: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T
 }
 
+export type Mode = 'server-decrypt' | 'client-decrypt'
+
+export function info(): Promise<{ mode: Mode; version: string }> {
+  return request('/api/info')
+}
+
+/** Logs in with the server access password (client-decrypt mode). */
+export function login(password: string): Promise<{ vaults: Vault[] }> {
+  return request('/api/login', {
+    method: 'POST',
+    body: JSON.stringify({ password }),
+  })
+}
+
 export function listVaults(): Promise<{ vaults: Vault[] }> {
   return request('/api/vaults')
 }

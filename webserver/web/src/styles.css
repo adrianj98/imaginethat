@@ -67,6 +67,15 @@ body {
   color: var(--muted);
 }
 
+/* Right-aligned on its own; beside an open vault it follows the Lock button. */
+.topbar-logout {
+  margin-left: auto;
+}
+
+.topbar-vault ~ .topbar-logout {
+  margin-left: 0;
+}
+
 main {
   flex: 1;
   padding: 16px;

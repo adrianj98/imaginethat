@@ -1,15 +1,16 @@
 import { useState } from 'react'
-import * as api from '../api'
 import type { Vault } from '../api'
+import type { Backend } from '../backend'
 
 interface Props {
+  backend: Backend
   vaults: Vault[] | null
   onOpened: (id: string) => void
   onRefresh: () => Promise<void>
 }
 
 /** Vault picker with an inline unlock form. */
-export default function VaultList({ vaults, onOpened, onRefresh }: Props) {
+export default function VaultList({ backend, vaults, onOpened, onRefresh }: Props) {
   const [unlocking, setUnlocking] = useState<string | null>(null)
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
@@ -19,7 +20,7 @@ export default function VaultList({ vaults, onOpened, onRefresh }: Props) {
     setBusy(true)
     setError(null)
     try {
-      await api.unlockVault(id, password)
+      await backend.unlock(id, password)
       // Clear the password from component state as soon as it has been used.
       setPassword('')
       setUnlocking(null)
@@ -66,7 +67,7 @@ export default function VaultList({ vaults, onOpened, onRefresh }: Props) {
                   className="btn"
                   type="button"
                   onClick={async () => {
-                    await api.lockVault(v.id)
+                    await backend.lock(v.id)
                     await onRefresh()
                   }}
                 >
@@ -100,7 +101,11 @@ export default function VaultList({ vaults, onOpened, onRefresh }: Props) {
                 type="password"
                 autoFocus
                 autoComplete="current-password"
-                placeholder="Vault password"
+                placeholder={
+                  backend.mode === 'client-decrypt'
+                    ? 'Vault password (stays in this browser)'
+                    : 'Vault password'
+                }
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 disabled={busy}

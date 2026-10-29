@@ -173,6 +173,17 @@ imagethat-web -hash-password > ~/.imagethat-access
 imagethat-web -root ~/Vaults -mode client-decrypt -access-password-file ~/.imagethat-access
 ```
 
+In the browser UI, a vault's password goes only to scrypt in the page. A
+service worker (`web/src/sw.ts`) serves `/decrypted/<vault>/<cipher path>`:
+it fetches just the ciphertext blocks a request needs from `raw/file` and
+decrypts them with WebCrypto, so `<img>`, seeking `<video>` and streamed
+downloads work without the server seeing plaintext. Keys stay in the page's
+memory; the worker asks the page for one per request, so reloading or closing
+the tab locks every vault. Thumbnails are made in the browser. This needs a
+secure context: HTTPS, or `localhost`. The browser opens AES-GCM vaults (the
+gocryptfs default); AES-SIV and XChaCha20 vaults need the apps. Writing is
+not available in this mode yet.
+
 Video seeking works because `vault.File` implements `io.ReadSeeker`, letting
 `http.ServeContent` answer range requests directly out of the encrypted file.
 

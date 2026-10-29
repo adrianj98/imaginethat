@@ -1,7 +1,7 @@
 # Client-decrypt mode: the server never sees a vault password
 
 Date: 2026-10-29
-Status: in progress
+Status: in progress (steps 1–3 landed 2026-10-29)
 
 ## Intent
 

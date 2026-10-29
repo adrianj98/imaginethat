@@ -58,6 +58,15 @@ func (s *Server) staticHandler() http.Handler {
 			return
 		}
 
+		// The service worker answers /decrypted/ in client-decrypt mode. A
+		// request reaching the server means it is not running; fail plainly
+		// rather than hand an <img> or <video> the SPA's HTML.
+		if strings.HasPrefix(r.URL.Path, "/decrypted/") {
+			w.Header().Set("Cache-Control", "no-store")
+			http.Error(w, "the decrypting service worker is not running; reload the page", http.StatusNotFound)
+			return
+		}
+
 		upath := strings.TrimPrefix(r.URL.Path, "/")
 		if upath == "" || upath == "index.html" {
 			serveIndex(w)
