@@ -10,6 +10,9 @@ public struct VideoPlayerView: View {
     @State private var hideTask: Task<Void, Never>?
     @State private var currentTime: Double = 0
     @State private var duration: Double = 0
+    @State private var cachedRanges: [ClosedRange<Double>] = []
+    @State private var bufferedRanges: [ClosedRange<Double>] = []
+    @State private var cacheTask: Task<Void, Never>?
 
     public init(item: MediaItem) {
         self.item = item
@@ -34,7 +37,8 @@ public struct VideoPlayerView: View {
                     .allowsHitTesting(false)
 
                     // Transport bar
-                    TransportBarView(player: player, currentTime: $currentTime, duration: $duration)
+                    TransportBarView(player: player, currentTime: $currentTime, duration: $duration,
+                                     cached: cachedRanges, buffered: bufferedRanges)
                         .opacity(showControls ? 1 : 0)
                         .animation(.easeOut(duration: 0.25), value: showControls)
                 }
@@ -50,10 +54,13 @@ public struct VideoPlayerView: View {
             player?.pause()
             player = nil
             hideTask?.cancel()
+            cacheTask?.cancel()
         }
         .onChange(of: item) { _, newItem in
             player?.pause()
             hideTask?.cancel()
+            cachedRanges = []
+            bufferedRanges = []
             loadVideo()
         }
         .focusable()
@@ -76,6 +83,7 @@ public struct VideoPlayerView: View {
             setupTimeObserver(for: avPlayer)
             self.player = avPlayer
             avPlayer.play()
+            watchCache(source: source)
         } catch {
             self.player = nil
         }
@@ -91,6 +99,28 @@ public struct VideoPlayerView: View {
                 if !duration.isNaN && !duration.isInfinite && self.duration != duration {
                     self.duration = duration
                 }
+                if duration.isFinite, duration > 0 {
+                    self.bufferedRanges = item.loadedTimeRanges.map { value in
+                        let r = value.timeRangeValue
+                        let start = max(0, r.start.seconds / duration)
+                        return start...min(1, max(start, (r.start.seconds + r.duration.seconds) / duration))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Refreshes the on-disk cache ranges while the video is open: they grow
+    /// as playback and seeks fetch new windows.
+    private func watchCache(source: any MediaSource) {
+        cacheTask?.cancel()
+        let item = self.item
+        cacheTask = Task {
+            while !Task.isCancelled {
+                let ranges = await source.cachedRanges(for: item)
+                if Task.isCancelled { return }
+                cachedRanges = ranges
+                try? await Task.sleep(for: .seconds(2))
             }
         }
     }

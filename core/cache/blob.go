@@ -1,4 +1,7 @@
-package server
+// Package cache holds the caches shared by every ImageThat front end: an
+// encrypted in-memory LRU for derived data such as thumbnails, and (see
+// thumbdisk.go) an on-disk store sealed with a vault's own key.
+package cache
 
 import (
 	"container/list"
@@ -80,12 +83,12 @@ func (c *crypter) wipe() {
 	c.aead = nil
 }
 
-// blobCache is a byte-budgeted LRU of encrypted blobs, held in memory only.
+// Blob is a byte-budgeted LRU of encrypted blobs, held in memory only.
 //
 // Nothing here is ever written to disk: the project's rule is that decrypted
 // vault content stays in memory, and an encrypted-at-rest in-memory cache is
 // the strictest reading of that.
-type blobCache struct {
+type Blob struct {
 	crypt   *crypter
 	maxCost int64
 
@@ -100,12 +103,14 @@ type blobEntry struct {
 	sealed []byte
 }
 
-func newBlobCache(maxCost int64) (*blobCache, error) {
+// NewBlob returns an empty cache that will hold at most maxCost bytes of
+// sealed entries.
+func NewBlob(maxCost int64) (*Blob, error) {
 	c, err := newCrypter()
 	if err != nil {
 		return nil, err
 	}
-	return &blobCache{
+	return &Blob{
 		crypt:   c,
 		maxCost: maxCost,
 		entries: make(map[string]*list.Element),
@@ -114,7 +119,7 @@ func newBlobCache(maxCost int64) (*blobCache, error) {
 }
 
 // Get returns the decrypted value for a key.
-func (c *blobCache) Get(key string) ([]byte, bool) {
+func (c *Blob) Get(key string) ([]byte, bool) {
 	c.mu.Lock()
 	el, ok := c.entries[key]
 	// Read the sealed bytes under the lock: Put replaces this field in place
@@ -133,14 +138,14 @@ func (c *blobCache) Get(key string) ([]byte, bool) {
 	plain, err := c.crypt.open(sealed)
 	if err != nil {
 		// The key was wiped or the entry is corrupt; drop it.
-		c.remove(key)
+		c.Remove(key)
 		return nil, false
 	}
 	return plain, true
 }
 
 // Put stores a value, encrypting it and evicting until the budget fits.
-func (c *blobCache) Put(key string, value []byte) {
+func (c *Blob) Put(key string, value []byte) {
 	if int64(len(value)) > c.maxCost {
 		return // never worth evicting everything else for one entry
 	}
@@ -180,7 +185,8 @@ func (c *blobCache) Put(key string, value []byte) {
 	}
 }
 
-func (c *blobCache) remove(key string) {
+// Remove drops one entry.
+func (c *Blob) Remove(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	el, ok := c.entries[key]
@@ -193,8 +199,27 @@ func (c *blobCache) remove(key string) {
 	c.cost -= int64(len(e.sealed))
 }
 
+// Closed reports whether Close has wiped the key; nothing can be cached or
+// read afterwards.
+func (c *Blob) Closed() bool {
+	c.crypt.mu.RLock()
+	defer c.crypt.mu.RUnlock()
+	return c.crypt.aead == nil
+}
+
+// Walk calls fn with each entry's key and sealed bytes, oldest first. It is
+// for inspection and tests; fn must not call back into the cache.
+func (c *Blob) Walk(fn func(key string, sealed []byte)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for el := c.order.Back(); el != nil; el = el.Prev() {
+		e := el.Value.(*blobEntry)
+		fn(e.key, e.sealed)
+	}
+}
+
 // Close wipes the cache key and drops every entry.
-func (c *blobCache) Close() {
+func (c *Blob) Close() {
 	c.mu.Lock()
 	c.entries = make(map[string]*list.Element)
 	c.order.Init()

@@ -11,7 +11,8 @@ import (
 	"path"
 	"strings"
 
-	"github.com/adrianm/imagethat/webserver/vault"
+	"github.com/adrianm/imagethat/core/cache"
+	"github.com/adrianm/imagethat/core/vault"
 )
 
 // maxJSONBody bounds request bodies for the small JSON endpoints.
@@ -33,6 +34,10 @@ func (s *Server) routes() {
 	mux.HandleFunc("POST /api/vaults/{id}/move", s.handleMove)
 	mux.HandleFunc("DELETE /api/vaults/{id}/entry", s.handleDelete)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
+
+	// Ciphertext access for clients that decrypt themselves (handlers_raw.go).
+	mux.HandleFunc("GET /api/vaults/{id}/raw/list", s.handleRawList)
+	mux.HandleFunc("GET /api/vaults/{id}/raw/file", s.handleRawFile)
 
 	mux.Handle("/", s.staticHandler())
 
@@ -112,7 +117,7 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	// log alongside everything else.
 	sess.Logf = s.cfg.Logger.Printf
 
-	thumbs, err := newBlobCache(s.cfg.ThumbCacheBytes)
+	thumbs, err := cache.NewBlob(s.cfg.ThumbCacheBytes)
 	if err != nil {
 		sess.Close()
 		s.cfg.Logger.Printf("thumb cache for %s: %v", id, err)

@@ -230,7 +230,20 @@ public final class GocryptfsBridge: @unchecked Sendable {
         }
     }
 
-    /// Write encrypted file data to the vault. Creates parent directories and handles long-name sidecars.
+    /// Describes a non-zero return code of the write exports (see libgocryptfs.h).
+    static func describeWriteCode(_ rc: Int32) -> String {
+        switch rc {
+        case -1: return "vault is locked or read-only"
+        case -2: return "not found"
+        case -3: return "invalid path"
+        case -4: return "already exists"
+        case -5: return "storage error"
+        default: return "error code \(rc)"
+        }
+    }
+
+    /// Replace (or create) a file from in-memory data. The parent directory must
+    /// exist. For anything large use `createFile(path:)`, which streams.
     public func writeFile(path: String, data: Data) throws {
         let result = data.withUnsafeBytes { ptr in
             path.withCString { pathPtr in
@@ -243,7 +256,169 @@ public final class GocryptfsBridge: @unchecked Sendable {
             }
         }
         guard result == 0 else {
-            throw GocryptfsError.writeFailed("error code \(result)")
+            throw GocryptfsError.writeFailed(Self.describeWriteCode(result))
         }
+    }
+
+
+    // MARK: - Thumbnails (core/thumb through the engine)
+
+    /// Set up the preview caches for this session: an encrypted memory tier
+    /// and, when `diskDir` is given, a persistent tier sealed with the vault's
+    /// own key. `sourceID` must be stable across launches (the vault path).
+    public func configureThumbnails(sourceID: String, diskDir: URL?, memBytes: Int64 = 0, diskBytes: Int64 = 0) throws {
+        try GocryptfsThumbnails.configure(sessionID: sessionID, sourceID: sourceID, diskDir: diskDir,
+                                          memBytes: memBytes, diskBytes: diskBytes)
+    }
+
+    /// A JPEG preview from the caches or the engine's decoders, or nil when the
+    /// engine cannot decode this file (HEIC, RAW, video): render it on the host
+    /// and hand it to `storeThumbnail` so the caches learn it.
+    public func thumbnail(path: String, maxEdge: Int) throws -> Data? {
+        try GocryptfsThumbnails.get(sessionID: sessionID, path: path, maxEdge: maxEdge)
+    }
+
+    /// Store a preview the host rendered itself.
+    public func storeThumbnail(_ jpeg: Data, path: String, maxEdge: Int) throws {
+        try GocryptfsThumbnails.put(sessionID: sessionID, jpeg: jpeg, path: path, maxEdge: maxEdge)
+    }
+
+    /// Drop every cached preview of a path after it changed.
+    public func invalidateThumbnail(path: String) {
+        GocryptfsThumbnails.invalidate(sessionID: sessionID, path: path)
+    }
+
+    /// Start streaming a new file into the vault. The entry appears when the
+    /// returned writer is finished; see `VaultFileWriter`.
+    public func createFile(path: String) throws -> VaultFileWriter {
+        let id = path.withCString { ptr in
+            GocryptfsCreateFile(sessionID, UnsafeMutablePointer(mutating: ptr))
+        }
+        guard id > 0 else {
+            throw GocryptfsError.writeFailed(Self.describeWriteCode(id))
+        }
+        return VaultFileWriter(writerID: id, path: path)
+    }
+}
+
+extension GocryptfsBridge: VaultThumbnailing {}
+
+/// Preview caching and rendering a vault session offers through the engine.
+/// Both local (`GocryptfsBridge`) and Drive (`DriveVaultBridge`) sessions
+/// provide it, so `AppState` treats them alike.
+public protocol VaultThumbnailing: AnyObject {
+    func configureThumbnails(sourceID: String, diskDir: URL?, memBytes: Int64, diskBytes: Int64) throws
+    func thumbnail(path: String, maxEdge: Int) throws -> Data?
+    func storeThumbnail(_ jpeg: Data, path: String, maxEdge: Int) throws
+    func invalidateThumbnail(path: String)
+}
+
+/// The thumbnail exports of libgocryptfs, shared by the two bridge classes.
+public enum GocryptfsThumbnails {
+    static func configure(sessionID: Int32, sourceID: String, diskDir: URL?, memBytes: Int64, diskBytes: Int64) throws {
+        let dir = diskDir?.path ?? ""
+        let rc = sourceID.withCString { srcPtr in
+            dir.withCString { dirPtr in
+                GocryptfsThumbConfigure(sessionID, UnsafeMutablePointer(mutating: srcPtr),
+                                        UnsafeMutablePointer(mutating: dirPtr), memBytes, diskBytes)
+            }
+        }
+        guard rc == 0 else { throw GocryptfsError.writeFailed("thumbnail cache: " + GocryptfsBridge.describeWriteCode(rc)) }
+    }
+
+    static func get(sessionID: Int32, path: String, maxEdge: Int) throws -> Data? {
+        let result: DecryptResult = path.withCString { pathPtr in
+            GocryptfsThumbGet(sessionID, UnsafeMutablePointer(mutating: pathPtr), Int32(maxEdge))
+        }
+        defer { GocryptfsFreeDecryptResult(result) }
+        if let errPtr = result.error { throw GocryptfsError.decryptFailed(String(cString: errPtr)) }
+        guard let dataPtr = result.data, result.size > 0 else { return nil }
+        return Data(bytes: dataPtr, count: Int(result.size))
+    }
+
+    static func put(sessionID: Int32, jpeg: Data, path: String, maxEdge: Int) throws {
+        guard !jpeg.isEmpty else { return }
+        let rc = jpeg.withUnsafeBytes { ptr in
+            path.withCString { pathPtr in
+                GocryptfsThumbPut(sessionID, UnsafeMutablePointer(mutating: pathPtr), Int32(maxEdge),
+                                  UnsafeMutableRawPointer(mutating: ptr.baseAddress!), Int32(jpeg.count))
+            }
+        }
+        guard rc == 0 else { throw GocryptfsError.writeFailed("thumbnail cache: " + GocryptfsBridge.describeWriteCode(rc)) }
+    }
+
+    static func invalidate(sessionID: Int32, path: String) {
+        path.withCString { pathPtr in
+            GocryptfsThumbInvalidate(sessionID, UnsafeMutablePointer(mutating: pathPtr))
+        }
+    }
+
+    /// Delete every persisted preview under `diskDir`, for every vault.
+    public static func clearCache(at diskDir: URL) throws {
+        let rc = diskDir.path.withCString { ptr in
+            GocryptfsThumbCacheClear(UnsafeMutablePointer(mutating: ptr))
+        }
+        guard rc == 0 else { throw GocryptfsError.deleteFailed("thumbnail cache: " + GocryptfsBridge.describeWriteCode(rc)) }
+    }
+
+    /// Bytes persisted under `diskDir`.
+    public static func cacheSize(at diskDir: URL) -> Int64 {
+        diskDir.path.withCString { ptr in
+            GocryptfsThumbCacheSize(UnsafeMutablePointer(mutating: ptr))
+        }
+    }
+}
+
+/// Streams plaintext into a new vault file with bounded memory.
+///
+/// The Go engine encrypts each chunk as it arrives into a temporary ciphertext
+/// file and renames it into place on `finish()`. Nothing decrypted is written
+/// anywhere. `abort()`, or releasing the writer without finishing, discards the
+/// file and leaves no entry and no temp file behind.
+public final class VaultFileWriter: @unchecked Sendable {
+    private let writerID: Int32
+    public let path: String
+    private var ended = false
+
+    fileprivate init(writerID: Int32, path: String) {
+        self.writerID = writerID
+        self.path = path
+    }
+
+    deinit {
+        abort()
+    }
+
+    /// Append a chunk. Blocks until the engine has encrypted it.
+    public func write(_ chunk: Data) throws {
+        guard !ended else { throw GocryptfsError.writeFailed("writer already finished") }
+        var offset = 0
+        while offset < chunk.count {
+            let n = min(chunk.count - offset, Int(Int32.max))
+            let rc = chunk.withUnsafeBytes { ptr -> Int32 in
+                GocryptfsWriterWrite(
+                    writerID,
+                    UnsafeMutableRawPointer(mutating: ptr.baseAddress!.advanced(by: offset)),
+                    Int32(n)
+                )
+            }
+            guard rc == 0 else { throw GocryptfsError.writeFailed(GocryptfsBridge.describeWriteCode(rc)) }
+            offset += n
+        }
+    }
+
+    /// Commit the file. After this the writer cannot be used.
+    public func finish() throws {
+        guard !ended else { return }
+        ended = true
+        let rc = GocryptfsWriterClose(writerID)
+        guard rc == 0 else { throw GocryptfsError.writeFailed(GocryptfsBridge.describeWriteCode(rc)) }
+    }
+
+    /// Discard the file. Safe to call after `finish()` (no-op).
+    public func abort() {
+        guard !ended else { return }
+        ended = true
+        GocryptfsWriterAbort(writerID)
     }
 }

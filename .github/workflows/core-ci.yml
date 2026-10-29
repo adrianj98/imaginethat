@@ -1,0 +1,85 @@
+name: core CI
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'core/**'
+      - '.github/workflows/core-ci.yml'
+  pull_request:
+    paths:
+      - 'core/**'
+      - '.github/workflows/core-ci.yml'
+  workflow_dispatch:
+
+# A new push to the same branch makes an in-flight run obsolete.
+concurrency:
+  group: core-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: core
+
+jobs:
+  go:
+    name: Vault engine build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # Newest 1.26.x so builds get Go patch releases (go.mod toolchain is the floor).
+          go-version: '1.26'
+          check-latest: true
+          cache-dependency-path: core/go.sum
+
+      # gocryptfs' crypto lives in internal/ packages that another module
+      # cannot import, so they are copied in rather than committed.
+      - name: Sync gocryptfs internal packages
+        run: make sync
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l ./vault ./mobile ./cache ./thumb)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: make vet
+
+      # The interop test mounts a vault with the real gocryptfs binary and
+      # checks it agrees with what this module wrote. Without it the write
+      # tests would only prove we can read back our own output.
+      # ffmpeg/ffprobe act as the video player in the slow-link test
+      # (vault/slowvideo_test.go); without them that test skips.
+      - name: Install gocryptfs for interop tests, ffmpeg for the slow-link video test
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fuse3 ffmpeg
+          go install -tags without_openssl github.com/rfjakob/gocryptfs/v2@v2.6.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Test
+        run: make test
+
+      - name: Test with race detector
+        run: go test -tags without_openssl -race ./vault/... ./mobile/... ./cache/... ./thumb/...
+
+      # The macOS app links the engine through gocryptfs-lib, a cgo shim over
+      # core/vault. Building it as a shared library here and driving it from C
+      # through the app's header catches a broken export, return code or
+      # memory contract without needing a Mac.
+      - name: Shim Go tests
+        working-directory: gocryptfs-lib
+        env:
+          CGO_ENABLED: '1'
+        run: go test -tags 'without_openssl shimtest' ./...
+
+      - name: Linux shared library + C API test
+        working-directory: .
+        run: make golib-linux-test

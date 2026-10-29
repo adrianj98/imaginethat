@@ -5,7 +5,7 @@ import (
 	"io"
 	"sync"
 
-	"github.com/adrianm/imagethat/webserver/vault"
+	"github.com/adrianm/imagethat/core/vault"
 )
 
 var errAborted = errors.New("mobile: write aborted")

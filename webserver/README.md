@@ -13,18 +13,18 @@ imagethat-web -root ~/Vaults
 
 Then open <http://127.0.0.1:8347> and unlock a vault with its password.
 
-## Why a second implementation of the crypto
+## Where the crypto lives
 
-`gocryptfs-lib/main.go` already reads and writes vaults, but every entry point
-is a cgo `//export` symbol built into a macOS `.dylib`. There is no Go-callable
-API to import. Rather than reshape a working library the app depends on, this
-module ports the same logic into `vault/` as ordinary Go, keeping the structure
-recognisable — `newSession`, `resolveCipherPath`, `readDirIV` and the block
-arithmetic all have direct counterparts there.
+The gocryptfs engine is `core/vault`, a Go package shared by this server, the
+Android app (through `core/mobile` and gomobile) and the macOS app (through
+`gocryptfs-lib`, a thin cgo shim over the same package). This module holds only
+the HTTP layer: sessions, cookies, rate limiting, range serving and the
+encrypted thumbnail cache.
 
-The port also fixes a few things that only matter for a server:
+`core/vault` started as a port of the original cgo library; compared with that
+library it fixes a few things that matter for a server:
 
-| Behaviour | `gocryptfs-lib` | here |
+| Behaviour | original `gocryptfs-lib` | `core/vault` |
 |---|---|---|
 | Random access | re-reads and re-parses the file header on every range request | parsed once at `Open` |
 | Writing a file | whole plaintext buffered in memory | streamed block by block into a temp file |
@@ -35,10 +35,11 @@ The port also fixes a few things that only matter for a server:
 ## Building
 
 `gocryptfs` keeps its crypto in `internal/` packages, which Go will not let
-another module import. `scripts/sync-gocryptfs.sh` copies the nine-package
+another module import. `core/scripts/sync-gocryptfs.sh` copies the nine-package
 transitive closure out of the module cache and rewrites the import paths into
-`internal/gocryptfs/`. That directory is generated and gitignored; `make`
-regenerates it automatically when missing.
+`core/internal/gocryptfs/`. That directory is generated and gitignored; `make`
+regenerates it automatically when missing. This module depends on `../core`
+through a `replace` directive in `go.mod`.
 
 ```
 make sync     # copy the gocryptfs internal packages (implied by other targets)
@@ -135,13 +136,27 @@ are additionally checked against the `Origin` header.
 | `POST` | `/api/vaults/{id}/move` | `{"from": "...", "to": "..."}` |
 | `DELETE` | `/api/vaults/{id}/entry?path=` | Delete a file or directory tree |
 | `POST` | `/api/logout` | End the session, locking every vault |
+| `GET`, `HEAD` | `/api/vaults/{id}/raw/list?path=` | Ciphertext directory listing (encrypted names, ciphertext sizes) |
+| `GET`, `HEAD` | `/api/vaults/{id}/raw/file?path=` | Ciphertext file bytes as on disk; supports `Range`; `path=gocryptfs.conf` is the vault config |
+
+### Decrypted or encrypted
+
+The server can send a vault either way. The endpoints above `raw/` decrypt on
+the server and send plaintext; browsers use them, and every write goes through
+them. The `raw/` endpoints send the vault's gocryptfs files as they are on disk,
+so a client that holds the password (`core/remote`, used by the macOS and
+Android apps) decrypts locally: nothing on the wire is plaintext, and anything
+the client caches is ciphertext. They need the same unlocked session as the
+rest, because ciphertext plus `gocryptfs.conf` would otherwise allow offline
+password guessing. Paths are ciphertext paths; `..` and symlinks leading out of
+the vault are refused.
 
 Video seeking works because `vault.File` implements `io.ReadSeeker`, letting
 `http.ServeContent` answer range requests directly out of the encrypted file.
 
 ## Testing
 
-The test vault in `vault/testdata/vault` was produced by the real gocryptfs
+The test vault in `core/vault/testdata/vault` was produced by the real gocryptfs
 v2.6.1 binary, so the read path is checked against genuine upstream ciphertext
 rather than against this package's own output.
 `TestInteropWithGocryptfsBinary` closes the loop in the other direction: it
@@ -156,8 +171,8 @@ make test-short    # skips the tests needing FUSE
 
 ## Limitations
 
-- Local vaults only. The `vault.VFS` interface leaves room for a Drive-backed
-  backend like the app's, but none is implemented here.
+- Local vaults only. The `vault.VFS` interface in `core` leaves room for a
+  Drive-backed backend like the app's, but none is implemented here yet.
 - HEIC/HEIF and camera raw files are listed and downloadable but get no
   server-side thumbnail — Go has no pure-Go decoder for them. Video thumbnails
   are not generated either.

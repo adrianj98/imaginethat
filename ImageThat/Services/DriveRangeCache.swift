@@ -135,6 +135,14 @@ final class DriveRangeCache: @unchecked Sendable {
         }
     }
 
+    /// The byte ranges held for one file version, or empty.
+    func cachedIntervals(fileId: String, modifiedTime: String) -> [Interval] {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let entry = index[fileId], entry.modifiedTime == modifiedTime else { return [] }
+        return entry.intervals
+    }
+
     func invalidate(fileId: String) {
         lock.lock()
         index.removeValue(forKey: fileId)

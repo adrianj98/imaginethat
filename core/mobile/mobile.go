@@ -4,6 +4,7 @@
 package mobile
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,7 +12,8 @@ import (
 	"io/fs"
 	"os"
 
-	"github.com/adrianm/imagethat/webserver/vault"
+	"github.com/adrianm/imagethat/core/remote"
+	"github.com/adrianm/imagethat/core/vault"
 )
 
 // wrapErr prefixes err with a stable code Kotlin can switch on:
@@ -65,6 +67,30 @@ func OpenLocal(dir, password string) (*Vault, error) {
 		return nil, wrapErr(err)
 	}
 	return &Vault{s: s}, nil
+}
+
+// OpenRemote opens a vault on an imagethat-web server in ciphertext mode: the
+// server sends the vault's encrypted files and decryption happens here.
+// pinnedSHA256 is the hex SHA-256 of a self-signed server's certificate, or
+// "". The vault is read-only; writes go through the server's API. Errors
+// carry the usual codes plus "cert_mismatch:".
+func OpenRemote(baseURL, vaultID, password, pinnedSHA256 string) (*Vault, error) {
+	c, err := remote.New(baseURL, remote.Options{PinnedSHA256: pinnedSHA256})
+	if err != nil {
+		return nil, wrapErr(err)
+	}
+	s, err := c.OpenVault(context.Background(), vaultID, password)
+	switch {
+	case err == nil:
+		return &Vault{s: s}, nil
+	case errors.Is(err, remote.ErrWrongPassword):
+		return nil, fmt.Errorf("wrong_password: %w", err)
+	case errors.Is(err, remote.ErrNotFound):
+		return nil, fmt.Errorf("not_found: %w", err)
+	case errors.Is(err, remote.ErrCertMismatch):
+		return nil, fmt.Errorf("cert_mismatch: %w", err)
+	}
+	return nil, wrapErr(err)
 }
 
 // List returns the directory's entries as a JSON array of vault.Entry.

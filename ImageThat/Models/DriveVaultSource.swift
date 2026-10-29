@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import ImageIO
+import Security
 import UniformTypeIdentifiers
 
 /// WritableMediaSource backed by a gocryptfs vault stored in Google Drive.
@@ -102,6 +103,20 @@ public final class DriveVaultSource: WritableMediaSource, @unchecked Sendable {
         return playerItem
     }
 
+    /// The ciphertext ranges of this file held on disk by the Drive caches,
+    /// as fractions of the file. Ciphertext and plaintext offsets differ only
+    /// by gocryptfs' fixed per-block overhead, so the fractions carry over.
+    public func cachedRanges(for item: MediaItem) async -> [ClosedRange<Double>] {
+        guard let cipherPath = bridge.cipherPath(forPlainPath: item.url.path),
+              let entry = bridge.fs.getFileEntry(path: cipherPath), entry.size > 0 else { return [] }
+        if await DriveCache.shared.contains(fileId: entry.id, modifiedTime: entry.modifiedTime) {
+            return [0...1]
+        }
+        let size = Double(entry.size)
+        return DriveRangeCache.shared.cachedIntervals(fileId: entry.id, modifiedTime: entry.modifiedTime)
+            .map { max(0, Double($0.start) / size)...min(1, Double($0.end) / size) }
+    }
+
     // MARK: - WritableMediaSource
 
     public func saveImage(_ imageData: Data, for item: MediaItem) async throws {
@@ -137,10 +152,8 @@ public final class DriveVaultSource: WritableMediaSource, @unchecked Sendable {
         }
 
         let ciphertext = try bridge.encryptData(imageData)
-        _ = try await GoogleDriveService.shared.uploadFile(
-            name: cipherName, parentId: parentFolderId,
-            data: ciphertext, mimeType: "application/octet-stream"
-        )
+        try await uploadEncrypted(ciphertext, cipherName: cipherName, plainName: newPlainName,
+                                  cipherDir: cipherDir, parentFolderId: parentFolderId)
 
         let url = URL(string: newPlainPath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? newPlainPath)!
         return MediaItem(name: newPlainName, url: url, mediaType: item.mediaType)
@@ -153,6 +166,11 @@ public final class DriveVaultSource: WritableMediaSource, @unchecked Sendable {
         try await GoogleDriveService.shared.deleteFile(fileId: fileId)
         await DriveCache.shared.invalidate(fileId: fileId)
         DriveRangeCache.shared.invalidate(fileId: fileId)
+        bridge.invalidateThumbnail(path: item.url.path)
+        let parent = (item.url.path as NSString).deletingLastPathComponent
+        if let cipherDir = bridge.cipherPath(forPlainPath: parent == "." ? "" : parent, isDir: true) {
+            bridge.fs.invalidateListing(cipherDir: cipherDir)
+        }
     }
 
     public func moveItem(_ item: MediaItem, to destinationPath: String) async throws {
@@ -168,19 +186,61 @@ public final class DriveVaultSource: WritableMediaSource, @unchecked Sendable {
         try await GoogleDriveService.shared.moveFile(fileId: fileId, from: srcFolderId, to: destFolderId)
     }
 
+    /// Creates a directory the way gocryptfs does: the Drive folder is named
+    /// with the encrypted name, holds a fresh random gocryptfs.diriv, and a long
+    /// name gets its .name sidecar. Without these the folder is invisible to
+    /// the vault (and to gocryptfs) and its real name is readable on Drive.
     public func createDirectory(named name: String) async throws {
-        let parentPlainDir = currentPath
-        guard let parentFolderId = bridge.driveFolderId(forVaultDir: parentPlainDir) else {
+        guard let parentFolderId = bridge.driveFolderId(forVaultDir: currentPath),
+              let cipherParent = bridge.cipherPath(forPlainPath: currentPath, isDir: true),
+              let cipherName = bridge.encryptFileName(cipherDirPath: cipherParent, plainName: name) else {
             throw GocryptfsError.mkdirFailed("Cannot resolve parent folder")
         }
-        _ = try await GoogleDriveService.shared.createFolder(name: name, parentId: parentFolderId)
+        let sidecar = try bridge.longNameSidecar(cipherDirPath: cipherParent, plainName: name)
+        let drive = GoogleDriveService.shared
+
+        var iv = Data(count: 16)
+        let status = iv.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, 16, $0.baseAddress!) }
+        guard status == errSecSuccess else { throw GocryptfsError.mkdirFailed("no randomness for the directory IV") }
+
+        let folder = try await drive.createFolder(name: cipherName, parentId: parentFolderId)
+        do {
+            _ = try await drive.uploadFile(name: "gocryptfs.diriv", parentId: folder.id,
+                                           data: iv, mimeType: "application/octet-stream")
+            if let sidecar {
+                _ = try await drive.uploadFile(name: cipherName + ".name", parentId: parentFolderId,
+                                               data: Data(sidecar.utf8), mimeType: "application/octet-stream")
+            }
+        } catch {
+            // A folder without its IV is unreadable to gocryptfs; do not leave one.
+            try? await drive.deleteFile(fileId: folder.id)
+            throw error
+        }
+        bridge.fs.invalidateListing(cipherDir: cipherParent)
+    }
+
+    /// Uploads one encrypted file into a vault directory, with the long-name
+    /// sidecar gocryptfs needs, and refreshes the Drive index for that directory.
+    private func uploadEncrypted(_ ciphertext: Data, cipherName: String, plainName: String,
+                                 cipherDir: String, parentFolderId: String) async throws {
+        let drive = GoogleDriveService.shared
+        if let sidecar = try bridge.longNameSidecar(cipherDirPath: cipherDir, plainName: plainName) {
+            _ = try await drive.uploadFile(name: cipherName + ".name", parentId: parentFolderId,
+                                           data: Data(sidecar.utf8), mimeType: "application/octet-stream")
+        }
+        _ = try await drive.uploadFile(name: cipherName, parentId: parentFolderId,
+                                       data: ciphertext, mimeType: "application/octet-stream")
+        bridge.fs.invalidateListing(cipherDir: cipherDir)
     }
 
     public func deleteCurrentDirectory() async throws {
         guard let folderId = bridge.driveFolderId(forVaultDir: currentPath) else {
             throw GocryptfsError.deleteFailed("Cannot resolve current folder ID")
         }
+        let parent = (currentPath as NSString).deletingLastPathComponent
+        let cipherParent = bridge.cipherPath(forPlainPath: parent == "." ? "" : parent, isDir: true)
         try await GoogleDriveService.shared.deleteFile(fileId: folderId)
+        if let cipherParent { bridge.fs.invalidateListing(cipherDir: cipherParent) }
     }
 
     public func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
@@ -211,10 +271,8 @@ public final class DriveVaultSource: WritableMediaSource, @unchecked Sendable {
         }
 
         let ciphertext = try bridge.encryptData(plainData)
-        _ = try await GoogleDriveService.shared.uploadFile(
-            name: cipherName, parentId: parentFolderId,
-            data: ciphertext, mimeType: "application/octet-stream"
-        )
+        try await uploadEncrypted(ciphertext, cipherName: cipherName, plainName: plainName,
+                                  cipherDir: cipherDir, parentFolderId: parentFolderId)
 
         NotificationCenter.default.post(
             name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),

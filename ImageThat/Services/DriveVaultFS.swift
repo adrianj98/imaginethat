@@ -41,6 +41,9 @@ final class DriveVaultFS: @unchecked Sendable {
     private var fileEntries: [String: FileEntry]
     // cipher dir paths that have been listed (prevents duplicate Drive API calls)
     private var listedDirs: Set<String>
+    // cipher dir paths whose listing is being fetched; concurrent callers wait
+    // on the group instead of reading a half-built index
+    private var inFlight: [String: DispatchGroup] = [:]
 
     struct FileEntry {
         let id: String
@@ -216,6 +219,29 @@ final class DriveVaultFS: @unchecked Sendable {
         return folderIds[cipherDir]
     }
 
+    /// Forget what is known about one cipher directory's children so the next
+    /// listing fetches it again from Drive. Call after the app itself creates,
+    /// uploads or deletes something in that directory; without it the index
+    /// keeps serving the listing it fetched first, and new entries stay
+    /// invisible until the vault is reopened.
+    func invalidateListing(cipherDir: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        listedDirs.remove(cipherDir)
+        let prefix = cipherDir.isEmpty ? "" : "\(cipherDir)/"
+        func isDirectChild(_ key: String) -> Bool {
+            guard key.hasPrefix(prefix), key != cipherDir else { return false }
+            let rest = key.dropFirst(prefix.count)
+            return !rest.isEmpty && !rest.contains("/")
+        }
+        for key in fileEntries.keys where isDirectChild(key) { fileEntries.removeValue(forKey: key) }
+        for key in folderIds.keys where isDirectChild(key) {
+            // Keep the folder ID of a directory that is still listed below us:
+            // only drop it if nothing under it has been indexed.
+            if !listedDirs.contains(key) { folderIds.removeValue(forKey: key) }
+        }
+    }
+
     // MARK: - Private
 
     private func parentOf(_ path: String) -> String {
@@ -224,25 +250,50 @@ final class DriveVaultFS: @unchecked Sendable {
         return p == "." ? "" : p
     }
 
+    /// Makes sure one cipher directory's children are in the index.
+    ///
+    /// Only one fetch per directory runs at a time. A caller that arrives while
+    /// it is running waits for it: it used to find the directory already marked
+    /// listed with nothing indexed yet and report a missing gocryptfs.diriv.
+    /// A failed fetch is not remembered, so the next access retries rather than
+    /// seeing an empty directory for the rest of the session.
     private func ensureDirListed(_ cipherPath: String) {
         lock.lock()
-        guard !listedDirs.contains(cipherPath), let folderId = folderIds[cipherPath] else {
+        if listedDirs.contains(cipherPath) {
             lock.unlock()
             return
         }
-        listedDirs.insert(cipherPath) // mark early to prevent concurrent redundant fetches
+        if let running = inFlight[cipherPath] {
+            lock.unlock()
+            running.wait()
+            return
+        }
+        guard let folderId = folderIds[cipherPath] else {
+            lock.unlock()
+            return
+        }
+        let group = DispatchGroup()
+        group.enter()
+        inFlight[cipherPath] = group
         lock.unlock()
 
         let sema = DispatchSemaphore(value: 0)
-        nonisolated(unsafe) var fetched: [DriveAllEntry] = []
+        nonisolated(unsafe) var fetched: [DriveAllEntry]? = nil
         let svc = service
         Task.detached {
-            fetched = (try? await svc.listAllEntries(in: folderId)) ?? []
+            fetched = try? await svc.listAllEntries(in: folderId)
             sema.signal()
         }
         sema.wait()
 
         lock.lock()
+        defer {
+            inFlight[cipherPath] = nil
+            lock.unlock()
+            group.leave()
+        }
+        guard let fetched else { return }
+        listedDirs.insert(cipherPath)
         for entry in fetched {
             let childPath = cipherPath.isEmpty ? entry.name : "\(cipherPath)/\(entry.name)"
             if entry.isFolder {
@@ -251,7 +302,6 @@ final class DriveVaultFS: @unchecked Sendable {
                 fileEntries[childPath] = FileEntry(id: entry.id, modifiedTime: entry.modifiedTime, size: entry.size)
             }
         }
-        lock.unlock()
     }
 
     private func ensureDirListed(parentOf path: String) {

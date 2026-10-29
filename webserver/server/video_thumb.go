@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/adrianm/imagethat/webserver/vault"
+	"github.com/adrianm/imagethat/core/vault"
 )
 
 // videoThumbnailer extracts a single frame from a vault video by piping the

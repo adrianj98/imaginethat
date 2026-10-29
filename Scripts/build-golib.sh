@@ -5,7 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SRCROOT="$(dirname "$SCRIPT_DIR")"
 HELPER_DIR="${SRCROOT}/gocryptfs-lib"
 
-# Skip if Go is not installed or gocryptfs-lib doesn't have go.mod yet
+# Skip if Go is not installed or gocryptfs-lib doesn't have go.mod yet.
+# The shim depends on ../core, whose generated internal/gocryptfs copy must
+# exist (make golib-sync).
 if ! command -v go &> /dev/null; then
     echo "warning: Go not installed, skipping gocryptfs library build"
     exit 0
@@ -31,7 +33,8 @@ CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
     go build -tags without_openssl -buildmode=c-shared \
     -o "${OUTPUT_DIR}/libgocryptfs.dylib" .
 
-# Copy header to source tree for bridging header
-cp "${OUTPUT_DIR}/libgocryptfs.h" "${SRCROOT}/ImageThat/" 2>/dev/null || true
+# The hand-written header in CLibGocryptfs/ is the API; cgo's generated one is
+# not needed by the Swift build.
+rm -f "${OUTPUT_DIR}/libgocryptfs.h"
 
 echo "gocryptfs library built at: ${OUTPUT_DIR}/libgocryptfs.dylib"

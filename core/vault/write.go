@@ -8,9 +8,9 @@ import (
 	"path"
 	"strings"
 
-	"github.com/adrianm/imagethat/webserver/internal/gocryptfs/contentenc"
-	"github.com/adrianm/imagethat/webserver/internal/gocryptfs/cryptocore"
-	"github.com/adrianm/imagethat/webserver/internal/gocryptfs/nametransform"
+	"github.com/adrianm/imagethat/core/internal/gocryptfs/contentenc"
+	"github.com/adrianm/imagethat/core/internal/gocryptfs/cryptocore"
+	"github.com/adrianm/imagethat/core/internal/gocryptfs/nametransform"
 )
 
 // Permissions match what gocryptfs itself writes, so a vault stays consistent
@@ -339,4 +339,70 @@ func chmodIfLocal(fs WriteVFS, relPath string, mode os.FileMode) error {
 		return nil
 	}
 	return os.Chmod(local.abs(relPath), mode)
+}
+
+// Replace writes r over an existing file, or creates the file if there is
+// none. Like Create it streams and never holds the plaintext whole; the new
+// ciphertext is written to a temp file first and swapped in at the end, so a
+// reader never sees a half-written file and a failure leaves the old content
+// in place.
+func (s *Session) Replace(plainPath string, r io.Reader) (int64, error) {
+	if err := s.checkOpen(); err != nil {
+		return 0, err
+	}
+	fs, err := s.writeFS()
+	if err != nil {
+		return 0, err
+	}
+	clean, err := CleanPath(plainPath)
+	if err != nil {
+		return 0, err
+	}
+	if clean == "" {
+		return 0, fmt.Errorf("%w: empty path", ErrInvalidPath)
+	}
+	cipherDir, cName, err := s.resolveParent(clean)
+	if err != nil {
+		return 0, err
+	}
+	target := path.Join(cipherDir, cName)
+	if !fs.Exists(target) {
+		return s.Create(plainPath, r)
+	}
+
+	tmp, tmpPath, err := fs.CreateTemp(cipherDir, ".imagethat-replace-*")
+	if err != nil {
+		return 0, fmt.Errorf("create temp in %s: %w", cipherDir, err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			tmp.Close()
+			_ = fs.Remove(tmpPath)
+		}
+	}()
+
+	written, err := s.encryptStream(tmp, r)
+	if err != nil {
+		return 0, err
+	}
+	if err := tmp.Close(); err != nil {
+		return 0, fmt.Errorf("close temp file: %w", err)
+	}
+
+	// The long-name sidecar for cName already exists and still applies: the
+	// name is unchanged, only the content is.
+	if err := fs.Rename(tmpPath, target); err != nil {
+		// A backend without overwrite-on-rename (SAF) needs the old file out of
+		// the way first. This leaves a short window with no file at the path,
+		// which is the best such a backend can do.
+		if rmErr := fs.Remove(target); rmErr != nil {
+			return 0, fmt.Errorf("replace %s: %w", plainPath, err)
+		}
+		if err := fs.Rename(tmpPath, target); err != nil {
+			return 0, fmt.Errorf("replace %s: %w", plainPath, err)
+		}
+	}
+	committed = true
+	return written, nil
 }

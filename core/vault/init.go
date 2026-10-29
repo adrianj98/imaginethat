@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/adrianm/imagethat/webserver/internal/gocryptfs/configfile"
+	"github.com/adrianm/imagethat/core/internal/gocryptfs/configfile"
 )
 
 // Init creates an empty gocryptfs vault (AES-GCM, encrypted and long names,

@@ -1,5 +1,5 @@
 .PHONY: build run golib clean app test test-logic test-e2e test-fixtures golib-sync \
-        web-build web-all web-run web-test android-aar android-debug android-test
+        core-test slow-video-test golib-test golib-linux golib-linux-test web-build web-all web-run web-test android-aar android-debug android-test
 
 BIN_DIR = $(shell swift build --show-bin-path)
 APP_BUNDLE = build/ImageThat.app
@@ -29,21 +29,55 @@ app: build
 	cp ImageThat/Resources/Info.plist $(APP_BUNDLE)/Contents/Info.plist
 	codesign --force --sign - $(APP_BUNDLE)
 
-# Copy the gocryptfs internal/ packages into gocryptfs-lib. Required once after
+# Copy the gocryptfs internal/ packages into core/. Required once after
 # cloning, and again whenever the pinned gocryptfs version changes.
 golib-sync:
-	./Scripts/sync-gocryptfs.sh
+	$(MAKE) -C core sync
 
-# internal/ is generated, so make the build depend on it existing rather than
-# failing with a confusing "no required module provides package".
-gocryptfs-lib/internal:
-	./Scripts/sync-gocryptfs.sh
+# core/internal/gocryptfs is generated, so make the build depend on it existing
+# rather than failing with a confusing "no required module provides package".
+core/internal/gocryptfs:
+	$(MAKE) -C core sync
 
-# Build the Go shared library
-golib: gocryptfs-lib/internal
+# --- Go core ---------------------------------------------------------------
+# core/ is the Go module shared by the macOS app (through gocryptfs-lib, a cgo
+# shim), the Android app (through gomobile) and the webserver.
+
+# Large video in a vault behind a slow link: a 256 MB synthetic file with a
+# modelled link, and a real MP4 played by ffmpeg/ffprobe over HTTP with real
+# delays (skips without ffmpeg). Tune with IMAGETHAT_SLOW_VIDEO_MB,
+# IMAGETHAT_SLOW_LATENCY_MS and IMAGETHAT_SLOW_MBPS.
+slow-video-test: core/internal/gocryptfs
+	cd core && go test -tags without_openssl -run SlowLink -v ./vault/
+
+# Run the core's Go tests (skips the ones that need FUSE)
+core-test:
+	$(MAKE) -C core test-short
+	cd gocryptfs-lib && CGO_ENABLED=1 go test -tags 'without_openssl shimtest' ./...
+
+# Build the Go shared library the macOS app links: a cgo shim over core/vault
+golib: core/internal/gocryptfs
 	cd gocryptfs-lib && CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 		go build -tags without_openssl -buildmode=c-shared \
 		-o ../build/libgocryptfs.dylib .
+	rm -f build/libgocryptfs.h
+
+# Drive the built dylib through its public C header (CLibGocryptfs/libgocryptfs.h)
+# the way the app does: open, list, range reads, streaming import, replace,
+# seal, move, delete, and a scan of the vault dir for leaked plaintext.
+golib-test: golib
+	bash gocryptfs-lib/ctest/run.sh build/libgocryptfs.dylib
+
+# The same library for Linux (build/libgocryptfs.so). Nothing ships it; it is
+# how the C API gets exercised on a Linux box or in CI without a Mac.
+golib-linux: core/internal/gocryptfs
+	cd gocryptfs-lib && CGO_ENABLED=1 GOOS=linux \
+		go build -tags without_openssl -buildmode=c-shared \
+		-o ../build/libgocryptfs.so .
+	rm -f build/libgocryptfs.h
+
+golib-linux-test: golib-linux
+	bash gocryptfs-lib/ctest/run.sh build/libgocryptfs.so
 
 # --- Go webserver ---------------------------------------------------------
 # A standalone HTTP server that browses the same gocryptfs vaults from a

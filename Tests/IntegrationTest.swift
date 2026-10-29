@@ -119,6 +119,62 @@ struct IntegrationTest {
             check("GocryptfsBridge operations", false, error.localizedDescription)
         }
 
+        // === Test 2b: streaming import never writes plaintext ===
+        print("\n--- Streaming Import Tests ---")
+
+        do {
+            let bridge = try GocryptfsBridge(vaultPath: vaultDir, password: "testpass123")
+            let vaultSource = VaultSource(bridge: bridge)
+
+            // A marker that cannot occur in ciphertext by accident.
+            var payload = Data()
+            for i in 0..<(3 * 1024 * 1024 + 123) { payload.append(UInt8((i * 7 + 3) & 0xff)) }
+            let marker = payload.subdata(in: 4096..<4160)
+
+            let chunks = AsyncThrowingStream<Data, Error> { continuation in
+                var offset = 0
+                while offset < payload.count {
+                    let end = min(offset + 256 * 1024, payload.count)
+                    continuation.yield(payload.subdata(in: offset..<end))
+                    offset = end
+                }
+                continuation.finish()
+            }
+            try await vaultSource.writeChunks(chunks, to: "imported.bin", totalSize: Int64(payload.count))
+
+            let back = try bridge.decryptFile(path: "imported.bin")
+            check("streamed import reads back", back == payload, "got \(back.count) bytes, want \(payload.count)")
+
+            var leaked: [String] = []
+            if let walker = FileManager.default.enumerator(at: vaultDir, includingPropertiesForKeys: [.isRegularFileKey]) {
+                for case let fileURL as URL in walker.allObjects {
+                    guard (try? fileURL.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true,
+                          let bytes = try? Data(contentsOf: fileURL) else { continue }
+                    if bytes.range(of: marker) != nil { leaked.append(fileURL.lastPathComponent) }
+                }
+            }
+            check("no plaintext in the vault directory after import", leaked.isEmpty, "found in \(leaked)")
+
+            // An import that fails part-way leaves no entry behind.
+            let failing = AsyncThrowingStream<Data, Error> { continuation in
+                continuation.yield(payload.subdata(in: 0..<70000))
+                continuation.finish(throwing: MediaError.failedToSaveImage("simulated source failure"))
+            }
+            do {
+                try await vaultSource.writeChunks(failing, to: "aborted.bin", totalSize: Int64(payload.count))
+                check("failed import throws", false)
+            } catch {
+                check("failed import throws", true)
+            }
+            let names = Set(try bridge.listDirectory().map(\.name))
+            check("aborted import leaves no entry", !names.contains("aborted.bin"), "got \(names)")
+
+            try bridge.deleteFile(path: "imported.bin")
+            check("imported file deleted", !(try bridge.listDirectory().map(\.name).contains("imported.bin")))
+        } catch {
+            check("streaming import", false, error.localizedDescription)
+        }
+
         // === Test 3: VaultSource ===
         print("\n--- VaultSource Tests ---")
 
