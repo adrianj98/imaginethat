@@ -1,5 +1,8 @@
 # aj-log
 
+## 2026-10-29 — Android: disk cache budget 512 MB -> 5 GB
+- `EncryptedDiskCache.DEFAULT_BUDGET` = 5 GiB. Why: the user asked for it after videos joined the cache. A ceiling, not a reservation: the store only grows with what is viewed; eviction (oldest first, down to 90%) walks the tree, which at this size can be a few thousand 1 MB pieces, still a fast directory walk.
+
 ## 2026-10-29 — Android: videos cached too (encrypted 1 MB pieces)
 - `CachingSource.open(path, range)`: a ranged read of a video item (what Media3 does) goes through `VideoCacheInput`: every 1 MB-aligned piece found on disk (`CacheKind.VIDEO`, keyed by piece index and file size) is decrypted into memory and served from there; the rest streams from the server, and each aligned piece read in full is sealed onto disk on the way. A piece entered mid-way (a seek) is not stored. One piece in memory at a time; the upstream request is (re)opened on the player's loader thread.
 - `ViewerScreen`: a `CachingSource` (every remote vault now) plays through `VaultDataSource` instead of Media3's `OkHttpDataSource`, so the pieces can be cached; a bare `RemoteSource` keeps the OkHttp path. Lock detection also recognises `SourceError.Locked` in the error's cause chain.

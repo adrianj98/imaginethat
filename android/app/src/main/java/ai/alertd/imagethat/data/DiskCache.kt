@@ -70,8 +70,11 @@ class EncryptedDiskCache(
         if (!root.isDirectory) emptyList() else root.walkTopDown().filter { it.isFile && it.name != SALT_FILE }.toList()
 
     companion object {
-        /** Room for a few videos as well as images and thumbnails; cacheDir may be cleared by the OS anyway. */
-        const val DEFAULT_BUDGET = 512L * 1024 * 1024
+        /**
+         * Room for many videos as well as images and thumbnails. It is a ceiling, not a reservation:
+         * the store grows only with what is viewed, and cacheDir may be cleared by the OS or the user.
+         */
+        const val DEFAULT_BUDGET = 5L * 1024 * 1024 * 1024
         const val DEFAULT_MAX_ENTRY = 16L * 1024 * 1024
         const val KDF_ITERATIONS = 100_000
         internal const val SALT_FILE = "salt"
