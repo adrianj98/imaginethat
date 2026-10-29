@@ -2,6 +2,7 @@ package ai.alertd.imagethat.data
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -96,7 +97,16 @@ class CachingSource(
 
     override suspend fun open(path: String, range: LongRange?): InputStream {
         val key = norm(path)
-        if (range != null) return guard { inner.open(path, range) }
+        if (range != null) {
+            // A ranged read is the player streaming a video: serve and store it chunk by chunk on disk.
+            val d = disk?.takeIf { it.isOpen }
+            val item = if (d != null) knownItem(key) else null
+            if (d != null && item != null && !item.isDir && item.media == MediaKind.VIDEO && item.size > 0 && range.first <= range.last) {
+                val end = minOf(range.last, item.size - 1)
+                if (range.first <= end) return VideoCacheInput(key, item.size, range.first, end, d) { r -> guard { inner.open(path, r) } }
+            }
+            return guard { inner.open(path, range) }
+        }
         files.get(key)?.let { return ByteArrayInputStream(it) }
         val expected = cacheableImageSize(key)
         if (expected != null) {
@@ -372,3 +382,94 @@ private class RecordingInput(
         if (n == expected) onComplete(done)
     }
 }
+
+/**
+ * A ranged read of a video (the player streaming it) served in [VIDEO_CHUNK]-aligned pieces: every
+ * piece that is on disk is decrypted into memory and served from there, the rest streams from
+ * [upstream], and each aligned piece read in full from upstream is sealed onto disk on the way, so a
+ * replay or a seek back no longer asks the server. One piece is held in memory at a time. A piece
+ * first entered mid-way (a seek) is not stored. Reads happen on the player's loader thread, which
+ * is also where upstream is (re)opened.
+ */
+private class VideoCacheInput(
+    private val key: String,
+    private val size: Long,
+    private var pos: Long,
+    private val end: Long,
+    private val disk: VaultDiskCache,
+    private val upstream: suspend (LongRange) -> InputStream,
+) : InputStream() {
+    private var piece: ByteArray? = null // served from disk
+    private var pieceStart = 0L
+    private var up: InputStream? = null // upstream, positioned at pos when not null
+    private var build: ByteArray? = null // the aligned piece being assembled from upstream
+    private var buildN = 0
+    private var buildIndex = 0L
+
+    override fun read(): Int {
+        val b = ByteArray(1)
+        return if (read(b, 0, 1) < 0) -1 else b[0].toInt() and 0xff
+    }
+
+    override fun read(b: ByteArray, off: Int, len: Int): Int {
+        if (len == 0) return 0
+        if (pos > end) return -1
+        piece?.let { p ->
+            val i = (pos - pieceStart).toInt()
+            if (i < p.size) {
+                val n = minOf(len.toLong(), (p.size - i).toLong(), end - pos + 1).toInt()
+                System.arraycopy(p, i, b, off, n)
+                pos += n
+                return n
+            }
+            piece = null
+        }
+        val index = pos / VIDEO_CHUNK
+        val start = index * VIDEO_CHUNK
+        val pieceEnd = minOf(start + VIDEO_CHUNK, size) // exclusive
+        if (pos == start || up == null) {
+            disk.get(CacheKind.VIDEO, key, variant(index))?.let { p ->
+                closeUpstream()
+                piece = p
+                pieceStart = start
+                return read(b, off, len)
+            }
+        }
+        val u = up ?: runBlocking { upstream(pos..end) }.also { up = it }
+        if (pos == start && build == null) {
+            build = ByteArray((pieceEnd - start).toInt())
+            buildN = 0
+            buildIndex = index
+        }
+        // Never read across a piece boundary, so a completed piece is exactly the aligned one.
+        val n = u.read(b, off, minOf(len.toLong(), pieceEnd - pos, end - pos + 1).toInt())
+        if (n < 0) return -1
+        build?.let { bb ->
+            System.arraycopy(b, off, bb, buildN, n)
+            buildN += n
+            if (buildN == bb.size) {
+                disk.put(CacheKind.VIDEO, key, variant(buildIndex), bb)
+                build = null
+            }
+        }
+        pos += n
+        return n
+    }
+
+    override fun close() {
+        closeUpstream()
+        piece = null
+        build = null
+    }
+
+    private fun closeUpstream() {
+        runCatching { up?.close() }
+        up = null
+        build = null
+    }
+
+    private fun variant(index: Long) = "$index-$size"
+}
+
+/** Videos are cached in pieces of this many bytes; each piece is one encrypted entry on disk. */
+internal const val VIDEO_CHUNK = 1024L * 1024

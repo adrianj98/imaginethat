@@ -70,7 +70,8 @@ class EncryptedDiskCache(
         if (!root.isDirectory) emptyList() else root.walkTopDown().filter { it.isFile && it.name != SALT_FILE }.toList()
 
     companion object {
-        const val DEFAULT_BUDGET = 256L * 1024 * 1024
+        /** Room for a few videos as well as images and thumbnails; cacheDir may be cleared by the OS anyway. */
+        const val DEFAULT_BUDGET = 512L * 1024 * 1024
         const val DEFAULT_MAX_ENTRY = 16L * 1024 * 1024
         const val KDF_ITERATIONS = 100_000
         internal const val SALT_FILE = "salt"
@@ -81,7 +82,7 @@ class EncryptedDiskCache(
 }
 
 /** What an entry holds; the suffix keeps the kinds of one file apart on disk and in the AAD. */
-enum class CacheKind(internal val suffix: String) { LISTING("l"), THUMB("t"), FILE("f") }
+enum class CacheKind(internal val suffix: String) { LISTING("l"), THUMB("t"), FILE("f"), VIDEO("v") }
 
 /** One vault's part of an [EncryptedDiskCache]. Every method is blocking I/O; call it off the main thread. */
 class VaultDiskCache internal constructor(

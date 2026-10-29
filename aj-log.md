@@ -1,5 +1,11 @@
 # aj-log
 
+## 2026-10-29 — Android: videos cached too (encrypted 1 MB pieces)
+- `CachingSource.open(path, range)`: a ranged read of a video item (what Media3 does) goes through `VideoCacheInput`: every 1 MB-aligned piece found on disk (`CacheKind.VIDEO`, keyed by piece index and file size) is decrypted into memory and served from there; the rest streams from the server, and each aligned piece read in full is sealed onto disk on the way. A piece entered mid-way (a seek) is not stored. One piece in memory at a time; the upstream request is (re)opened on the player's loader thread.
+- `ViewerScreen`: a `CachingSource` (every remote vault now) plays through `VaultDataSource` instead of Media3's `OkHttpDataSource`, so the pieces can be cached; a bare `RemoteSource` keeps the OkHttp path. Lock detection also recognises `SourceError.Locked` in the error's cause chain.
+- `EncryptedDiskCache.DEFAULT_BUDGET` 256 -> 512 MB to make room for a few videos. Why: the user asked for videos to be cached as well.
+- Test: `CachingSourceTest.videosAreServedAndStoredInAlignedPieces` (seek stores only aligned pieces, replay and seek back ask nothing of the server, survives a new instance, passthrough while locked, delete drops the pieces).
+
 ## 2026-10-29 — Android: encrypted on-disk cache layer (survives restarts)
 - `android/.../data/DiskCache.kt` (new): `EncryptedDiskCache` under `cacheDir/vault-cache`, one directory per vault (hash of the source id), 256 MB budget with least-recently-used eviction, 16 MB per entry. `VaultDiskCache.unlock(password)` derives the vault's key with PBKDF2-SHA256 (100k rounds, random salt file); the key lives in memory until `lock()`, the ciphertext stays. Entries are AES-256-GCM (random nonce; kind, path and variant bound as AAD) and the folder tree is mirrored with HMAC-named segments, so subtree invalidation is a directory delete. Undecryptable entries (other password) are dropped as misses.
   - Why: the user asked for caching across restarts. CLAUDE.md forbids decrypted content on disk; this writes ciphertext only, keyed from the vault password (chosen over an Android Keystore key so the cache is exactly as protected as the vault). Decision recorded in the session.

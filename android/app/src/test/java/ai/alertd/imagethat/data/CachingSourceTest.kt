@@ -36,8 +36,11 @@ class CountingSource : VaultSource {
         return tree[CachingSource.norm(path)]?.toList() ?: emptyList()
     }
 
+    val openRanges = ArrayList<LongRange?>()
+
     override suspend fun open(path: String, range: LongRange?): InputStream {
         opens++
+        openRanges += range
         error?.let { throw it }
         val b = data[path] ?: throw SourceError.NotFound
         return ByteArrayInputStream(if (range == null) b else b.copyOfRange(range.first.toInt(), range.last.toInt() + 1))
@@ -441,6 +444,48 @@ class CachingSourceTest {
         src.error = SourceError.Locked
         try { c.list("/d"); fail() } catch (e: SourceError.Locked) {}
         assertFalse(disk.isOpen)
+    }
+
+    @Test fun videosAreServedAndStoredInAlignedPieces() = runTest {
+        val src = inner()
+        val size = (VIDEO_CHUNK * 5 / 2).toInt() // two full pieces and a half
+        val video = ByteArray(size) { (it * 31 % 253).toByte() }
+        src.tree["/"]!!.add(Item("/v.mp4", "v.mp4", false, size.toLong(), MediaKind.VIDEO))
+        src.data["/v.mp4"] = video
+        val store = EncryptedDiskCache(tmp.newFolder("video"), budgetBytes = 100_000_000, maxEntryBytes = 2 * VIDEO_CHUNK, kdfIterations = 1_000)
+        fun vault() = store.forVault("srv:v1").apply { unlock("pw".toCharArray()) }
+        val c = cached(src, ttl = 300_000, disk = vault())
+        c.list("/")
+
+        // A seek to the middle of piece 1: that piece is not stored, piece 2 is.
+        val seek = VIDEO_CHUNK + 1234
+        assertArrayEquals(video.copyOfRange(seek.toInt(), size), c.open("/v.mp4", seek until size).use { it.readBytes() })
+        assertEquals(listOf(seek until size), src.openRanges)
+        // Only piece 2 (the half piece) is on disk, plus the small listing entry.
+        assertTrue(store.totalBytes() in (VIDEO_CHUNK / 2)..(VIDEO_CHUNK / 2 + 1_000))
+
+        // Play from the start: pieces 0 and 1 come from the server (one request, up to piece 2), piece 2 from disk.
+        assertArrayEquals(video, c.open("/v.mp4", 0L until size).use { it.readBytes() })
+        assertEquals(2, src.opens)
+        assertEquals(0L until size, src.openRanges[1])
+        assertTrue(store.totalBytes() in size.toLong()..(size + 3_000L))
+
+        // Replay, and a seek back: nothing is asked of the server any more, not even after a restart.
+        assertArrayEquals(video, c.open("/v.mp4", 0L until size).use { it.readBytes() })
+        assertArrayEquals(video.copyOfRange(seek.toInt(), size), c.open("/v.mp4", seek until size).use { it.readBytes() })
+        val later = cached(src, ttl = 300_000, disk = vault())
+        assertArrayEquals(video.copyOfRange(10, 20), later.open("/v.mp4", 10L..19L).use { it.readBytes() })
+        assertEquals(2, src.opens)
+
+        // Without an open disk layer the range read goes straight through.
+        val locked = cached(src, ttl = 300_000, disk = store.forVault("srv:v1").also { it.lock() })
+        locked.list("/")
+        assertArrayEquals(video.copyOfRange(0, 10), locked.open("/v.mp4", 0L..9L).use { it.readBytes() })
+        assertEquals(3, src.opens)
+        // Deleting the file drops its pieces.
+        vault()
+        c.delete("/v.mp4")
+        assertTrue(store.totalBytes() < 1_000)
     }
 
     @Test fun defaultBudgetsAreSane() {
