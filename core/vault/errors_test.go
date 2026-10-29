@@ -10,8 +10,9 @@ import (
 	"github.com/adrianm/imagethat/core/internal/gocryptfs/contentenc"
 )
 
-// failingVFS wraps a VFS and fails ReadAt once the read offset reaches
-// failAfter, so tests can distinguish "end of file" from "the disk broke".
+// failingVFS wraps a VFS and fails at failAtOffset, so tests can distinguish
+// "end of file" from "the disk broke". A read spanning the failure point
+// returns what lies before it plus the error, as a real disk does.
 type failingVFS struct {
 	VFS
 	failAtOffset int64
@@ -21,6 +22,10 @@ type failingVFS struct {
 func (v *failingVFS) ReadAt(path string, offset int64, buf []byte) (int, error) {
 	if offset >= v.failAtOffset {
 		return 0, v.err
+	}
+	if end := offset + int64(len(buf)); end > v.failAtOffset {
+		n, _ := v.VFS.ReadAt(path, offset, buf[:v.failAtOffset-offset])
+		return n, v.err
 	}
 	return v.VFS.ReadAt(path, offset, buf)
 }
@@ -77,6 +82,10 @@ type shortReadVFS struct {
 func (v *shortReadVFS) ReadAt(path string, offset int64, buf []byte) (int, error) {
 	if offset >= v.cutoff {
 		return 0, io.EOF
+	}
+	if end := offset + int64(len(buf)); end > v.cutoff {
+		n, _ := v.VFS.ReadAt(path, offset, buf[:v.cutoff-offset])
+		return n, io.EOF
 	}
 	return v.VFS.ReadAt(path, offset, buf)
 }

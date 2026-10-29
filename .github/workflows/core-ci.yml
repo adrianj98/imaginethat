@@ -55,10 +55,12 @@ jobs:
       # The interop test mounts a vault with the real gocryptfs binary and
       # checks it agrees with what this module wrote. Without it the write
       # tests would only prove we can read back our own output.
-      - name: Install gocryptfs for interop tests
+      # ffmpeg/ffprobe act as the video player in the slow-link test
+      # (vault/slowvideo_test.go); without them that test skips.
+      - name: Install gocryptfs for interop tests, ffmpeg for the slow-link video test
         run: |
           sudo apt-get update
-          sudo apt-get install -y fuse3
+          sudo apt-get install -y fuse3 ffmpeg
           go install -tags without_openssl github.com/rfjakob/gocryptfs/v2@v2.6.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 

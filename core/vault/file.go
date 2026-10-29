@@ -10,6 +10,11 @@ import (
 	"github.com/adrianm/imagethat/core/internal/gocryptfs/contentenc"
 )
 
+// maxBlocksPerRead bounds one backend read in ReadAt: 256 blocks is 1 MiB of
+// plaintext (about 1.03 MiB of ciphertext), the largest request a player or
+// the shims make, so a typical request is a single round trip.
+const maxBlocksPerRead = 256
+
 // File is an open, decrypted view of one file in the vault.
 //
 // It implements io.ReadSeeker, io.ReaderAt and io.Closer, which is what lets
@@ -35,6 +40,18 @@ type File struct {
 	mu     sync.Mutex
 	pos    int64
 	closed bool
+
+	// ahead holds decrypted bytes [aheadOff, aheadOff+len(ahead)) fetched by
+	// Read beyond what its caller asked for. Read is the sequential path
+	// (http.ServeContent, io.Copy), whose callers pass 32 KiB buffers; without
+	// it every 32 KiB is one backend round trip. Memory only, wiped when
+	// replaced and on Close. Guarded by mu; ReadAt never touches it.
+	ahead    []byte
+	aheadOff int64
+	// aheadWin is the next refill size: it starts small so a short read (a
+	// probe, a header sniff) fetches little, and doubles up to readAheadSize
+	// while reads stay sequential.
+	aheadWin int
 }
 
 var (
@@ -122,6 +139,8 @@ func (f *File) Close() error {
 		return nil
 	}
 	f.closed = true
+	wipe(f.ahead)
+	f.ahead = nil
 	if f.handle != nil {
 		return f.handle.Close()
 	}
@@ -157,13 +176,20 @@ func (f *File) ReadAt(p []byte, off int64) (int, error) {
 	firstBlock := uint64(off) / plainBS
 	lastBlock := uint64(off+want-1) / plainBS
 
-	blockBuf := make([]byte, cipherBS)
-	defer wipe(blockBuf)
+	// The ciphertext of consecutive blocks is contiguous, so it is fetched in
+	// one backend read per run of up to maxBlocksPerRead blocks rather than one
+	// per 4 KiB block. On a network or SAF backend every read is a round trip:
+	// per-block reads made a 1 MiB request cost 256 of them.
+	runLen := min(lastBlock-firstBlock+1, maxBlocksPerRead)
+	cipherBuf := make([]byte, runLen*cipherBS)
 
 	var written int64
-	for blockNo := firstBlock; blockNo <= lastBlock; blockNo++ {
+	blockNo := firstBlock
+	for blockNo <= lastBlock && written < want {
+		count := min(lastBlock-blockNo+1, maxBlocksPerRead)
+		chunk := cipherBuf[:count*cipherBS]
 		cipherOff := int64(contentenc.HeaderLen) + int64(blockNo*cipherBS)
-		n, readErr := f.readCipherAt(blockBuf, cipherOff)
+		n, readErr := f.readCipherAt(chunk, cipherOff)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			// A genuine backend failure must not be reported as a clean end of
 			// file — that would hand the client a silently truncated download.
@@ -174,31 +200,32 @@ func (f *File) ReadAt(p []byte, off int64) (int, error) {
 			break
 		}
 
-		plain, err := f.sess.decryptBlock(blockBuf[:n], blockNo, f.header.ID)
-		if err != nil {
-			return int(written), fmt.Errorf("decrypt block %d of %s: %w", blockNo, f.cipherPath, err)
+		// Decrypt each block of the run and slice the requested window out.
+		for data := chunk[:n]; len(data) > 0 && blockNo <= lastBlock; blockNo++ {
+			cblock := data[:min(int(cipherBS), len(data))]
+			data = data[len(cblock):]
+
+			plain, err := f.sess.decryptBlock(cblock, blockNo, f.header.ID)
+			if err != nil {
+				return int(written), fmt.Errorf("decrypt block %d of %s: %w", blockNo, f.cipherPath, err)
+			}
+			blockPlainOff := int64(blockNo * plainBS)
+			start := int64(0)
+			if off > blockPlainOff {
+				start = off - blockPlainOff
+			}
+			end := int64(len(plain))
+			if blockPlainOff+end > off+want {
+				end = off + want - blockPlainOff
+			}
+			if start < end {
+				written += int64(copy(p[written:], plain[start:end]))
+			}
+			wipe(plain)
 		}
 
-		// Slice the requested window out of this block.
-		blockPlainOff := int64(blockNo * plainBS)
-		start := int64(0)
-		if off > blockPlainOff {
-			start = off - blockPlainOff
-		}
-		end := int64(len(plain))
-		if blockPlainOff+end > off+want {
-			end = off + want - blockPlainOff
-		}
-		if start < end {
-			written += int64(copy(p[written:], plain[start:end]))
-		}
-		wipe(plain)
-
-		if readErr != nil {
-			// io.EOF here just means the last block was partial.
-			break
-		}
-		if written >= want {
+		if readErr != nil || n < len(chunk) {
+			// io.EOF or a short read here means the last block was partial.
 			break
 		}
 	}
@@ -213,24 +240,75 @@ func (f *File) ReadAt(p []byte, off int64) (int, error) {
 	return int(written), nil
 }
 
-// Read implements io.Reader, advancing the seek offset.
-func (f *File) Read(p []byte) (int, error) {
-	f.mu.Lock()
-	pos := f.pos
-	f.mu.Unlock()
+// readAheadSize is the most Read fetches when its caller asks for less: one
+// backend round trip per MiB instead of one per caller buffer. The window
+// starts at readAheadMin and grows while reads stay sequential.
+const (
+	readAheadSize = int(maxBlocksPerRead) * 4096
+	readAheadMin  = 128 << 10
+)
 
-	n, err := f.ReadAt(p, pos)
-	if n > 0 {
-		f.mu.Lock()
-		f.pos = pos + int64(n)
-		f.mu.Unlock()
-		// A short read at the end of the file is not an error for io.Reader;
-		// the next Read reports EOF.
-		if errors.Is(err, io.EOF) {
-			err = nil
-		}
+// Read implements io.Reader, advancing the seek offset. Small reads are served
+// from a read-ahead window, so a sequential copy costs one backend read per
+// MiB. Like any io.Reader it is not for concurrent use; ReadAt is.
+func (f *File) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
 	}
-	return n, err
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return 0, ErrClosed
+	}
+	if f.pos >= f.plainSize {
+		return 0, io.EOF
+	}
+
+	// Serve from the window when pos falls inside it.
+	if f.pos >= f.aheadOff && f.pos < f.aheadOff+int64(len(f.ahead)) {
+		n := copy(p, f.ahead[f.pos-f.aheadOff:])
+		f.pos += int64(n)
+		return n, nil
+	}
+
+	// A large read goes straight through: buffering it gains nothing.
+	if len(p) >= readAheadSize {
+		n, err := f.ReadAt(p, f.pos)
+		f.pos += int64(n)
+		if n > 0 && errors.Is(err, io.EOF) {
+			err = nil // the next Read reports EOF
+		}
+		return n, err
+	}
+
+	// Refill the window at pos, growing it if this continues the last one.
+	sequential := len(f.ahead) > 0 && f.pos == f.aheadOff+int64(len(f.ahead))
+	switch {
+	case !sequential || f.aheadWin == 0:
+		f.aheadWin = max(readAheadMin, len(p))
+	case f.aheadWin < readAheadSize:
+		f.aheadWin = min(f.aheadWin*2, readAheadSize)
+	}
+	if cap(f.ahead) < f.aheadWin {
+		wipe(f.ahead[:cap(f.ahead)])
+		f.ahead = make([]byte, f.aheadWin)
+	} else {
+		wipe(f.ahead[:cap(f.ahead)])
+	}
+	buf := f.ahead[:f.aheadWin]
+	n, err := f.ReadAt(buf, f.pos)
+	if n == 0 {
+		f.ahead = f.ahead[:0]
+		return 0, err
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		f.ahead = f.ahead[:0]
+		return 0, err
+	}
+	f.ahead, f.aheadOff = buf[:n], f.pos
+	m := copy(p, f.ahead)
+	f.pos += int64(m)
+	return m, nil
 }
 
 // Seek implements io.Seeker over the plaintext.

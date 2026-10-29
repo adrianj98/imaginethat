@@ -1,5 +1,5 @@
 .PHONY: build run golib clean app test test-logic test-e2e test-fixtures golib-sync \
-        core-test golib-test golib-linux golib-linux-test web-build web-all web-run web-test android-aar android-debug android-test
+        core-test slow-video-test golib-test golib-linux golib-linux-test web-build web-all web-run web-test android-aar android-debug android-test
 
 BIN_DIR = $(shell swift build --show-bin-path)
 APP_BUNDLE = build/ImageThat.app
@@ -42,6 +42,13 @@ core/internal/gocryptfs:
 # --- Go core ---------------------------------------------------------------
 # core/ is the Go module shared by the macOS app (through gocryptfs-lib, a cgo
 # shim), the Android app (through gomobile) and the webserver.
+
+# Large video in a vault behind a slow link: a 256 MB synthetic file with a
+# modelled link, and a real MP4 played by ffmpeg/ffprobe over HTTP with real
+# delays (skips without ffmpeg). Tune with IMAGETHAT_SLOW_VIDEO_MB,
+# IMAGETHAT_SLOW_LATENCY_MS and IMAGETHAT_SLOW_MBPS.
+slow-video-test: core/internal/gocryptfs
+	cd core && go test -tags without_openssl -run SlowLink -v ./vault/
 
 # Run the core's Go tests (skips the ones that need FUSE)
 core-test:
