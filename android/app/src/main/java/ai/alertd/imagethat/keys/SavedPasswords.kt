@@ -19,6 +19,8 @@ object PasswordIds {
     fun folder(folderId: String) = "folder:$folderId"
     fun server(serverKey: String, vaultId: String) = "server:$serverKey:$vaultId"
     fun serverPrefix(serverKey: String) = "server:$serverKey:"
+    /** A client-decrypt server's access password; under [serverPrefix] so removing the server forgets it. */
+    fun serverAccess(serverKey: String) = "server:$serverKey:#access"
 }
 
 /**

@@ -21,6 +21,8 @@ sealed class LocalError(message: String, cause: Throwable? = null) : Exception(m
     class ReadOnly(m: String, c: Throwable? = null) : LocalError(m, c)
     /** The vault was closed (locked) while the call was in flight, e.g. lockAll racing an open or a save. */
     class Closed(m: String, c: Throwable? = null) : LocalError(m, c)
+    /** A client-decrypt server refused its access password (openRemote). */
+    class WrongAccessPassword(m: String, c: Throwable? = null) : LocalError(m, c)
     class Other(m: String, c: Throwable? = null) : LocalError(m, c)
 
     companion object {
@@ -29,6 +31,7 @@ sealed class LocalError(message: String, cause: Throwable? = null) : Exception(m
             val m = e.message ?: e.toString()
             return when {
                 m.startsWith("wrong_password") -> WrongPassword(m, e)
+                m.startsWith("wrong_access_password") -> WrongAccessPassword(m, e)
                 m.startsWith("no_config") -> NoConfig(m, e)
                 m.startsWith("not_found") -> NotFound(m, e)
                 m.startsWith("exists") -> Exists(m, e)
@@ -72,6 +75,18 @@ class LocalVaults(
 
     fun openOffline(password: CharArray): Vault =
         track(withPassword(password) { Mobile.openLocal(offlineDir.absolutePath, it) })
+
+    /**
+     * Opens a vault on a client-decrypt imagethat-web server: the engine logs in with [access]
+     * (the server's access password), fetches only ciphertext and unlocks the vault here, so
+     * [password] never leaves the phone. Read-only. Blocks on the network; zeroes both arrays.
+     */
+    fun openRemote(baseUrl: String, vaultId: String, pin: String?, password: CharArray, access: CharArray): Vault =
+        try {
+            track(withPassword(password) { pw -> withPassword(access) { ap -> Mobile.openRemote(baseUrl, vaultId, pw, pin.orEmpty(), ap) } })
+        } finally {
+            access.fill('\u0000')
+        }
 
     fun openFolder(folder: SavedFolder, password: CharArray): Vault {
         try {

@@ -54,6 +54,38 @@ class ApiClientTest {
         assertEquals("/api/vaults", r.path)
     }
 
+    @Test fun modeReadsInfo() = runTest {
+        server.enqueue(json("""{"mode":"client-decrypt","version":"1"}"""))
+        assertEquals(ServerMode.CLIENT_DECRYPT, client.mode())
+        assertEquals("/api/info", server.takeRequest().path)
+        server.enqueue(json("""{"mode":"server-decrypt"}"""))
+        assertEquals(ServerMode.SERVER_DECRYPT, client.mode())
+    }
+
+    @Test fun modeOfServerWithoutInfoIsServerDecrypt() = runTest {
+        server.enqueue(json("""{"error":"no such endpoint"}""", 404))
+        assertEquals(ServerMode.SERVER_DECRYPT, client.mode())
+    }
+
+    @Test fun loginPostsAccessPasswordAndKeepsCookie() = runTest {
+        server.enqueue(json("""{"vaults":[]}""").setHeader("Set-Cookie", "imagethat_session=tok; Path=/; HttpOnly"))
+        server.enqueue(json("""{"vaults":[{"id":"ab12","name":"Holiday","unlocked":false}]}"""))
+        val pw = "access-pw".toCharArray()
+        client.login(pw)
+        assertArrayEquals("access-pw".toCharArray(), pw)
+        val r = server.takeRequest()
+        assertEquals("POST", r.method)
+        assertEquals("/api/login", r.path)
+        assertTrue(r.body.readUtf8().contains("\"password\":\"access-pw\""))
+        client.vaults()
+        assertEquals("imagethat_session=tok", server.takeRequest().getHeader("Cookie"))
+    }
+
+    @Test fun loginWrongAccessPassword() = runTest {
+        server.enqueue(json("""{"error":"wrong password"}""", 401))
+        assertEquals(RemoteError.WrongAccessPassword, expectError { client.login("x".toCharArray()) })
+    }
+
     @Test fun unlockPostsJsonPasswordWithEscaping() = runTest {
         server.enqueue(json("""{"vaults":[]}"""))
         val pw = "p\"w\\\né€".toCharArray()

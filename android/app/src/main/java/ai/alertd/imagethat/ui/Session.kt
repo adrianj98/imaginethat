@@ -6,6 +6,7 @@ import ai.alertd.imagethat.keys.KeyVault
 import ai.alertd.imagethat.keys.SavedPasswords
 import ai.alertd.imagethat.local.LocalVaults
 import ai.alertd.imagethat.remote.ApiClient
+import ai.alertd.imagethat.remote.ServerMode
 import android.os.SystemClock
 import androidx.fragment.app.FragmentActivity
 import kotlinx.coroutines.CoroutineScope
@@ -36,8 +37,28 @@ sealed interface SessionEvent {
     object AllLocked : SessionEvent
 }
 
-/** A connected remote server; [key] is the saved server's id, or a random one for an unsaved server. */
-class RemoteServer(val key: String, val label: String, val url: String, val api: ApiClient)
+/**
+ * A connected remote server; [key] is the saved server's id, or a random one for an unsaved server.
+ * For a client-decrypt server [mode] is set once known, and the access password is held here in
+ * memory to log in again after the server's idle timeout; [forgetAccess] zeroes it.
+ */
+class RemoteServer(val key: String, val label: String, val url: String, val api: ApiClient) {
+    @Volatile var mode: ServerMode? = null
+    private var access: CharArray? = null
+
+    @Synchronized fun setAccess(password: CharArray) {
+        access?.fill('\u0000')
+        access = password.copyOf()
+    }
+
+    /** A copy the caller must zero, or null when not logged in. */
+    @Synchronized fun accessCopy(): CharArray? = access?.copyOf()
+
+    @Synchronized fun forgetAccess() {
+        access?.fill('\u0000')
+        access = null
+    }
+}
 
 /**
  * App-scoped holder of everything that is unlocked: the app lock itself (with the saved passwords
@@ -152,7 +173,10 @@ class Session(
 
     @Synchronized
     fun registerServer(server: RemoteServer) {
-        servers.put(server.key, server)?.takeIf { it.api !== server.api }?.api?.close()
+        servers.put(server.key, server)?.takeIf { it.api !== server.api }?.let {
+            it.forgetAccess()
+            it.api.close()
+        }
     }
 
     @Synchronized fun server(key: String): RemoteServer? = servers[key]
@@ -267,6 +291,7 @@ class Session(
     }
 
     private fun logoutAndClose(s: RemoteServer) {
+        s.forgetAccess()
         scope.launch {
             try {
                 withTimeout(LOGOUT_TIMEOUT_MS) { s.api.logout() }
