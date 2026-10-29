@@ -33,6 +33,17 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME is not vX.Y.Z"
             exit 1
           fi
+          # Android versionCode = major*10000 + minor*100 + patch, so minor and
+          # patch must stay below 100 or two versions collide (1.0.100 == 1.1.0).
+          IFS=. read -r major minor patch <<< "$version"
+          if (( 10#$minor > 99 || 10#$patch > 99 )); then
+            echo "::error::tag $GITHUB_REF_NAME: minor and patch must be 0-99 (Android versionCode is major*10000+minor*100+patch)"
+            exit 1
+          fi
+          if (( 10#$major > 2000 )); then
+            echo "::error::tag $GITHUB_REF_NAME: major version above 2000 is not a real release"
+            exit 1
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   webserver:

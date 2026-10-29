@@ -8,6 +8,10 @@ on:
       - 'webserver/vault/**'
       - 'webserver/mobile/**'
       - 'webserver/go.mod'
+      - 'webserver/go.sum'
+      - 'webserver/Makefile'
+      - 'webserver/scripts/sync-gocryptfs.sh'
+      - '.github/actions/android-setup/**'
       - '.github/workflows/android-ci.yml'
   pull_request:
     paths:
@@ -15,6 +19,10 @@ on:
       - 'webserver/vault/**'
       - 'webserver/mobile/**'
       - 'webserver/go.mod'
+      - 'webserver/go.sum'
+      - 'webserver/Makefile'
+      - 'webserver/scripts/sync-gocryptfs.sh'
+      - '.github/actions/android-setup/**'
       - '.github/workflows/android-ci.yml'
   workflow_dispatch:
 

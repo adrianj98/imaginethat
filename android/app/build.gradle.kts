@@ -48,6 +48,10 @@ android {
 
     buildTypes {
         release { signingConfig = signingConfigs.getByName("release") }
+        // Own package so a debug build (and its destructive instrumented tests, see
+        // NoPlaintextOnDiskTest) never shares data with the installed release app.
+        // The "(debug)" label is in src/debug/res/values/strings.xml.
+        debug { applicationIdSuffix = ".debug" }
     }
 
     buildFeatures { compose = true }
