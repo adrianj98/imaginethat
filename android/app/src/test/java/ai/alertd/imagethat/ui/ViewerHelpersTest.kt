@@ -1,5 +1,8 @@
 package ai.alertd.imagethat.ui
 
+import ai.alertd.imagethat.data.Item
+import ai.alertd.imagethat.data.MediaKind
+import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.Lifecycle
 import androidx.media3.common.Player
 import java.lang.reflect.Proxy
@@ -36,5 +39,18 @@ class ViewerHelpersTest {
         assertEquals(listOf("pause"), calls)
         pauseOnStop(p, Lifecycle.Event.ON_START)
         assertEquals(listOf("pause"), calls) // no auto-resume
+    }
+
+    @Test fun detailsLineLeavesOutWhatIsUnknown() {
+        val img = Item("/a.jpg", "a.jpg", false, 3_984_588, MediaKind.IMAGE)
+        assertEquals("4032 × 3024 · 3.8 MB", details(img, IntSize(4032, 3024)))
+        assertEquals("3.8 MB", details(img, null))
+        assertEquals("", details(img.copy(size = 0), null))
+    }
+
+    @Test fun fileTypeNamesExtensionAndKind() {
+        assertEquals("JPG image", fileType(Item("/a.jpg", "a.jpg", false, 1, MediaKind.IMAGE)))
+        assertEquals("MP4 video", fileType(Item("/c.mp4", "c.mp4", false, 1, MediaKind.VIDEO)))
+        assertEquals("File", fileType(Item("/README", "README", false, 1, MediaKind.OTHER)))
     }
 }

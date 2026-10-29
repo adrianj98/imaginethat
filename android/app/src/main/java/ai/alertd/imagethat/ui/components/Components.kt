@@ -554,16 +554,25 @@ fun FootnoteText(text: String, modifier: Modifier = Modifier) {
     Text(text, modifier, color = Palette.TextTertiary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = androidx.compose.ui.text.font.FontWeight.Normal, lineHeight = 18.sp))
 }
 
-/** Text button for [ai.alertd.imagethat.ui.SecureAlertDialog]: accent, or [destructive] coral. */
+/** Text button for dialogs and headers: accent, [destructive] coral, or secondary when not [emphasized]; [color] overrides. */
 @Composable
-fun DialogButton(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, destructive: Boolean = false, enabled: Boolean = true, emphasized: Boolean = true) {
-    val color = when {
+fun DialogButton(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    destructive: Boolean = false,
+    enabled: Boolean = true,
+    emphasized: Boolean = true,
+    color: Color? = null,
+) {
+    val fg = when {
         !enabled -> Palette.TextTertiary
+        color != null -> color
         destructive -> Palette.Destructive
         emphasized -> Palette.Accent
         else -> Palette.TextSecondary
     }
-    Surface(onClick = onClick, enabled = enabled, modifier = modifier.heightIn(min = 44.dp), shape = CircleShape, color = Color.Transparent, contentColor = color) {
+    Surface(onClick = onClick, enabled = enabled, modifier = modifier.heightIn(min = 44.dp), shape = CircleShape, color = Color.Transparent, contentColor = fg) {
         Box(Modifier.padding(horizontal = 14.dp), contentAlignment = Alignment.Center) {
             Text(text, style = MaterialTheme.typography.labelLarge.copy(fontSize = 15.sp))
         }
