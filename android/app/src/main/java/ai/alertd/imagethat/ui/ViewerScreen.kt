@@ -3,9 +3,9 @@ package ai.alertd.imagethat.ui
 import ai.alertd.imagethat.R
 import ai.alertd.imagethat.data.Item
 import ai.alertd.imagethat.data.MediaKind
-import ai.alertd.imagethat.data.RemoteSource
 import ai.alertd.imagethat.data.SourceError
 import ai.alertd.imagethat.data.VaultSource
+import ai.alertd.imagethat.data.remoteSource
 import ai.alertd.imagethat.media.VaultDataSource
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -280,8 +280,9 @@ private fun VideoPage(session: Session, sourceId: String, source: VaultSource, i
 
     val player = remember(item.path) {
         // No CacheDataSource anywhere: decrypted bytes only ever live in player memory.
-        val (factory: DataSource.Factory, uri) = if (source is RemoteSource) {
-            OkHttpDataSource.Factory(source.httpClient) to Uri.parse(source.fileUrl(item.path))
+        val remote = source.remoteSource()
+        val (factory: DataSource.Factory, uri) = if (remote != null) {
+            OkHttpDataSource.Factory(remote.httpClient) to Uri.parse(remote.fileUrl(item.path))
         } else {
             DataSource.Factory { VaultDataSource(source) } to Uri.parse("vault://local").buildUpon().path(item.path).build()
         }

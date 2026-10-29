@@ -1,5 +1,6 @@
 package ai.alertd.imagethat.ui
 
+import ai.alertd.imagethat.data.CachingSource
 import ai.alertd.imagethat.data.RemoteSource
 import ai.alertd.imagethat.remote.RemoteError
 import ai.alertd.imagethat.remote.RemoteVault
@@ -57,12 +58,16 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    fun refresh() {
+    /** Shows the remembered list when it is recent; [force] (Refresh, Retry) always asks the server. */
+    fun refresh(force: Boolean = false) {
         if (server == null) return
+        if (!force) {
+            server.cachedVaults()?.let { load = Load.Loaded(it); return }
+        }
         scope.launch(Dispatchers.Main) {
             load = try {
                 // The server forgets sessions when it restarts and then reports unlocked = false: that is just "locked" here.
-                Load.Loaded(server.api.vaults())
+                Load.Loaded(server.api.vaults().also { server.rememberVaults(it) })
             } catch (e: CancellationException) {
                 throw e
             } catch (e: RemoteError.CertMismatch) {
@@ -76,12 +81,22 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
 
     fun open(vault: RemoteVault) {
         val id = remoteSourceId(serverKey, vault.id)
-        if (session.source(id) == null) session.registerSource(id, vault.name, RemoteSource(server!!.api, vault.id))
+        // CachingSource: listings, thumbnails and viewed images are kept in memory so browsing does
+        // not hit the server for the same thing twice; the Session clears it when the vault locks.
+        if (session.source(id) == null) session.registerSource(id, vault.name, CachingSource(RemoteSource(server!!.api, vault.id)))
         onOpen(id)
     }
 
     Scaffold(topBar = {
-        TopAppBar(title = { Text(server?.label ?: "Server") }, navigationIcon = { TextButton(onClick = onBack) { Text("Back") } })
+        TopAppBar(
+            title = { Text(server?.label ?: "Server") },
+            navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
+            actions = {
+                if (server != null) {
+                    TextButton(onClick = { load = Load.Loading; refresh(force = true) }, modifier = Modifier.testTag("vaults-refresh")) { Text("Refresh") }
+                }
+            },
+        )
     }) { pad ->
         Column(Modifier.fillMaxSize().padding(pad)) {
             when (val l = load) {
@@ -97,7 +112,7 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
                 is Load.Unreachable -> Card(Modifier.fillMaxWidth().padding(16.dp)) {
                     Column(Modifier.padding(16.dp)) {
                         Text(l.message, color = MaterialTheme.colorScheme.error)
-                        TextButton(onClick = { load = Load.Loading; refresh() }) { Text("Retry") }
+                        TextButton(onClick = { load = Load.Loading; refresh(force = true) }) { Text("Retry") }
                     }
                 }
                 is Load.Loaded -> if (l.vaults.isEmpty()) {
@@ -130,6 +145,8 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
                 scope.launch(Dispatchers.Main) {
                     try {
                         server!!.api.unlock(v.id, pw)
+                        server.markUnlocked(v.id)
+                        (load as? Load.Loaded)?.let { l -> load = Load.Loaded(l.vaults.map { if (it.id == v.id) it.copy(unlocked = true) else it }) }
                         unlocking = null
                         open(v)
                     } catch (e: CancellationException) {

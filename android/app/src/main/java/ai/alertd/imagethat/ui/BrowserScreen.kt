@@ -195,6 +195,11 @@ private fun BrowserContent(
                             menuOpen = false
                             newFolder = ""
                         })
+                        // Listings are served from memory; this asks the vault again (changes by other clients).
+                        DropdownMenuItem(text = { Text("Refresh") }, modifier = Modifier.testTag("menu-refresh"), onClick = {
+                            menuOpen = false
+                            vm.refresh(force = true)
+                        })
                     }
                 }
             }

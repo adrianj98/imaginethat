@@ -1,5 +1,12 @@
 # aj-log
 
+## 2026-10-29 — Android: cache remote vault reads in memory
+- `android/.../data/CachingSource.kt` (new): `VaultSource` wrapper around `RemoteSource`. Folder listings are kept for 5 minutes (bounded to 512 folders), thumbnail bytes and whole viewed images in byte-budgeted LRUs sized from the heap (1/16 and 1/8 of max heap, clamped), `size()` answers from the cached parent listing. Upload/mkdir/move/delete forget the listings, thumbnails and files they touch, so the app's own changes are never stale; `SourceError.Locked` empties the cache.
+  - Why: every navigation, every scroll back and every swipe back in the viewer re-asked the server for the same listing, thumbnail or image. Memory only, per CLAUDE.md: nothing new is written to disk (no OkHttp disk cache, Coil still memory-only).
+- `RemoteServer` (Session.kt): remembers the server's vault list for 5 minutes; `markUnlocked` patches the state after an unlock here, `forgetVaults` on a 401 from one of its vaults and on lock-all. `Session.reportLocked`/`lockAll` also clear every `CachingSource`.
+- `RemoteVaultsScreen`: serves the remembered list, wraps opened vaults in `CachingSource`, new "Refresh" action (Retry also forces). `BrowserScreen`: "Refresh" item in the + menu -> `BrowserViewModel.refresh(force = true)` which invalidates the folder's listing first. `ViewerScreen`: finds the `RemoteSource` through the wrapper (`remoteSource()`) for the Media3 OkHttp data source.
+- Tests: `CachingSourceTest` (TTL, size from listing, thumbnail/file LRU and limits, invalidation per write, Locked clears, ByteLru), `BrowserCachingTest` (browser over the cache lists each folder once, forced refresh, own changes visible).
+
 ## 2026-10-28 — Task 4 fix round 1
 - `.github/workflows/webserver-ci.yml`, `release.yml`: setup-go now uses `go-version-file: webserver/go.mod` instead of '1.24'. Why: go.mod now says go 1.26.0, so CI must follow it.
 - `VaultcoreSmokeTest.kt`: Kotlin `assert` replaced by `assertTrue`. Why: JVM assertions are disabled on ART, so the check did nothing on device.
