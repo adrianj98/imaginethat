@@ -107,7 +107,8 @@ public class AppState: ObservableObject {
 
     @objc private func handleFileTransferProgress(_ notification: Notification) {
         guard let tuple = notification.object as? (current: Int64, total: Int64, startTime: Date) else { return }
-        self.fileTransferProgress = tuple
+        // Sources post this from their write task; @Published must change on the main thread.
+        DispatchQueue.main.async { self.fileTransferProgress = tuple }
     }
 
     public func addFavorite(url: URL) {

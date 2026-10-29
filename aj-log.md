@@ -411,3 +411,6 @@ User request: update the Mac app with the design canvas (Browser, Viewer, Edit m
 - **VaultUnlockSheet:** centered glass card over a dimmed "X is locked" state: accent shield tile, “Unlock "name"”, in-memory note, password field, Touch ID switch row, vault path. Same unlock/Keychain logic.
 - **PreferencesView:** grouped white cards (`SettingsGroup`/`SettingsRow`). Saved passwords have Forget/Forget All, thumbnail cache has Clear, there is a debug plaintext toggle, Drive cache has a limit picker and Clear, shortcut keys are capsules. Same logic.
 - **SidebarView:** favorites use a folder icon, plus a "Decrypted in memory only" footer while a vault is open. The native sidebar is kept, since on macOS 26 it is already the floating glass panel.
+
+## 2026-10-29 — Mac app: import crash fix
+- **AppState.handleFileTransferProgress:** the progress notification is posted from the source's write task. Setting `fileTransferProgress` there changed a `@Published` value off the main thread, and SwiftUI then crashed while updating the main menu ("modification of a menu's items on a non-main thread"). It now hops to the main queue. *Why:* importing a file into a vault crashed the app after the first chunk. Found while reproducing the video report.
