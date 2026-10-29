@@ -15,7 +15,7 @@ import (
 )
 
 // wrapErr prefixes err with a stable code Kotlin can switch on:
-// wrong_password:, no_config:, not_found:, exists:, invalid_path:.
+// wrong_password:, no_config:, not_found:, exists:, invalid_path:, closed:.
 // Errors without a code are returned unchanged.
 func wrapErr(err error) error {
 	if err == nil {
@@ -33,6 +33,8 @@ func wrapErr(err error) error {
 		code = "exists"
 	case errors.Is(err, vault.ErrInvalidPath):
 		code = "invalid_path"
+	case errors.Is(err, vault.ErrClosed):
+		code = "closed"
 	default:
 		return err
 	}

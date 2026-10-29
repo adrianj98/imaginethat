@@ -51,6 +51,65 @@ func TestInitRefusesExistingVault(t *testing.T) {
 	}
 }
 
+// initFailVFS fails WriteFile for one name until fail is cleared.
+type initFailVFS struct {
+	WriteVFS
+	failName string
+	fail     bool
+}
+
+func (f *initFailVFS) WriteFile(path string, data []byte) error {
+	if f.fail && path == f.failName {
+		return errors.New("injected write failure")
+	}
+	return f.WriteVFS.WriteFile(path, data)
+}
+
+// A failed diriv write must not leave a gocryptfs.conf behind: conf is the
+// commit marker, so the folder stays retryable.
+func TestInitRetryAfterFailedDirIV(t *testing.T) {
+	dir := t.TempDir()
+	f := &initFailVFS{WriteVFS: NewLocalFS(dir), failName: "gocryptfs.diriv", fail: true}
+	if err := Init(f, "pw-123456"); err == nil {
+		t.Fatal("Init with failing diriv write succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "gocryptfs.conf")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("gocryptfs.conf after failed diriv write: stat err = %v; want not exist", err)
+	}
+	f.fail = false
+	if err := Init(f, "pw-123456"); err != nil {
+		t.Fatalf("retry Init: %v", err)
+	}
+	s, err := Open(NewLocalFS(dir), "pw-123456")
+	if err != nil {
+		t.Fatalf("Open after retry: %v", err)
+	}
+	s.Close()
+}
+
+// A failed conf write leaves only a diriv; Init must accept that on retry.
+func TestInitToleratesLeftoverDirIV(t *testing.T) {
+	dir := t.TempDir()
+	f := &initFailVFS{WriteVFS: NewLocalFS(dir), failName: "gocryptfs.conf", fail: true}
+	if err := Init(f, "pw-123456"); err == nil {
+		t.Fatal("Init with failing conf write succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "gocryptfs.diriv")); err != nil {
+		t.Fatalf("diriv should exist after failed conf write: %v", err)
+	}
+	if err := Init(NewLocalFS(dir), "pw-123456"); err != nil {
+		t.Fatalf("Init over leftover diriv: %v", err)
+	}
+	s, err := Open(NewLocalFS(dir), "pw-123456")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.Create("a.txt", strings.NewReader("hello")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+}
+
 func TestOpenNoConfig(t *testing.T) {
 	if _, err := Open(NewLocalFS(t.TempDir()), "pw"); !errors.Is(err, ErrNoConfig) {
 		t.Fatalf("Open empty dir = %v; want ErrNoConfig", err)

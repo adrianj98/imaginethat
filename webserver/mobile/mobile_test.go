@@ -147,6 +147,25 @@ func TestErrorCodes(t *testing.T) {
 	}
 }
 
+func TestClosedErrorCode(t *testing.T) {
+	v, _ := newVault(t)
+	put(t, v, "a.txt", []byte("hi"))
+	if err := v.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.List(""); err == nil || !strings.HasPrefix(err.Error(), "closed:") {
+		t.Fatalf("List after Close = %v; want closed: prefix", err)
+	}
+	if _, err := v.ReadRange("a.txt", 0, 2); err == nil || !strings.HasPrefix(err.Error(), "closed:") {
+		t.Fatalf("ReadRange after Close = %v; want closed: prefix", err)
+	}
+	w, _ := v.Create("b.txt")
+	_ = w.Write([]byte("x"))
+	if err := w.Close(); err == nil || !strings.HasPrefix(err.Error(), "closed:") {
+		t.Fatalf("FileWriter.Close after Close = %v; want closed: prefix", err)
+	}
+}
+
 func TestFileWriterBoundedMemory(t *testing.T) {
 	v, _ := newVault(t)
 	chunk := make([]byte, 256<<10)

@@ -14,7 +14,8 @@ import (
 // per-directory IVs) in the root of v, protected by password.
 //
 // It refuses to touch a location that already holds a gocryptfs.conf; the
-// returned error then wraps fs.ErrExist.
+// returned error then wraps fs.ErrExist. A gocryptfs.diriv without a conf
+// (left by an interrupted Init) is overwritten.
 func Init(v WriteVFS, password string) error {
 	if v.Exists(configfile.ConfDefaultName) {
 		return fmt.Errorf("vault: %s already exists: %w", configfile.ConfDefaultName, fs.ErrExist)
@@ -49,8 +50,11 @@ func Init(v WriteVFS, password string) error {
 	if _, err := rand.Read(iv); err != nil {
 		return err
 	}
-	if err := v.WriteFile(configfile.ConfDefaultName, conf); err != nil {
+	// diriv first, gocryptfs.conf last: the conf is the commit marker. A
+	// failure before it leaves at most a stray diriv, which the Exists check
+	// above ignores and the retry overwrites, so the folder stays usable.
+	if err := v.WriteFile("gocryptfs.diriv", iv); err != nil {
 		return err
 	}
-	return v.WriteFile("gocryptfs.diriv", iv)
+	return v.WriteFile(configfile.ConfDefaultName, conf)
 }
