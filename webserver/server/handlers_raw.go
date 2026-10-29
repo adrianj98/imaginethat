@@ -69,7 +69,7 @@ func (s *Server) rawPath(w http.ResponseWriter, r *http.Request) (string, bool) 
 
 // handleRawList lists one ciphertext directory, names still encrypted.
 func (s *Server) handleRawList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireVault(w, r); !ok {
+	if !s.requireRawAccess(w, r) {
 		return
 	}
 	dir, ok := s.rawPath(w, r)
@@ -96,13 +96,60 @@ func (s *Server) handleRawList(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, rawEntry{Name: e.Name(), IsDir: e.IsDir(), Size: size})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"entries": out})
+	// The directory IV and long-name sidecars ride along, so a client can
+	// decrypt the whole listing from this one response.
+	resp := rawListResponse{Entries: out, LongNames: map[string]string{}}
+	if iv, err := readSmall(filepath.Join(dir, dirIVName), 64); err == nil {
+		resp.DirIV = iv
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, longNamePrefix) || strings.HasSuffix(name, longNameSuffix) {
+			continue
+		}
+		if b, err := readSmall(filepath.Join(dir, name+longNameSuffix), maxLongNameFile); err == nil {
+			resp.LongNames[name] = string(b)
+		}
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+const (
+	dirIVName      = "gocryptfs.diriv"
+	longNamePrefix = "gocryptfs.longname."
+	longNameSuffix = ".name"
+	// A long-name sidecar holds one base64 encrypted name; gocryptfs names are
+	// at most 255 bytes, so this is generous.
+	maxLongNameFile = 4096
+)
+
+// rawListResponse is a ciphertext directory listing. DirIV is the
+// directory's gocryptfs.diriv (base64 in JSON), absent for a plaintext-names
+// vault. LongNames maps each gocryptfs.longname.* entry to its sidecar's
+// content, the full encrypted name.
+type rawListResponse struct {
+	Entries   []rawEntry        `json:"entries"`
+	DirIV     []byte            `json:"dirIV,omitempty"`
+	LongNames map[string]string `json:"longNames"`
+}
+
+// readSmall reads a regular file of at most limit bytes, refusing symlinks
+// so a planted link cannot pull in a file from outside the vault.
+func readSmall(p string, limit int64) ([]byte, error) {
+	info, err := os.Lstat(p)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Size() > limit {
+		return nil, fs.ErrInvalid
+	}
+	return os.ReadFile(p)
 }
 
 // handleRawFile serves ciphertext bytes, with Range and HEAD support. The
 // vault's gocryptfs.conf is the file at path "gocryptfs.conf".
 func (s *Server) handleRawFile(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.requireVault(w, r); !ok {
+	if !s.requireRawAccess(w, r) {
 		return
 	}
 	p, ok := s.rawPath(w, r)

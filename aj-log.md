@@ -1,5 +1,15 @@
 # aj-log
 
+## 2026-10-29 — Client-decrypt mode, step 1: the server
+- User asked whether gocryptfs could run in the browser, then chose: decrypt in every client so the server never sees a vault password; a separate server access password; read-only first; keep today's mode behind a flag. Design and research in `docs/superpowers/specs/2026-10-29-client-decrypt-design.md` (Go→wasm worked at 35 MB/s; WebCrypto AES-GCM ~450–530 MB/s in Chrome and was chosen; EME names on WebCrypto verified against native Go).
+- `webserver/server/server.go`: `Config.Mode` (`server-decrypt` default, `client-decrypt`), `AccessPasswordHash` (bcrypt; required in client-decrypt, refused otherwise), `Version`.
+- `server/handlers_access.go` (new): `GET /api/info` (mode, version; no session), `POST /api/login` (origin-checked, rate limited per client, bcrypt check, marks the session logged in), `requireRawAccess` (unlocked vault in server-decrypt, logged-in session in client-decrypt), `HashAccessPassword`.
+- `server/handlers_fs.go`: routes depend on mode; in client-decrypt mode `/unlock`, `/lock`, decrypted list/file, thumbnails and writes are not registered, and `/api/vaults` needs a login. `auth.go`: `browserSession.loggedIn`.
+- `server/handlers_raw.go`: `raw/list` also returns `dirIV` and `longNames` (sidecar contents) in both modes so a directory decrypts from one response; sidecars read with `Lstat`, regular files only, size-capped.
+- `cmd/imagethat-web/main.go`: `-mode`, `-access-password-file`, `-hash-password` (no-echo terminal prompt twice, or one stdin line; refuses >72 bytes); ffmpeg is not looked up in client-decrypt mode. `go.mod`: x/crypto and x/term now direct (same versions). README documents the mode, flags and endpoints.
+- Tests: `server/access_test.go` (config validation, info, login/logout/other-browser isolation, decrypting endpoints absent and no vault ever unlocked, login absent in server-decrypt, rate limit, cross-origin login, dirIV and long names in listings). `newTestServerWith` helper.
+- Verified: `go test ./server/` passes (all existing and new), `go vet` on webserver and gocryptfs-lib.
+
 ## 2026-10-29 — Video progress bar shows what is cached
 - User asked to see on the video progress what is cached.
 - `TransportBarView.swift`: a 3 px strip under the scrubber: green = held in the persistent disk cache, faint white = loaded into memory by AVPlayer, track behind. Tooltip explains the colours.
