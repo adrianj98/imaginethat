@@ -9,14 +9,23 @@ import java.io.File
 /** A Session over private temp state so tests never touch the app's real state file or offline vault. */
 class TestFixture(
     var now: Long = 0L,
-    biometrics: Boolean = true,
+    /** What the app lock reports for "a biometric or screen lock is set up". */
+    var appLockAvailable: Boolean = true,
     idleMs: Long = 5 * 60_000L,
     backgroundMs: Long = 60_000L,
 ) {
     val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
     val dir = File(context.cacheDir, "ui-fixture-${System.nanoTime()}").also { it.mkdirs() }
-    // requireAuth = false: emulators have no enrolled biometrics, so wrap/unwrap skip the prompt.
-    val keys = KeyVault(context, requireAuth = false, stateFile = File(dir, "state.bin"))
+    /** Its own Keystore alias, so tests never touch the app's real master key. */
+    val masterAlias = "imagethat.vault-master.test-${System.nanoTime()}"
+    /** Replaces the biometric prompt; set [cancelPrompt] to simulate the user cancelling. */
+    var cancelPrompt = false
+    var prompts = 0
+    // requireAuth = false: emulators have no enrolled biometrics, so the master key needs no prompt.
+    val keys = KeyVault(
+        context, requireAuth = false, stateFile = File(dir, "state.bin"), masterAlias = masterAlias,
+        authenticator = { _, c -> prompts++; if (cancelPrompt) null else c },
+    )
     val local = LocalVaults(context, keys.store(), File(dir, "offline"))
     var imageCacheClears = 0
     val alarm = FakeAlarm()
@@ -24,15 +33,18 @@ class TestFixture(
         keys, local,
         clock = { now },
         clearImageCache = { imageCacheClears++ },
-        biometricsAvailable = { biometrics },
+        appLockAvailable = { appLockAvailable },
         idleTimeoutMs = idleMs,
         backgroundTimeoutMs = backgroundMs,
         alarm = alarm,
     )
 
+    /** Passes the app lock as the lock screen would (no prompt on an emulator). */
+    fun unlockApp() = check(kotlinx.coroutines.runBlocking { session.unlockApp(null) })
+
     fun cleanup() {
         session.lockAll()
-        for (id in listOf("offline")) keys.forget(id)
+        keys.clearSavedPasswords()
         dir.deleteRecursively()
     }
 

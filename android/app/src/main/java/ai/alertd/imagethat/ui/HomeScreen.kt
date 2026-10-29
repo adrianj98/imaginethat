@@ -1,5 +1,6 @@
 package ai.alertd.imagethat.ui
 
+import ai.alertd.imagethat.keys.PasswordIds
 import ai.alertd.imagethat.keys.SavedFolder
 import ai.alertd.imagethat.keys.SavedServer
 import ai.alertd.imagethat.local.LocalError
@@ -7,7 +8,9 @@ import ai.alertd.imagethat.remote.ApiClient
 import android.content.Intent
 import android.net.Uri
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -53,7 +56,7 @@ private fun savedFolderLabel(uri: Uri): String =
     uri.lastPathSegment?.substringAfterLast(':')?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "Folder"
 
 /** Servers, vaults on this phone (offline vault and picked folders), and lock-all. */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     session: Session,
@@ -73,6 +76,8 @@ fun HomeScreen(
     var newVaultUri by remember { mutableStateOf<Uri?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var pickingTimeout by remember { mutableStateOf(false) }
+    /** (password id, label) whose saved password the user asked to forget. */
+    var forgetting by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     fun refresh() { state = session.keys.state() }
 
@@ -81,7 +86,13 @@ fun HomeScreen(
         runCatching { context.contentResolver.takePersistableUriPermission(uri, flags) }
     }
 
-    fun folderTarget(f: SavedFolder) = LocalTarget(folderSourceId(f), f.label) { pw -> session.local.openFolder(f, pw) }
+    fun folderTarget(f: SavedFolder) =
+        LocalTarget(folderSourceId(f), PasswordIds.folder(f.id), f.label) { pw -> session.local.openFolder(f, pw) }
+
+    /** Long-press: offer to forget a saved password; nothing to do when none is saved. */
+    fun offerForget(id: String, label: String) {
+        if (session.hasSavedPassword(id)) forgetting = id to label
+    }
 
     val openFolder = rememberPickerLauncher(session, ActivityResultContracts.OpenDocumentTree()) { uri ->
         if (uri == null) return@rememberPickerLauncher
@@ -126,6 +137,7 @@ fun HomeScreen(
                         trailingContent = {
                             TextButton(onClick = {
                                 session.keys.store().update { st -> st.copy(servers = st.servers.filterNot { it.id == s.id }) }
+                                session.forgetPasswords { it.startsWith(PasswordIds.serverPrefix(s.id)) }
                                 refresh()
                             }) { Text("Remove") }
                         },
@@ -149,10 +161,12 @@ fun HomeScreen(
                             },
                         )
                     },
-                    modifier = Modifier.clickable {
+                    modifier = Modifier.combinedClickable(
+                        onLongClick = { offerForget(PasswordIds.OFFLINE, "Offline vault") },
+                    ) {
                         if (!session.local.offlineExists()) onSetOfflinePassword()
-                        else openLocal(LocalTarget(OFFLINE_ID, "Offline vault") { pw -> session.local.openOffline(pw) })
-                    },
+                        else openLocal(LocalTarget(OFFLINE_ID, PasswordIds.OFFLINE, "Offline vault") { pw -> session.local.openOffline(pw) })
+                    }.testTag("offline-row"),
                 )
             }
             state.folders.forEach { f ->
@@ -162,12 +176,14 @@ fun HomeScreen(
                         supportingContent = { Text(if (folderSourceId(f) in open) "Unlocked" else "Locked") },
                         trailingContent = {
                             TextButton(onClick = {
-                                session.keys.forget(folderSourceId(f))
+                                session.forgetPassword(PasswordIds.folder(f.id))
                                 session.keys.store().update { st -> st.copy(folders = st.folders.filterNot { it.id == f.id }) }
                                 refresh()
                             }) { Text("Remove") }
                         },
-                        modifier = Modifier.clickable { openLocal(folderTarget(f)) },
+                        modifier = Modifier.combinedClickable(onLongClick = { offerForget(PasswordIds.folder(f.id), f.label) }) {
+                            openLocal(folderTarget(f))
+                        },
                     )
                 }
             }
@@ -217,14 +233,27 @@ fun HomeScreen(
     }
 
     newVaultUri?.let { uri ->
+        val folder = remember(uri) { SavedFolder(UUID.randomUUID().toString(), savedFolderLabel(uri), uri.toString()) }
         NewFolderVaultDialog(
             onDismiss = { newVaultUri = null },
-            create = { pw -> withContext(Dispatchers.Default) { session.local.createInFolder(uri, pw) } },
+            create = { pw ->
+                val toSave = pw.copyOf() // createInFolder zeroes pw
+                try {
+                    withContext(Dispatchers.Default) { session.local.createInFolder(uri, pw) }
+                    withContext(Dispatchers.IO) { runCatching { session.savePassword(PasswordIds.folder(folder.id), toSave) } }
+                } finally {
+                    toSave.fill('\u0000')
+                }
+            },
             onCreated = {
-                saveFolder(SavedFolder(UUID.randomUUID().toString(), savedFolderLabel(uri), uri.toString()))
+                saveFolder(folder)
                 newVaultUri = null
             },
         )
+    }
+
+    forgetting?.let { (id, label) ->
+        ForgetPasswordDialog(label, onForget = { session.forgetPassword(id); forgetting = null }, onDismiss = { forgetting = null })
     }
 }
 

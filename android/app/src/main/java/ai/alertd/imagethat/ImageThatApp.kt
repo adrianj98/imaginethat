@@ -9,7 +9,6 @@ import android.app.Application
 import android.content.Context
 import android.os.Bundle
 import androidx.biometric.BiometricManager
-import androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG
 import coil3.ImageLoader
 import coil3.PlatformContext
 import coil3.SingletonImageLoader
@@ -29,8 +28,8 @@ class AppContainer(private val context: Context) {
     val session = Session(
         keys, local,
         clearImageCache = { SingletonImageLoader.get(context).memoryCache?.clear() },
-        biometricsAvailable = {
-            BiometricManager.from(context).canAuthenticate(BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
+        appLockAvailable = {
+            BiometricManager.from(context).canAuthenticate(KeyVault.appLockAuthenticators()) == BiometricManager.BIOMETRIC_SUCCESS
         },
         alarm = AndroidLockAlarm(context),
     )

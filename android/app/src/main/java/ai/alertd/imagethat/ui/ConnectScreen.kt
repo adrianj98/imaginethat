@@ -62,7 +62,6 @@ internal fun fingerprintDisplay(sha256: String) = sha256.chunked(2).joinToString
 fun ConnectScreen(session: Session, onBack: () -> Unit, onConnected: (serverKey: String) -> Unit) {
     val scope = rememberCoroutineScope()
     var url by remember { mutableStateOf("") }
-    var remember by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var untrusted by remember { mutableStateOf<Pair<HttpUrl, String>?>(null) }
@@ -74,7 +73,7 @@ fun ConnectScreen(session: Session, onBack: () -> Unit, onConnected: (serverKey:
             val api = ApiClient(target, pin)
             try {
                 api.vaults() // proves the server is reachable and speaks the API
-                val key = finishConnect(session, target, pin, api, remember)
+                val key = finishConnect(session, target, pin, api)
                 untrusted = null
                 onConnected(key)
             } catch (e: CancellationException) {
@@ -122,7 +121,6 @@ fun ConnectScreen(session: Session, onBack: () -> Unit, onConnected: (serverKey:
                     modifier = Modifier.testTag("connect-http-warning"),
                 )
             }
-            CheckRow("Remember this server", remember, { remember = it })
             error?.let { Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("connect-error")) }
             untrusted?.let { (target, fp) ->
                 Card(Modifier.fillMaxWidth()) {
@@ -150,17 +148,16 @@ fun ConnectScreen(session: Session, onBack: () -> Unit, onConnected: (serverKey:
     }
 }
 
-private fun finishConnect(session: Session, target: HttpUrl, pin: String?, api: ApiClient, remember: Boolean): String {
+/** Every server that connects is remembered (URL, label, pinned cert) in the encrypted state file. */
+private fun finishConnect(session: Session, target: HttpUrl, pin: String?, api: ApiClient): String {
     val label = if (target.port == HttpUrl.defaultPort(target.scheme)) target.host else "${target.host}:${target.port}"
     var key = UUID.randomUUID().toString()
-    if (remember) {
-        val urlText = target.toString()
-        session.keys.store().update { st ->
-            val existing = st.servers.firstOrNull { it.url == urlText }
-            if (existing != null) key = existing.id
-            val saved = SavedServer(key, existing?.label ?: label, urlText, pin)
-            st.copy(servers = st.servers.filterNot { it.id == key } + saved)
-        }
+    val urlText = target.toString()
+    session.keys.store().update { st ->
+        val existing = st.servers.firstOrNull { it.url == urlText }
+        if (existing != null) key = existing.id
+        val saved = SavedServer(key, existing?.label ?: label, urlText, pin)
+        st.copy(servers = st.servers.filterNot { it.id == key } + saved)
     }
     session.registerServer(RemoteServer(key, label, target.toString(), api))
     return key

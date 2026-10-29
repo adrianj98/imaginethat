@@ -17,8 +17,12 @@ interface SecretCipher {
 class StateStore(private val file: File, private val cipher: SecretCipher) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    @Synchronized
-    fun load(): AppState {
+    /** Shared by every StateStore over the same file, so read-modify-write updates never interleave. */
+    private val lock: Any = locks.computeIfAbsent(file.absoluteFile.normalize().path) { Any() }
+
+    fun load(): AppState = synchronized(lock) { loadLocked() }
+
+    private fun loadLocked(): AppState {
         if (!file.exists()) return AppState()
         return try {
             json.decodeFromString(AppState.serializer(), String(cipher.decrypt(file.readBytes()), Charsets.UTF_8))
@@ -33,11 +37,14 @@ class StateStore(private val file: File, private val cipher: SecretCipher) {
         }
     }
 
-    @Synchronized
-    fun update(block: (AppState) -> AppState) {
-        val bytes = cipher.encrypt(json.encodeToString(AppState.serializer(), block(load())).toByteArray(Charsets.UTF_8))
+    fun update(block: (AppState) -> AppState): Unit = synchronized(lock) {
+        val bytes = cipher.encrypt(json.encodeToString(AppState.serializer(), block(loadLocked())).toByteArray(Charsets.UTF_8))
         val tmp = File(file.parentFile, file.name + ".tmp")
         FileOutputStream(tmp).use { it.write(bytes); it.fd.sync() }
         Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+    }
+
+    private companion object {
+        val locks = java.util.concurrent.ConcurrentHashMap<String, Any>()
     }
 }

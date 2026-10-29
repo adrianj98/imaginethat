@@ -58,10 +58,15 @@ internal fun NewPasswordFields(state: NewPasswordState) {
     }
 }
 
-/** Sets the password of the built-in offline vault and creates it. */
+/** Sets the password of the built-in offline vault, creates it, and saves the password ([savePassword]). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SetOfflinePasswordScreen(local: LocalVaults, onDone: () -> Unit, onSkip: () -> Unit) {
+fun SetOfflinePasswordScreen(
+    local: LocalVaults,
+    onDone: () -> Unit,
+    onSkip: () -> Unit,
+    savePassword: (CharArray) -> Unit = {},
+) {
     val scope = rememberCoroutineScope()
     val state = remember { NewPasswordState() }
     var busy by remember { mutableStateOf(false) }
@@ -80,11 +85,13 @@ fun SetOfflinePasswordScreen(local: LocalVaults, onDone: () -> Unit, onSkip: () 
                     enabled = state.valid && !busy,
                     onClick = {
                         val pw = state.password.toCharArray()
+                        val toSave = pw.copyOf() // createOffline zeroes pw
                         busy = true
                         error = null
                         scope.launch(Dispatchers.Main) {
                             try {
                                 withContext(Dispatchers.Default) { local.createOffline(pw) }
+                                withContext(Dispatchers.IO) { runCatching { savePassword(toSave) } }
                                 state.clear()
                                 onDone()
                             } catch (e: CancellationException) {
@@ -93,6 +100,7 @@ fun SetOfflinePasswordScreen(local: LocalVaults, onDone: () -> Unit, onSkip: () 
                                 error = LocalError.from(e).message ?: "Could not create the vault"
                             } finally {
                                 pw.fill('\u0000')
+                                toSave.fill('\u0000')
                                 busy = false
                             }
                         }

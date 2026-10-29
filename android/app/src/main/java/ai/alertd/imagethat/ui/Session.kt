@@ -1,10 +1,13 @@
 package ai.alertd.imagethat.ui
 
 import ai.alertd.imagethat.data.VaultSource
+import ai.alertd.imagethat.keys.AppUnlock
 import ai.alertd.imagethat.keys.KeyVault
+import ai.alertd.imagethat.keys.SavedPasswords
 import ai.alertd.imagethat.local.LocalVaults
 import ai.alertd.imagethat.remote.ApiClient
 import android.os.SystemClock
+import androidx.fragment.app.FragmentActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -37,8 +40,9 @@ sealed interface SessionEvent {
 class RemoteServer(val key: String, val label: String, val url: String, val api: ApiClient)
 
 /**
- * App-scoped holder of everything that is unlocked: open [VaultSource]s and
- * connected [ApiClient]s. Nothing here is persisted. [lockAll] drops it all.
+ * App-scoped holder of everything that is unlocked: the app lock itself (with the saved passwords
+ * decrypted for this session), open [VaultSource]s and connected [ApiClient]s. Nothing here is
+ * persisted. [lockAll] drops it all and puts the app back behind its lock screen.
  *
  * Auto-lock is deadline based on an injectable [clock] (milliseconds): the app
  * calls [tick] periodically and [onForeground] on return. A backgrounded
@@ -51,8 +55,8 @@ class Session(
     val local: LocalVaults,
     private val clock: () -> Long = { SystemClock.elapsedRealtime() },
     private val clearImageCache: () -> Unit = {},
-    /** True when a strong biometric is enrolled, so the "unlock with biometrics" shortcut can be offered. */
-    val biometricsAvailable: () -> Boolean = { false },
+    /** True when the app lock can authenticate (strong biometric, or a device credential on API 30+). */
+    val appLockAvailable: () -> Boolean = { true },
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
     idleTimeoutMs: Long = IDLE_TIMEOUT_MS,
     private val backgroundTimeoutMs: Long = BACKGROUND_TIMEOUT_MS,
@@ -90,6 +94,51 @@ class Session(
     /** Ids of the unlocked sources. */
     val openSourceIds: StateFlow<Set<String>> = _openIds
     val events: SharedFlow<SessionEvent> = _events.asSharedFlow()
+
+    private var passwords: SavedPasswords? = null
+    private val _appLocked = MutableStateFlow(true)
+    private val _notice = MutableStateFlow<String?>(null)
+
+    /** True until the app-open authentication succeeds, and again after every [lockAll]. */
+    val appLocked: StateFlow<Boolean> = _appLocked
+
+    /** A one-time message for the UI after unlocking (saved passwords cleared). */
+    val notice: StateFlow<String?> = _notice
+
+    fun dismissNotice() { _notice.value = null }
+
+    /**
+     * The app-open authentication (one prompt). On success the saved passwords are held in memory
+     * until [lockAll]. Returns false if the user cancelled. [vault] is a test hook.
+     */
+    suspend fun unlockApp(activity: FragmentActivity?, vault: KeyVault = keys): Boolean {
+        vault.migrateLegacy()
+        return when (val r = vault.unlockApp(activity)) {
+            AppUnlock.Cancelled -> false
+            is AppUnlock.Ok -> {
+                synchronized(this) {
+                    passwords?.wipe()
+                    passwords = r.passwords
+                    lastTouch = clock()
+                }
+                if (r.cleared) _notice.value = PASSWORDS_CLEARED
+                _appLocked.value = false
+                true
+            }
+        }
+    }
+
+    /** A copy of the saved password for [id] (see PasswordIds) that the caller must zero; null if none or locked. */
+    @Synchronized fun savedPassword(id: String): CharArray? = passwords?.get(id)
+
+    @Synchronized fun hasSavedPassword(id: String): Boolean = passwords?.contains(id) == true
+
+    /** Saves (or replaces) the password for [id]. Writes the encrypted state file. No-op while locked. */
+    @Synchronized fun savePassword(id: String, password: CharArray) { passwords?.put(id, password) }
+
+    @Synchronized fun forgetPassword(id: String) { passwords?.remove(id) }
+
+    @Synchronized fun forgetPasswords(match: (String) -> Boolean) { passwords?.removeIf(match) }
 
     @Synchronized
     fun registerSource(id: String, label: String, source: VaultSource) {
@@ -167,20 +216,26 @@ class Session(
         if (lockNow) lockAll() else tick()
     }
 
-    /** Locks if the idle or background deadline has passed and anything is open. */
+    /** Locks if the idle or background deadline has passed and the app or anything in it is unlocked. */
     fun tick() {
         val now = clock()
         val due = synchronized(this) {
             val bg = backgroundSince.takeUnless { backgroundLockPaused }
             val expired = now - lastTouch >= idleTimeoutMs || (bg != null && now - bg >= backgroundTimeoutMs)
-            expired && (sources.isNotEmpty() || servers.isNotEmpty() || local.hasOpen())
+            expired && (passwords != null || sources.isNotEmpty() || servers.isNotEmpty() || local.hasOpen())
         }
         if (due) lockAll()
     }
 
-    /** Closes Go vaults and HTTP sessions, clears the thumbnail memory cache, drops every source. */
+    /**
+     * Closes Go vaults and HTTP sessions, clears the thumbnail memory cache, drops every source,
+     * zeroes the saved passwords held in memory and shows the app lock again.
+     */
     fun lockAll() {
         val closing = synchronized(this) {
+            passwords?.wipe()
+            passwords = null
+            _appLocked.value = true
             sources.clear()
             _openIds.value = emptySet()
             servers.values.toList().also { servers.clear() }
@@ -207,5 +262,7 @@ class Session(
         val IDLE_TIMEOUT_CHOICES = listOf(1, 2, 5, 10, 15, 30)
         const val BACKGROUND_TIMEOUT_MS = 60_000L
         private const val LOGOUT_TIMEOUT_MS = 3_000L
+        const val PASSWORDS_CLEARED =
+            "Your fingerprints or screen lock changed, so saved passwords were cleared. Enter each password once again."
     }
 }

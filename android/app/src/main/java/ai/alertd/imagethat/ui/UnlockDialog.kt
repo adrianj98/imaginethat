@@ -2,7 +2,6 @@ package ai.alertd.imagethat.ui
 
 import ai.alertd.imagethat.data.LocalSource
 import ai.alertd.imagethat.data.MobileVaultApi
-import ai.alertd.imagethat.keys.Unwrap
 import ai.alertd.imagethat.local.LocalError
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -10,10 +9,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -29,9 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -97,20 +92,9 @@ internal fun PasswordField(
     modifier = modifier.fillMaxWidth().testTag(tag),
 )
 
-@Composable
-internal fun CheckRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
-    Row(
-        modifier.fillMaxWidth().toggleable(value = checked, role = Role.Checkbox, onValueChange = onChange),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Checkbox(checked = checked, onCheckedChange = null)
-        Text(label, Modifier.padding(start = 8.dp))
-    }
-}
-
 /**
- * Password prompt shared by every vault. [offerBiometrics] shows the
- * "Unlock with biometrics next time" checkbox, initially [biometricsDefault].
+ * Password prompt shared by every vault. A password that unlocks is saved automatically (by the
+ * caller), so this is only shown the first time, or after a saved password stopped working.
  */
 @Composable
 fun UnlockDialog(
@@ -118,13 +102,11 @@ fun UnlockDialog(
     notice: String? = null,
     error: String? = null,
     busy: Boolean = false,
-    offerBiometrics: Boolean = false,
-    onSubmit: (password: CharArray, enableBiometrics: Boolean) -> Unit,
+    onSubmit: (password: CharArray) -> Unit,
     onDismiss: () -> Unit,
     extraButton: @Composable (() -> Unit)? = null,
 ) {
     var password by remember { mutableStateOf("") }
-    var enable by remember { mutableStateOf(false) }
     // A rejected password is cleared so the next attempt starts empty.
     LaunchedEffect(busy) { if (!busy && error != null) password = "" }
     SecureAlertDialog(
@@ -132,7 +114,7 @@ fun UnlockDialog(
         title = title,
         confirmButton = {
             TextButton(
-                onClick = { onSubmit(password.toCharArray(), offerBiometrics && enable) },
+                onClick = { onSubmit(password.toCharArray()) },
                 enabled = password.isNotEmpty() && !busy,
                 modifier = Modifier.testTag("unlock-submit"),
             ) { Text("Unlock") }
@@ -144,29 +126,42 @@ fun UnlockDialog(
             }
         },
     ) {
-        if (notice != null) Text(notice, style = MaterialTheme.typography.bodyMedium)
+        if (notice != null) Text(notice, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.testTag("unlock-notice"))
         PasswordField(password, { password = it }, "Password", "unlock-password")
         if (error != null) {
             Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("unlock-error"))
         }
-        if (offerBiometrics) CheckRow("Unlock with biometrics next time", enable, { enable = it })
         if (busy) CircularProgressIndicator(Modifier.size(24.dp))
     }
 }
 
+/** Confirms forgetting one saved password; the vault itself is untouched. */
+@Composable
+internal fun ForgetPasswordDialog(label: String, onForget: () -> Unit, onDismiss: () -> Unit) = SecureAlertDialog(
+    onDismissRequest = onDismiss,
+    title = "Forget the saved password for $label?",
+    confirmButton = { TextButton(onClick = onForget, modifier = Modifier.testTag("forget-confirm")) { Text("Forget") } },
+    dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+) {
+    Text("You will be asked for the password the next time you open it.")
+}
+
 /** A vault the local unlock flow can open: the built-in one or a picked folder. */
 class LocalTarget(
-    /** Session id, also the key of the wrapped biometric secret. */
+    /** Session id of the opened source. */
     val sourceId: String,
+    /** Key of its saved password (see PasswordIds). */
+    val passwordId: String,
     val label: String,
     val open: (CharArray) -> Vault,
 )
 
-private enum class Stage { Biometric, Password }
+/** The saved password is tried first (no prompt); the dialog only when there is none or it failed. */
+private enum class Stage { Saved, Password }
 
 /**
- * One unlock flow for every local vault: biometric prompt when a wrapped
- * secret exists, otherwise (or on "Use password") the password dialog.
+ * One unlock flow for every local vault: with a saved password it opens without asking;
+ * otherwise the password dialog, and a password that opens the vault is saved.
  */
 @Composable
 fun LocalUnlock(
@@ -179,15 +174,16 @@ fun LocalUnlock(
     onPickAgain: (() -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
-    var stage by remember { mutableStateOf(if (session.keys.state().wrapped.containsKey(target.sourceId)) Stage.Biometric else Stage.Password) }
+    var stage by remember { mutableStateOf(if (session.hasSavedPassword(target.passwordId)) Stage.Saved else Stage.Password) }
     var notice by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var unavailable by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
 
-    /** [fromShortcut]: the password came from the biometric-wrapped secret, so a failure means it is stale. */
-    fun attempt(password: CharArray, enableBiometrics: Boolean, fromShortcut: Boolean) {
-        val secret = if (enableBiometrics) String(password).toByteArray(Charsets.UTF_8) else null
+    /** [fromSaved]: the password came from the saved passwords, so a wrong-password failure means it is stale. */
+    fun attempt(password: CharArray, fromSaved: Boolean) {
+        // Opening zeroes the password it is given, so a typed one is kept aside to save on success.
+        val toSave = if (fromSaved) null else password.copyOf()
         busy = true
         error = null
         scope.launch(Dispatchers.Main) {
@@ -197,15 +193,16 @@ fun LocalUnlock(
                 withContext(NonCancellable) {
                     val vault = withContext(Dispatchers.Default) { target.open(password) }
                     session.registerSource(target.sourceId, target.label, LocalSource(MobileVaultApi(vault)))
+                    // A failed save only means the password is asked for again next time.
+                    if (toSave != null) withContext(Dispatchers.IO) { runCatching { session.savePassword(target.passwordId, toSave) } }
                 }
-                if (secret != null) runCatching { session.keys.wrap(activity, target.sourceId, secret) }
                 if (isActive) onUnlocked(target.sourceId)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 when (val le = LocalError.from(e)) {
-                    is LocalError.WrongPassword -> if (fromShortcut) {
-                        session.keys.forget(target.sourceId)
+                    is LocalError.WrongPassword -> if (fromSaved) {
+                        session.forgetPassword(target.passwordId)
                         notice = "The saved password no longer opens this vault. Enter the password again."
                     } else {
                         error = "Wrong password"
@@ -219,46 +216,25 @@ fun LocalUnlock(
                 }
                 stage = Stage.Password
             } finally {
-                secret?.fill(0)
                 password.fill('\u0000')
+                toSave?.fill('\u0000')
                 busy = false
             }
         }
     }
 
-    if (stage == Stage.Biometric) {
+    if (stage == Stage.Saved) {
         LaunchedEffect(Unit) {
-            val r = try {
-                session.keys.unwrap(activity, target.sourceId)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                notice = "Biometric unlock is not available right now. Enter the password."
-                stage = Stage.Password
-                return@LaunchedEffect
-            }
-            when (r) {
-                is Unwrap.Ok -> {
-                    val chars = String(r.secret, Charsets.UTF_8).toCharArray()
-                    r.secret.fill(0)
-                    attempt(chars, enableBiometrics = false, fromShortcut = true)
-                }
-                Unwrap.Invalidated -> {
-                    notice = "Your fingerprints changed, so the biometric shortcut was turned off. " +
-                        "Enter the vault password; you can tick the box below to turn the shortcut back on."
-                    stage = Stage.Password
-                }
-                Unwrap.Cancelled, Unwrap.None -> stage = Stage.Password
-            }
+            val saved = session.savedPassword(target.passwordId)
+            if (saved == null) stage = Stage.Password else attempt(saved, fromSaved = true)
         }
         SecureAlertDialog(
-            onDismissRequest = { if (!busy) onDismiss() },
+            onDismissRequest = {},
             title = "Unlock ${target.label}",
-            confirmButton = { TextButton(onClick = { stage = Stage.Password }, enabled = !busy) { Text("Use password") } },
-            dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancel") } },
+            confirmButton = {},
         ) {
-            Text("Use your biometrics to unlock.")
-            if (busy) CircularProgressIndicator(Modifier.size(24.dp))
+            Text("Opening with the saved password…")
+            CircularProgressIndicator(Modifier.size(24.dp))
         }
         return
     }
@@ -268,8 +244,7 @@ fun LocalUnlock(
         notice = notice,
         error = error,
         busy = busy,
-        offerBiometrics = session.biometricsAvailable(),
-        onSubmit = { pw, enable -> attempt(pw, enable, fromShortcut = false) },
+        onSubmit = { pw -> attempt(pw, fromSaved = false) },
         onDismiss = onDismiss,
         extraButton = if (unavailable && onPickAgain != null) {
             { TextButton(onClick = onPickAgain) { Text("Pick again") } }

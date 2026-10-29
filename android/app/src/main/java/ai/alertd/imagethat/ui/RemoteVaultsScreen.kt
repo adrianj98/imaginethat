@@ -1,14 +1,17 @@
 package ai.alertd.imagethat.ui
 
 import ai.alertd.imagethat.data.RemoteSource
+import ai.alertd.imagethat.keys.PasswordIds
 import ai.alertd.imagethat.remote.RemoteError
 import ai.alertd.imagethat.remote.RemoteVault
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Card
@@ -34,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 internal fun remoteSourceId(serverKey: String, vaultId: String) = "$serverKey:$vaultId"
 
@@ -46,8 +50,11 @@ private sealed interface Load {
     class CertChanged(val sha256: String) : Load
 }
 
-/** The server's vaults with their lock state; tap to unlock with the vault password. */
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * The server's vaults with their lock state. Tap unlocks with the saved password when there is
+ * one (no prompt), otherwise asks once and saves it; long-press offers to forget it.
+ */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, onOpen: (sourceId: String) -> Unit) {
     val server = session.server(serverKey)
@@ -56,6 +63,10 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
     var unlocking by remember { mutableStateOf<RemoteVault?>(null) }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    /** A vault being unlocked with its saved password (no dialog). */
+    var autoUnlocking by remember { mutableStateOf<String?>(null) }
+    var forgetting by remember { mutableStateOf<RemoteVault?>(null) }
 
     fun refresh() {
         if (server == null) return
@@ -78,6 +89,56 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
         val id = remoteSourceId(serverKey, vault.id)
         if (session.source(id) == null) session.registerSource(id, vault.name, RemoteSource(server!!.api, vault.id))
         onOpen(id)
+    }
+
+    /** [fromSaved]: a wrong password means the saved one is stale: forget it and ask once. */
+    fun unlock(v: RemoteVault, pw: CharArray, fromSaved: Boolean) {
+        val passwordId = PasswordIds.server(serverKey, v.id)
+        busy = true
+        error = null
+        if (fromSaved) autoUnlocking = v.id
+        scope.launch(Dispatchers.Main) {
+            try {
+                server!!.api.unlock(v.id, pw)
+                if (!fromSaved) withContext(Dispatchers.IO) { runCatching { session.savePassword(passwordId, pw) } }
+                unlocking = null
+                open(v)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                val message = when (e) {
+                    is RemoteError.WrongPassword -> if (fromSaved) {
+                        session.forgetPassword(passwordId)
+                        notice = "The saved password no longer opens this vault. Enter the password again."
+                        null
+                    } else "Wrong password"
+                    is RemoteError.RateLimited -> "Too many attempts, wait a moment and try again"
+                    is RemoteError.CertMismatch -> {
+                        unlocking = null
+                        load = Load.CertChanged(e.sha256)
+                        null
+                    }
+                    is RemoteError.Network -> "Server unreachable"
+                    else -> e.message ?: "Could not unlock"
+                }
+                error = message
+                // A saved password that failed for another reason (network, 429) is kept; the dialog shows why.
+                if (fromSaved && e !is RemoteError.CertMismatch) unlocking = v
+            } finally {
+                pw.fill('\u0000')
+                busy = false
+                autoUnlocking = null
+            }
+        }
+    }
+
+    fun tap(v: RemoteVault) {
+        if (v.unlocked) { open(v); return }
+        if (busy) return
+        error = null
+        notice = null
+        val saved = session.savedPassword(PasswordIds.server(serverKey, v.id))
+        if (saved != null) unlock(v, saved, fromSaved = true) else unlocking = v
     }
 
     Scaffold(topBar = {
@@ -107,9 +168,12 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
                         ListItem(
                             headlineContent = { Text(v.name) },
                             supportingContent = { Text(if (v.unlocked) "Unlocked" else "Locked") },
-                            modifier = Modifier.clickable {
-                                if (v.unlocked) open(v) else { error = null; unlocking = v }
-                            },
+                            trailingContent = { if (autoUnlocking == v.id) CircularProgressIndicator(Modifier.size(24.dp)) },
+                            modifier = Modifier.combinedClickable(
+                                onLongClick = {
+                                    if (session.hasSavedPassword(PasswordIds.server(serverKey, v.id))) forgetting = v
+                                },
+                            ) { tap(v) },
                         )
                     }
                 }
@@ -121,37 +185,19 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
     unlocking?.let { v ->
         UnlockDialog(
             title = "Unlock ${v.name}",
+            notice = notice,
             error = error,
             busy = busy,
             onDismiss = { unlocking = null },
-            onSubmit = { pw, _ ->
-                busy = true
-                error = null
-                scope.launch(Dispatchers.Main) {
-                    try {
-                        server!!.api.unlock(v.id, pw)
-                        unlocking = null
-                        open(v)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        error = when (e) {
-                            is RemoteError.WrongPassword -> "Wrong password"
-                            is RemoteError.RateLimited -> "Too many attempts, wait a moment and try again"
-                            is RemoteError.CertMismatch -> {
-                                unlocking = null
-                                load = Load.CertChanged(e.sha256)
-                                null
-                            }
-                            is RemoteError.Network -> "Server unreachable"
-                            else -> e.message ?: "Could not unlock"
-                        }
-                    } finally {
-                        pw.fill('\u0000')
-                        busy = false
-                    }
-                }
-            },
+            onSubmit = { pw -> unlock(v, pw, fromSaved = false) },
+        )
+    }
+
+    forgetting?.let { v ->
+        ForgetPasswordDialog(
+            v.name,
+            onForget = { session.forgetPassword(PasswordIds.server(serverKey, v.id)); forgetting = null },
+            onDismiss = { forgetting = null },
         )
     }
 }

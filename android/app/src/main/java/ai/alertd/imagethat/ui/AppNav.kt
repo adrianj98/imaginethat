@@ -7,6 +7,12 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.runtime.remember
 import androidx.fragment.app.FragmentActivity
 import android.net.Uri
@@ -16,6 +22,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import ai.alertd.imagethat.keys.PasswordIds
 
 internal object Routes {
     const val HOME = "home"
@@ -34,6 +41,8 @@ fun ImageThatTheme(content: @Composable () -> Unit) =
 @Composable
 fun AppNav(session: Session, activity: FragmentActivity? = null, nav: NavHostController = rememberNavController()) {
     val start = remember { if (session.local.offlineExists()) Routes.HOME else Routes.SET_OFFLINE }
+    val appLocked by session.appLocked.collectAsState()
+    val notice by session.notice.collectAsState()
 
     LaunchedEffect(session) {
         session.events.collect { e ->
@@ -52,7 +61,20 @@ fun AppNav(session: Session, activity: FragmentActivity? = null, nav: NavHostCon
         }
     }
 
+    // Nothing of the app (Home included) is composed while it is locked.
+    if (appLocked) {
+        AppLockScreen(session, activity)
+        return
+    }
+
     CompositionLocalProvider(LocalTouch provides { session.touch() }) {
+    notice?.let {
+        SecureAlertDialog(
+            onDismissRequest = session::dismissNotice,
+            title = "Saved passwords cleared",
+            confirmButton = { TextButton(onClick = session::dismissNotice, modifier = Modifier.testTag("notice-ok")) { Text("OK") } },
+        ) { Text(it) }
+    }
     NavHost(nav, startDestination = start) {
         composable(Routes.SET_OFFLINE) {
             // SET_OFFLINE as the back stack root (first run) is replaced by Home. Reached from a browser
@@ -62,7 +84,10 @@ fun AppNav(session: Session, activity: FragmentActivity? = null, nav: NavHostCon
                 if (nav.previousBackStackEntry == null) nav.navigate(Routes.HOME) { popUpTo(Routes.SET_OFFLINE) { inclusive = true } }
                 else nav.popBackStack()
             }
-            SetOfflinePasswordScreen(session.local, onDone = toHome, onSkip = toHome)
+            SetOfflinePasswordScreen(
+                session.local, onDone = toHome, onSkip = toHome,
+                savePassword = { session.savePassword(PasswordIds.OFFLINE, it) },
+            )
         }
         composable(Routes.HOME) {
             HomeScreen(

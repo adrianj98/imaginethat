@@ -1,5 +1,6 @@
 package ai.alertd.imagethat.ui
 
+import ai.alertd.imagethat.keys.PasswordIds
 import ai.alertd.imagethat.data.Item
 import ai.alertd.imagethat.data.MediaKind
 import ai.alertd.imagethat.data.LocalSource
@@ -281,7 +282,7 @@ private fun BrowserContent(
     if (unlockOffline) {
         LocalUnlock(
             session,
-            LocalTarget(OFFLINE_ID, "Offline vault") { pw -> session.local.openOffline(pw) },
+            LocalTarget(OFFLINE_ID, PasswordIds.OFFLINE, "Offline vault") { pw -> session.local.openOffline(pw) },
             activity,
             onUnlocked = { unlockOffline = false; vm.saveSelectedOffline() },
             onDismiss = { unlockOffline = false },
