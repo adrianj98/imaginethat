@@ -268,3 +268,10 @@
 
 ## 2026-10-28 — Merged Chore/video into main
 - Merged main into Chore/video first. Conflicts: main had already made the same two build fixes (`parseConfig` in gocryptfs-lib/main.go, `swift build --show-bin-path` in the Makefile), so main's versions were kept; `test-logic` now depends on `build web-build test-fixtures`; this log keeps both sides' entries. Why: bring the remote-server client and slow-video tests onto main.
+
+## 2026-10-28 — Android redesign part A: theme foundation and shared components
+- **ui/theme/Theme.kt (new):** dark-only Material 3 theme from the design: `Palette` (background #0E0F12, cards #181A1F, dividers #23262E, accent #E8B04B, destructive #F6A08C, online #7FD1B9…), Instrument Sans typography (32/28sp bold titles, 16sp semibold rows, 13sp secondary, 12sp labels), shapes (cards 18, dialogs 24). Why: the user asked for the app to follow the new mockups; one theme makes every screen pick up the palette and font.
+- **res/font/instrument_sans.ttf + assets/licenses/InstrumentSans-OFL.txt (new):** the variable Instrument Sans from google/fonts, bundled with its OFL licence (res/font cannot hold a .txt, so the licence ships in assets). Why: no runtime font loading.
+- **ui/components/AppIcons.kt, Components.kt (new):** stroke icons traced from the mockup SVGs (no icons-extended dependency) and shared composables (SectionLabel, ScreenTitle, GroupCard + InsetDivider, CardRow, IconTile, PillButton, OutlinePill, RoundIconButton, TopBar, AccentChip, SplitRow/SplitButton, ActionBar/ActionTile, AppTextField, SearchField, PasswordInput with show/hide, ErrorText, FootnoteText, DialogButton). Why: part B restyles Home/Server/Unlock/Connect with the same pieces.
+- **MainActivity:** uses the new `ui.theme.ImageThatTheme`, edge-to-edge with light system-bar icons. **AndroidManifest + res/values/themes.xml:** dark window theme so launch never flashes white. The old `ImageThatTheme` in AppNav.kt is left unused for now (another branch is editing AppNav.kt).
+- **SecureAlertDialog:** card colour, radius 24, palette text colours. **Session.idleRemainingMs():** time left before the idle lock, for the gallery's "locks in m:ss".

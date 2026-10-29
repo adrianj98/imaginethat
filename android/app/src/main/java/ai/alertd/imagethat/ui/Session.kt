@@ -123,6 +123,9 @@ class Session(
 
     fun touch() = synchronized(this) { lastTouch = clock() }
 
+    /** Time left before the idle auto-lock fires, for the "locks in m:ss" countdown. */
+    fun idleRemainingMs(): Long = synchronized(this) { maxOf(0L, lastTouch + idleTimeoutMs - clock()) }
+
     fun onBackground() = synchronized(this) {
         inBackground = true
         if (backgroundLockPaused) {
