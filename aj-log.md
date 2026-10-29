@@ -1,5 +1,8 @@
 # aj-log
 
+## 2026-10-29 — Mac app feature guide (Claude Doc)
+- New Claude Doc "ImageThat for Mac — Feature Guide" (https://claude.ai/artifact/FsWy95qquhifyfJ4Yn5rsZ): every current macOS feature (sources, sidebar, grid, viewer, formats, editing, Vision analysis, shortcuts, settings, security) and a "Coming soon" table of Android features the Mac lacks (app lock, auto-lock, lock all, automatic password saving, offline vault + save offline, new vault, cert pinning, server vault list with search, multi-select, per-file results, screenshot protection). Why: user asked for a document explaining the Mac app, with Android-only features listed as coming soon. No code changed.
+
 ## 2026-10-28 — Android redesign part B: Home, Connect, server vaults, unlock, app lock, dialogs
 - `HomeScreen.kt`: rebuilt with the shared redesign components — big "ImageThat" title with a live summary ("1 server · 2 vaults unlocked" / "all locked"), "Lock all" pill, grouped cards Servers / On this phone / Settings. Server rows show "Port N · https" (online state is only known on the server screen); "Connect to a server" row with dashed tile; Offline vault row with a "Set up" chip until it exists; folder rows with an options button (forget saved password / remove from list); Open folder | New vault split row; Settings has the Auto-lock row (value + chevron) and an informational "App lock" row (no toggle). Why: user asked for the new design; app lock is always on.
   - Server removal moved from an inline "Remove" button to long-press on Home and the server screen's overflow menu, both with a confirm dialog (`RemoveServerDialog`, tag `remove-confirm`). Why: the design has chevrons, not inline buttons; removing also forgets saved passwords so it deserves a confirmation.
