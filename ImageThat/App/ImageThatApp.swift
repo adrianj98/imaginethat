@@ -30,6 +30,11 @@ struct ImageThatApp: App {
                 Button("Connect Google Drive...") {
                     appState.showGoogleDriveSetup = true
                 }
+
+                Button("Connect to Server...") {
+                    appState.showAddServer = true
+                }
+                .keyboardShortcut("k", modifiers: .command)
             }
         }
     }

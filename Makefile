@@ -61,7 +61,7 @@ web-test:
 test: test-logic test-e2e
 
 # Run logic/integration tests
-test-logic: build
+test-logic: build web-build
 	DYLD_LIBRARY_PATH=$(PWD)/build $(BIN_DIR)/IntegrationTest
 
 # Run E2E tests (requires Peekaboo: brew install steipete/tap/peekaboo)

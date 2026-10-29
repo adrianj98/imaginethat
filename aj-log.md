@@ -27,3 +27,34 @@
 - **Makefile:** `BIN_DIR` now comes from `swift build --show-bin-path`, because
   newer SwiftPM writes to `.build/out/Products/Debug` and `make test-logic` /
   `make app` could not find the binaries.
+
+## 2026-10-28 — Mac app can browse vaults on an imagethat-web server
+
+- **ImageThat/Services/RemoteServerClient.swift (new):** HTTP client for the
+  webserver's JSON API: vaults, unlock/lock/logout, list, HEAD size, Range
+  reads, thumbnails, upload (in-memory and streamed), mkdir, move, delete.
+  *Why:* the server decrypts next to the disk, so on a slow network only the
+  bytes being viewed are sent. It uses an ephemeral URLSession with no URL cache,
+  so decrypted responses and the session cookie never reach disk (CLAUDE.md
+  rule). The vault password stays in memory, and the client re-unlocks once if
+  the server's idle timeout (30 min by default) has locked the vault.
+  Query values are strictly percent-encoded, because Go reads `+` as a space.
+- **ImageThat/Models/RemoteVaultSource.swift (new):** WritableMediaSource for a
+  remote vault. Video goes through EncryptedResourceLoader via
+  `RemoteRangeReader`. Thumbnails come from the server, with local rendering
+  when the server returns 204. The server never overwrites, so saveImage uploads
+  a hidden temp file, deletes the original, then renames.
+- **AppState.swift:** Servers state, plus restore, add, remove, sidebar,
+  unlock (session cache → saved passwords → prompt; a stale saved password
+  re-prompts), mkdir/delete-folder sidebar refresh, imports, and drag-and-drop
+  move/copy to and from remote vaults.
+- **SidebarView / AddServerSheet (new) / ImageThatApp / VaultUnlockSheet:**
+  Servers section with add/remove, a File ▸ Connect to Server… (⌘K) command,
+  and the vault name shown in the unlock prompt.
+- **MediaTransfer.swift:** remote items can be dragged.
+- **Info.plist:** `NSAllowsLocalNetworking` so http:// LAN servers work in the
+  .app bundle.
+- **Tests/RemoteServerTest.swift (new):** starts the real webserver binary and
+  checks unlock, browse, edits, a streamed 163 MB upload, byte-exact ranges,
+  playback with seek, re-unlock after idle timeout, and lock.
+  `make test-logic` now also builds the webserver.

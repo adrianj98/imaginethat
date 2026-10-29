@@ -37,6 +37,17 @@ public class AppState: ObservableObject {
     @Published public var showGoogleDriveSetup = false
     @Published public var isConnectingGoogleDrive = false
 
+    // imagethat-web servers
+    @Published public var serverSidebarItems: [SidebarItem] = []
+    @Published public var showAddServer = false
+    /// Name shown in the unlock prompt when the pending URL is not a path.
+    @Published public var pendingVaultDisplayName: String?
+    /// Clients keyed by server base URL string, kept for the session.
+    private var serverClients: [String: RemoteServerClient] = [:]
+    /// Remote vaults this session has unlocked, by RemoteLocation.passwordKey.
+    private var unlockedRemoteVaults: Set<String> = []
+    private static let serversKey = "imagethatWebServers"
+
     private let thumbnailCache = ThumbnailCache()
     private var loadGeneration = 0
     private var currentLoadTask: Task<Void, Never>?
@@ -126,6 +137,7 @@ public class AppState: ObservableObject {
         loadFavorites()
         loadSavedPasswords()
         restoreGoogleDriveSession()
+        restoreServers()
         let args = CommandLine.arguments
         if args.count > 1 {
             let url = URL(fileURLWithPath: args[1])
@@ -242,6 +254,10 @@ public class AppState: ObservableObject {
 
     /// Called from sidebar selection — never rebuilds the sidebar, but lazily expands children.
     public func navigateToSidebarItem(_ item: SidebarItem) {
+        if item.url.scheme == RemoteLocation.scheme {
+            navigateToRemoteSidebarItem(item)
+            return
+        }
         if item.url.scheme == "gdrive" {
             expandGoogleDriveSidebarItem(item)
             navigateToGoogleDriveFolder(folderId: item.url.host ?? "root")
@@ -395,6 +411,12 @@ public class AppState: ObservableObject {
         pendingVaultURL = nil
         pendingVaultRebuildSidebar = false
         pendingVaultSubpath = nil
+        pendingVaultDisplayName = nil
+        if let remote = RemoteLocation.parse(url), let vaultID = remote.vaultID {
+            Task { await self.unlockRemoteVault(server: remote.server, vaultID: vaultID, password: password,
+                                                saveToKeychain: saveToKeychain, subpath: subpath) }
+            return
+        }
         if url.scheme == "gdrive", let folderId = url.host {
             Task { await self.unlockDriveVault(folderId: folderId, password: password, saveToKeychain: saveToKeychain, subpath: subpath) }
             return
@@ -431,6 +453,8 @@ public class AppState: ObservableObject {
                     self.sidebarItems = [rootItem]
                 } else if source is GoogleDriveSource {
                     await self.buildGoogleDriveSidebar()
+                } else if let remote = source as? RemoteVaultSource {
+                    self.refreshRemoteVaultSidebar(remote)
                 }
             } catch {
                 self.errorMessage = error.localizedDescription
@@ -451,6 +475,10 @@ public class AppState: ObservableObject {
     }
 
     public func deleteSidebarFolder(_ sidebarItem: SidebarItem) {
+        if sidebarItem.url.scheme == RemoteLocation.scheme {
+            deleteRemoteSidebarFolder(sidebarItem)
+            return
+        }
         guard let vaultPath = sidebarItem.vaultPath,
               let bridge = vaultBridges[sidebarItem.url.path] else { return }
 
@@ -492,6 +520,8 @@ public class AppState: ObservableObject {
                     let destPath: String
                     if let vaultSource = dest as? VaultSource {
                         destPath = vaultSource.currentPath.isEmpty ? name : "\(vaultSource.currentPath)/\(name)"
+                    } else if let remote = dest as? RemoteVaultSource {
+                        destPath = remote.currentPath.isEmpty ? name : "\(remote.currentPath)/\(name)"
                     } else {
                         destPath = name
                     }
@@ -545,6 +575,10 @@ public class AppState: ObservableObject {
 
     /// Handle a MediaTransfer drop onto a sidebar folder
     public func handleTransferDrop(_ transfer: MediaTransfer, to sidebarItem: SidebarItem) {
+        if sidebarItem.url.scheme == RemoteLocation.scheme || RemoteLocation.parse(URL(string: transfer.sourceRootPath) ?? URL(fileURLWithPath: "/")) != nil {
+            handleRemoteTransferDrop(transfer, to: sidebarItem)
+            return
+        }
         guard let destVaultPath = sidebarItem.vaultPath,
               let destBridge = vaultBridges[sidebarItem.url.path] else { return }
         let destSource = VaultSource(bridge: destBridge, currentPath: destVaultPath)
@@ -1120,5 +1154,306 @@ public struct SidebarItem: Identifiable, Hashable {
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(id)
+    }
+}
+
+// MARK: - imagethat-web servers
+
+extension AppState {
+    /// Display names of remote vaults, by RemoteLocation.passwordKey.
+    private static var remoteVaultNames: [String: String] = [:]
+
+    private func restoreServers() {
+        for server in AppSettings.shared.stringArray(forKey: Self.serversKey) ?? [] {
+            if let base = URL(string: server) { serverClients[server] = RemoteServerClient(baseURL: base) }
+        }
+        Task { await buildServerSidebar() }
+    }
+
+    /// Checks the server answers, then remembers it and lists its vaults.
+    public func addServer(_ input: String) async throws {
+        guard let server = Self.normalizeServerURL(input), let base = URL(string: server) else {
+            throw RemoteServerError.invalidServerURL
+        }
+        let client = serverClients[server] ?? RemoteServerClient(baseURL: base)
+        _ = try await client.listVaults()
+        serverClients[server] = client
+        var saved = AppSettings.shared.stringArray(forKey: Self.serversKey) ?? []
+        if !saved.contains(server) {
+            saved.append(server)
+            AppSettings.shared.set(saved, forKey: Self.serversKey)
+        }
+        await buildServerSidebar()
+    }
+
+    public func removeServer(_ item: SidebarItem) {
+        guard let server = RemoteLocation.parse(item.url)?.server else { return }
+        let client = serverClients.removeValue(forKey: server)
+        // Logging out locks every vault this app unlocked on that server.
+        Task { try? await client?.logout() }
+        unlockedRemoteVaults = unlockedRemoteVaults.filter {
+            URL(string: $0).flatMap(RemoteLocation.parse)?.server != server
+        }
+        let saved = (AppSettings.shared.stringArray(forKey: Self.serversKey) ?? []).filter { $0 != server }
+        AppSettings.shared.set(saved, forKey: Self.serversKey)
+        serverSidebarItems.removeAll { RemoteLocation.parse($0.url)?.server == server }
+        if let remote = mediaSource as? RemoteVaultSource, remote.client === client {
+            mediaSource = nil
+            mediaItems = []
+        }
+    }
+
+    /// Accepts "nas.local:8347" as well as full URLs. Loopback defaults to
+    /// http, anything else to https: the server refuses plain HTTP off loopback.
+    public nonisolated static func normalizeServerURL(_ input: String) -> String? {
+        var text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        if !text.contains("://") {
+            let host = text.split(separator: ":").first.map(String.init) ?? text
+            let loopback = host == "localhost" || host.hasPrefix("127.") || text.hasPrefix("[::1]")
+            text = (loopback ? "http://" : "https://") + text
+        }
+        while text.hasSuffix("/") { text.removeLast() }
+        guard let url = URL(string: text), let scheme = url.scheme, ["http", "https"].contains(scheme),
+              url.host != nil else { return nil }
+        return url.absoluteString
+    }
+
+    private static func serverDisplayName(_ server: String) -> String {
+        guard let url = URL(string: server), let host = url.host else { return server }
+        return url.port.map { "\(host):\($0)" } ?? host
+    }
+
+    private func buildServerSidebar() async {
+        var items: [SidebarItem] = []
+        for server in AppSettings.shared.stringArray(forKey: Self.serversKey) ?? [] {
+            guard let client = serverClients[server] else { continue }
+            // An unreachable server still gets a row, so it can be removed.
+            let vaults = (try? await client.listVaults()) ?? []
+            let children = vaults.map { vault -> SidebarItem in
+                Self.remoteVaultNames[RemoteLocation.passwordKey(server: server, vaultID: vault.id)] = vault.name
+                return SidebarItem(name: vault.name, url: RemoteLocation.url(server: server, vaultID: vault.id),
+                                   vaultPath: "", children: [])
+            }
+            items.append(SidebarItem(name: Self.serverDisplayName(server), url: RemoteLocation.url(server: server),
+                                     children: children))
+        }
+        serverSidebarItems = items
+    }
+
+    private func navigateToRemoteSidebarItem(_ item: SidebarItem) {
+        guard let location = RemoteLocation.parse(item.url) else { return }
+        guard let vaultID = location.vaultID else {
+            // A server row with no vaults may have been offline; look again.
+            if item.children.isEmpty { Task { await buildServerSidebar() } }
+            return
+        }
+        let path = item.vaultPath ?? ""
+        let key = RemoteLocation.passwordKey(server: location.server, vaultID: vaultID)
+        guard unlockedRemoteVaults.contains(key), let client = serverClients[location.server] else {
+            tryUnlockRemoteVault(server: location.server, vaultID: vaultID, subpath: path)
+            return
+        }
+        expandRemoteSidebarItem(item, client: client, vaultID: vaultID)
+        if let current = mediaSource as? RemoteVaultSource, current.client === client,
+           current.vaultID == vaultID, current.currentPath == path { return }
+        showRemoteVault(client: client, vaultID: vaultID, key: key, path: path)
+    }
+
+    private func showRemoteVault(client: RemoteServerClient, vaultID: String, key: String, path: String) {
+        let source = RemoteVaultSource(client: client, vaultID: vaultID,
+                                       vaultName: Self.remoteVaultNames[key] ?? "Vault", currentPath: path)
+        mediaSource = source
+        viewMode = .grid
+        selectedIndex = 0
+        loadMedia(from: source)
+    }
+
+    private func tryUnlockRemoteVault(server: String, vaultID: String, subpath: String) {
+        let key = RemoteLocation.passwordKey(server: server, vaultID: vaultID)
+
+        // 1. Session cache
+        if let password = vaultPasswords[key] {
+            Task { await unlockRemoteVault(server: server, vaultID: vaultID, password: password,
+                                           saveToKeychain: false, subpath: subpath) }
+            return
+        }
+
+        // 2. Saved passwords, else 3. prompt
+        Task {
+            if PasswordStore.shared.hasPasswords, let password = await savedPassword(forKey: key) {
+                await unlockRemoteVault(server: server, vaultID: vaultID, password: password,
+                                        saveToKeychain: false, subpath: subpath)
+            } else {
+                promptForRemoteVault(key: key, subpath: subpath)
+            }
+        }
+    }
+
+    private func promptForRemoteVault(key: String, subpath: String) {
+        pendingVaultURL = URL(string: key)
+        pendingVaultSubpath = subpath
+        pendingVaultDisplayName = Self.remoteVaultNames[key]
+        showVaultUnlock = true
+    }
+
+    /// Loads remembered passwords (Touch ID in encrypted mode) and returns the one for `key`.
+    private func savedPassword(forKey key: String) async -> String? {
+        do {
+            var saved: [String: String] = [:]
+            if PasswordStore.encryptionDisabled {
+                saved = try PasswordStore.shared.loadAll(masterKey: nil)
+            } else if KeychainManager.shared.hasMasterKey() {
+                guard let masterKey = try KeychainManager.shared.getMasterKey() else { return nil }
+                self.masterKey = masterKey
+                saved = try PasswordStore.shared.loadAll(masterKey: masterKey)
+            }
+            for (path, password) in saved { vaultPasswords[path] = password }
+            return saved[key]
+        } catch {
+            return nil
+        }
+    }
+
+    private func unlockRemoteVault(server: String, vaultID: String, password: String,
+                                   saveToKeychain: Bool, subpath: String?) async {
+        guard let client = serverClients[server] else { return }
+        let key = RemoteLocation.passwordKey(server: server, vaultID: vaultID)
+        isLoading = true
+        do {
+            try await client.unlock(vaultID: vaultID, password: password)
+            vaultPasswords[key] = password
+            if saveToKeychain {
+                if PasswordStore.encryptionDisabled {
+                    try? PasswordStore.shared.save(password: password, forVault: key, masterKey: nil)
+                } else if let masterKey = try? getOrCreateMasterKey() {
+                    try? PasswordStore.shared.save(password: password, forVault: key, masterKey: masterKey)
+                }
+            }
+            unlockedRemoteVaults.insert(key)
+            showRemoteVault(client: client, vaultID: vaultID, key: key, path: subpath ?? "")
+            if let root = findItem(in: serverSidebarItems, where: { $0.url.absoluteString == key && $0.vaultPath == "" }) {
+                expandRemoteSidebarItem(root, client: client, vaultID: vaultID)
+            }
+        } catch RemoteServerError.wrongPassword {
+            // A remembered password may be stale; ask again.
+            vaultPasswords[key] = nil
+            isLoading = false
+            errorMessage = RemoteServerError.wrongPassword.localizedDescription
+            promptForRemoteVault(key: key, subpath: subpath ?? "")
+        } catch {
+            errorMessage = error.localizedDescription
+            isLoading = false
+        }
+    }
+
+    private func expandRemoteSidebarItem(_ item: SidebarItem, client: RemoteServerClient, vaultID: String) {
+        guard item.children.isEmpty else { return }
+        loadRemoteSidebarChildren(of: item, client: client, vaultID: vaultID)
+    }
+
+    private func loadRemoteSidebarChildren(of item: SidebarItem, client: RemoteServerClient, vaultID: String) {
+        let itemID = item.id
+        let vaultURL = item.url
+        let source = RemoteVaultSource(client: client, vaultID: vaultID, vaultName: "", currentPath: item.vaultPath ?? "")
+        Task {
+            guard let dirs = try? await source.listSubdirectories() else { return }
+            let children = dirs.map { SidebarItem(name: $0.name, url: vaultURL, vaultPath: $0.relativePath, children: []) }
+            serverSidebarItems = serverSidebarItems.map { updateChildren(in: $0, parentID: itemID, children: children) }
+        }
+    }
+
+    /// Re-lists the sidebar folders under a remote source's current folder, e.g. after mkdir.
+    private func refreshRemoteVaultSidebar(_ remote: RemoteVaultSource) {
+        let key = RemoteLocation.passwordKey(server: remote.client.baseURL.absoluteString, vaultID: remote.vaultID)
+        guard let item = findItem(in: serverSidebarItems, where: {
+            $0.url.absoluteString == key && $0.vaultPath == remote.currentPath
+        }) else { return }
+        loadRemoteSidebarChildren(of: item, client: remote.client, vaultID: remote.vaultID)
+    }
+
+    private func findItem(in items: [SidebarItem], where match: (SidebarItem) -> Bool) -> SidebarItem? {
+        for item in items {
+            if match(item) { return item }
+            if let found = findItem(in: item.children, where: match) { return found }
+        }
+        return nil
+    }
+
+    private func deleteRemoteSidebarFolder(_ item: SidebarItem) {
+        guard let location = RemoteLocation.parse(item.url), let vaultID = location.vaultID,
+              let path = item.vaultPath, !path.isEmpty,
+              let client = serverClients[location.server] else { return }
+        Task {
+            do {
+                try await RemoteVaultSource(client: client, vaultID: vaultID, vaultName: "", currentPath: path)
+                    .deleteCurrentDirectory()
+                func remove(_ items: [SidebarItem]) -> [SidebarItem] {
+                    items.filter { $0.id != item.id }.map { var copy = $0; copy.children = remove($0.children); return copy }
+                }
+                serverSidebarItems = remove(serverSidebarItems)
+                if let current = mediaSource as? RemoteVaultSource, current.client === client,
+                   current.vaultID == vaultID, current.currentPath == path || current.currentPath.hasPrefix(path + "/") {
+                    let key = RemoteLocation.passwordKey(server: location.server, vaultID: vaultID)
+                    showRemoteVault(client: client, vaultID: vaultID, key: key, path: "")
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// Drag-and-drop where either end is a remote vault: a move within one
+    /// remote vault, otherwise a streamed copy.
+    private func handleRemoteTransferDrop(_ transfer: MediaTransfer, to sidebarItem: SidebarItem) {
+        guard let destPath = sidebarItem.vaultPath else { return }
+
+        let destSource: any WritableMediaSource
+        if let location = RemoteLocation.parse(sidebarItem.url), let vaultID = location.vaultID,
+           let client = serverClients[location.server] {
+            destSource = RemoteVaultSource(client: client, vaultID: vaultID, vaultName: "", currentPath: destPath)
+        } else if let bridge = vaultBridges[sidebarItem.url.path] {
+            destSource = VaultSource(bridge: bridge, currentPath: destPath)
+        } else {
+            return
+        }
+
+        let ext = (transfer.itemRelativePath as NSString).pathExtension.lowercased()
+        let mediaType: MediaType = SupportedFormats.videoExtensions.contains(ext) ? .video : .image
+        let sourceSource: any MediaSource
+        let sourceItem: MediaItem
+        if let location = URL(string: transfer.sourceRootPath).flatMap(RemoteLocation.parse),
+           let vaultID = location.vaultID, let client = serverClients[location.server] {
+            if transfer.sourceRootPath == sidebarItem.url.absoluteString,
+               let item = mediaItems.first(where: { $0.url.path == transfer.itemRelativePath }) {
+                moveItem(item, to: destPath)
+                return
+            }
+            sourceSource = RemoteVaultSource(client: client, vaultID: vaultID, vaultName: "")
+            sourceItem = MediaItem(name: (transfer.itemRelativePath as NSString).lastPathComponent,
+                                   url: RemoteVaultSource.itemURL(transfer.itemRelativePath), mediaType: mediaType)
+        } else if transfer.isVault, let bridge = vaultBridges[transfer.sourceRootPath] {
+            sourceSource = VaultSource(bridge: bridge, currentPath: "")
+            sourceItem = MediaItem(name: (transfer.itemRelativePath as NSString).lastPathComponent,
+                                   url: RemoteVaultSource.itemURL(transfer.itemRelativePath), mediaType: mediaType)
+        } else if !transfer.isVault {
+            let rootURL = URL(fileURLWithPath: transfer.sourceRootPath)
+            sourceSource = FolderSource(rootURL: rootURL)
+            sourceItem = MediaItem(url: rootURL.appendingPathComponent(transfer.itemRelativePath))
+        } else {
+            return
+        }
+
+        Task {
+            do {
+                let name = (transfer.itemRelativePath as NSString).lastPathComponent
+                let size = try await sourceSource.fileSize(for: sourceItem)
+                let chunks = sourceSource.readChunks(for: sourceItem, chunkSize: 1_048_576)
+                try await destSource.writeChunks(chunks, to: destPath.isEmpty ? name : "\(destPath)/\(name)", totalSize: size)
+                if let current = mediaSource { loadMedia(from: current) }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 }

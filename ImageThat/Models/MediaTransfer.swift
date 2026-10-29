@@ -26,6 +26,10 @@ extension MediaTransfer {
     public init?(for item: MediaItem, source: (any MediaSource)?) {
         if let v = source as? VaultSource {
             self.init(sourceRootPath: v.bridge.vaultPath.path, itemRelativePath: item.url.path, isVault: true)
+        } else if let r = source as? RemoteVaultSource {
+            // Remote vaults are identified by their sidebar URL, not a path.
+            let root = RemoteLocation.url(server: r.client.baseURL.absoluteString, vaultID: r.vaultID)
+            self.init(sourceRootPath: root.absoluteString, itemRelativePath: item.url.path, isVault: true)
         } else if let f = source as? FolderSource {
             self.init(sourceRootPath: f.rootURL.path, itemRelativePath: item.name, isVault: false)
         } else {
