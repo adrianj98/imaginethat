@@ -98,7 +98,7 @@ test-fixtures:
 	cp -R Tests/fixtures/vault /tmp/imagethat-test/vault
 
 # Run logic/integration tests
-test-logic: build test-fixtures
+test-logic: build web-build test-fixtures
 	DYLD_LIBRARY_PATH=$(PWD)/build $(BIN_DIR)/IntegrationTest
 
 # Run E2E tests (needs Screen Recording permission for the terminal)

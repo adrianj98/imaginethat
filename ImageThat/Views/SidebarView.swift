@@ -11,11 +11,16 @@ public struct SidebarView: View {
             favoritesSection
             foldersSection
             googleDriveSection
+            serversSection
         }
         .listStyle(.sidebar)
         .navigationTitle("Folders")
         .sheet(isPresented: $appState.showGoogleDriveSetup) {
             GoogleDriveSetupView()
+                .environmentObject(appState)
+        }
+        .sheet(isPresented: $appState.showAddServer) {
+            AddServerSheet()
                 .environmentObject(appState)
         }
         .onChange(of: appState.selectedSidebarItem) { _, newValue in
@@ -105,8 +110,47 @@ public struct SidebarView: View {
     }
 
     @ViewBuilder
-    private func folderRow(_ item: SidebarItem) -> some View {
-        Label(item.name, systemImage: item.children.isEmpty ? "folder" : "folder.fill")
+    private var serversSection: some View {
+        Section {
+            if appState.serverSidebarItems.isEmpty {
+                Button {
+                    appState.showAddServer = true
+                } label: {
+                    Label("Connect to Server", systemImage: "plus.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+            } else {
+                OutlineGroup(appState.serverSidebarItems, children: \.optionalChildren) { item in
+                    folderRow(item, systemImage: serverRowIcon(item))
+                }
+            }
+        } header: {
+            HStack {
+                Text("Servers")
+                Spacer()
+                if !appState.serverSidebarItems.isEmpty {
+                    Button {
+                        appState.showAddServer = true
+                    } label: {
+                        Image(systemName: "plus.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private func serverRowIcon(_ item: SidebarItem) -> String? {
+        guard let location = RemoteLocation.parse(item.url) else { return nil }
+        if location.vaultID == nil { return "server.rack" }
+        return item.vaultPath == "" ? "lock.shield" : nil
+    }
+
+    @ViewBuilder
+    private func folderRow(_ item: SidebarItem, systemImage: String? = nil) -> some View {
+        Label(item.name, systemImage: systemImage ?? (item.children.isEmpty ? "folder" : "folder.fill"))
             .tag(item)
             .padding(.vertical, 4)
             .padding(.horizontal, 6)
@@ -135,6 +179,28 @@ public struct SidebarView: View {
 
     @ViewBuilder
     private func folderRowContextMenu(_ item: SidebarItem) -> some View {
+        if item.url.scheme == RemoteLocation.scheme {
+            remoteRowContextMenu(item)
+        } else {
+            localRowContextMenu(item)
+        }
+    }
+
+    @ViewBuilder
+    private func remoteRowContextMenu(_ item: SidebarItem) -> some View {
+        if RemoteLocation.parse(item.url)?.vaultID == nil {
+            Button("Remove Server", role: .destructive) {
+                appState.removeServer(item)
+            }
+        } else if let path = item.vaultPath, !path.isEmpty {
+            Button("Delete Folder", role: .destructive) {
+                appState.deleteSidebarFolder(item)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func localRowContextMenu(_ item: SidebarItem) -> some View {
         if item.url.scheme != "gdrive" {
             Button("Add to Favorites") {
                 appState.addFavorite(url: item.url)

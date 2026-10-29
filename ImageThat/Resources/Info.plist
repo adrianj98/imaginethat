@@ -56,5 +56,12 @@
             </array>
         </dict>
     </array>
+    <!-- imagethat-web on a LAN host (http://nas.local:8347). The server
+         itself refuses plain HTTP off loopback unless run with -insecure. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
 </dict>
 </plist>

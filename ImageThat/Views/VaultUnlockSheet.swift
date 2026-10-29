@@ -34,7 +34,7 @@ public struct VaultUnlockSheet: View {
                 .fontWeight(.semibold)
 
             if let url = appState.pendingVaultURL {
-                Text(url.lastPathComponent)
+                Text(appState.pendingVaultDisplayName ?? url.lastPathComponent)
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -54,6 +54,7 @@ public struct VaultUnlockSheet: View {
                 Button("Cancel") {
                     appState.showVaultUnlock = false
                     appState.pendingVaultURL = nil
+                    appState.pendingVaultDisplayName = nil
                     password = ""
                 }
                 .keyboardShortcut(.cancelAction)
