@@ -97,4 +97,30 @@ extern void GocryptfsThumbInvalidate(int sessionID, char* relativePath);
 extern int GocryptfsThumbCacheClear(char* diskDir);
 extern int64_t GocryptfsThumbCacheSize(char* diskDir);
 
+// Fault-tolerant copies and file caching. Make a job first, run the blocking
+// call on a background thread, and poll JobProgress / call JobCancel from
+// another. Reads that fail transiently are retried with backoff and resume
+// where they stopped; the destination appears only once complete. The calls
+// return 0, the write codes above, or -7 when cancelled. Free the job after.
+extern int GocryptfsJobNew(void);
+extern int GocryptfsJobProgress(int jobID, int64_t* done, int64_t* total, int64_t* retries);
+extern void GocryptfsJobCancel(int jobID);
+extern void GocryptfsJobFree(int jobID);
+// Copy a plaintext file on disk into a vault.
+extern int GocryptfsCopyFileIn(int jobID, int destSession, char* destPath, char* srcFilePath);
+// Copy a file from one open vault (local, Drive or remote) into another.
+extern int GocryptfsCopyVaultIn(int jobID, int destSession, char* destPath, int srcSession, char* srcPath);
+// GocryptfsOpenRemote with a ciphertext file cache in cacheDir.
+extern int GocryptfsOpenRemoteCached(char* baseURL, char* vaultID, char* password, char* pinnedSHA256, char* cacheDir);
+// Keep a file available locally: a cached remote session stores its ciphertext
+// in the cache dir; other sessions read it through once to fill the host's
+// caches (Drive).
+extern int GocryptfsCacheFile(int jobID, int sessionID, char* relativePath);
+// 1 when a cached remote session holds the file on disk, else 0.
+extern int GocryptfsIsCached(int sessionID, char* relativePath);
+extern int GocryptfsUncache(int sessionID, char* relativePath);
+// The file cache directory as a whole, independent of any session.
+extern int GocryptfsFileCacheClear(char* dir);
+extern int64_t GocryptfsFileCacheSize(char* dir);
+
 #endif

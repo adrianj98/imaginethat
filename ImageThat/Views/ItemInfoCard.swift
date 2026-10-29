@@ -64,6 +64,10 @@ struct ItemInfoCard: View {
 
             Spacer(minLength: 0)
 
+            if let caching = appState.mediaSource as? OfflineCaching, caching.canCache {
+                CacheFileRow(item: item, source: caching, dark: dark)
+            }
+
             if let footnote {
                 Label(footnote, systemImage: "lock")
                     .font(.system(size: 11))
@@ -166,5 +170,59 @@ struct ItemInfoCard: View {
             text = result.1 ?? ""
         }
         isAnalyzing = false
+    }
+}
+
+/// Keep-on-this-Mac control for remote and Drive vault files: a button, the
+/// fetch's progress with Cancel, or the cached state with Remove.
+private struct CacheFileRow: View {
+    @EnvironmentObject var appState: AppState
+    let item: MediaItem
+    let source: any OfflineCaching
+    let dark: Bool
+
+    @State private var isCached = false
+
+    var body: some View {
+        Group {
+            if let progress = appState.cacheProgress[item.url] {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Caching… \(Int(progress * 100))%")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Cancel") { appState.cancelCaching(item) }
+                            .buttonStyle(PillButtonStyle(kind: .quiet, dark: dark, height: 24))
+                            .font(.system(size: 12))
+                    }
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                        .controlSize(.small)
+                }
+            } else if isCached {
+                HStack {
+                    Label("Cached on this Mac", systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Remove") { appState.uncacheFile(item) }
+                        .buttonStyle(PillButtonStyle(kind: .quiet, dark: dark, height: 24))
+                        .font(.system(size: 12))
+                }
+            } else {
+                Button {
+                    appState.cacheFile(item)
+                } label: {
+                    Label("Cache File", systemImage: "arrow.down.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PillButtonStyle(dark: dark))
+                .help("Keep this file on this Mac (encrypted) so it opens without the network")
+            }
+        }
+        .task(id: "\(item.id)-\(appState.cacheRevision)") {
+            isCached = await source.isCached(item)
+        }
     }
 }

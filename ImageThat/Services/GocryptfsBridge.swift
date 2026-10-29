@@ -42,7 +42,7 @@ public enum GocryptfsError: LocalizedError {
 }
 
 public final class GocryptfsBridge: @unchecked Sendable {
-    private let sessionID: Int32
+    let sessionID: Int32
     public let vaultPath: URL
 
     public init(vaultPath: URL, password: String) throws {
@@ -65,6 +65,12 @@ public final class GocryptfsBridge: @unchecked Sendable {
             guard id > 0 else { throw GocryptfsError.cryptoError }
             self.sessionID = id
         }
+    }
+
+    /// Wraps a session another open export created (see GocryptfsTransfer.swift).
+    init(sessionID: Int32, vaultPath: URL) {
+        self.sessionID = sessionID
+        self.vaultPath = vaultPath
     }
 
     deinit {

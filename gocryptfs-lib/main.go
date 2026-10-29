@@ -230,9 +230,15 @@ func GocryptfsOpenRemote(baseURL *C.char, vaultID *C.char, password *C.char, pin
 		return rcCrypto
 	}
 	s, err := client.OpenVault(context.Background(), C.GoString(vaultID), C.GoString(password))
+	if err != nil {
+		return remoteOpenCode(err)
+	}
+	return register(s)
+}
+
+// remoteOpenCode maps a failed remote open to GocryptfsOpenRemote's codes.
+func remoteOpenCode(err error) C.int {
 	switch {
-	case err == nil:
-		return register(s)
 	case errors.Is(err, remote.ErrWrongPassword), errors.Is(err, vault.ErrWrongPassword):
 		return rcWrongPassword
 	case errors.Is(err, remote.ErrNotFound), errors.Is(err, vault.ErrNoConfig):

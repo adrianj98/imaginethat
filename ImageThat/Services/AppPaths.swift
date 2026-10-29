@@ -32,6 +32,10 @@ public enum AppPaths {
     /// `~/.imagethat/cache/drive-ranges-index.json`
     public static let driveRangesIndex: URL = cacheRoot.appendingPathComponent("drive-ranges-index.json")
 
+    /// `~/.imagethat/cache/remote-files` — files from imagethat-web servers the
+    /// user chose to keep, as ciphertext exactly as the server stores them.
+    public static let remoteFilesCache: URL = ensureDir(cacheRoot.appendingPathComponent("remote-files", isDirectory: true))
+
     /// `~/.imagethat/passwords` — vault password store.
     public static let passwordsDir: URL = ensureDir(root.appendingPathComponent("passwords", isDirectory: true))
 

@@ -40,18 +40,38 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
     public let vaultID: String
     public let vaultName: String
     public private(set) var currentPath: String
+    /// A ciphertext-mode session on the same vault with a file cache. Cached
+    /// files are read and decrypted through it, from disk; everything else
+    /// comes from the server's decrypted API as before.
+    public let cache: GocryptfsBridge?
 
     public var rootDisplayName: String { vaultName }
 
-    public init(client: RemoteServerClient, vaultID: String, vaultName: String, currentPath: String = "") {
+    public init(client: RemoteServerClient, vaultID: String, vaultName: String, currentPath: String = "",
+                cache: GocryptfsBridge? = nil) {
         self.client = client
         self.vaultID = vaultID
         self.vaultName = vaultName
         self.currentPath = currentPath
+        self.cache = cache
     }
 
     public func source(at relativePath: String) -> any MediaSource {
-        RemoteVaultSource(client: client, vaultID: vaultID, vaultName: vaultName, currentPath: relativePath)
+        RemoteVaultSource(client: client, vaultID: vaultID, vaultName: vaultName, currentPath: relativePath, cache: cache)
+    }
+
+    func withCache(_ cache: GocryptfsBridge) -> RemoteVaultSource {
+        RemoteVaultSource(client: client, vaultID: vaultID, vaultName: vaultName, currentPath: currentPath, cache: cache)
+    }
+
+    /// The cache session when it holds this file.
+    private func cached(_ item: MediaItem) -> GocryptfsBridge? {
+        guard let cache, GocryptfsTransfer.isCached(session: cache.sessionID, path: item.url.path) else { return nil }
+        return cache
+    }
+
+    private func dropCached(_ path: String) {
+        if let cache { GocryptfsTransfer.uncache(session: cache.sessionID, path: path) }
     }
 
     // MARK: - MediaSource
@@ -75,7 +95,12 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
     }
 
     public func loadImage(for item: MediaItem) async throws -> NSImage {
-        let data = try await client.fileData(vaultID: vaultID, path: item.url.path)
+        let data: Data
+        if let local = cached(item) {
+            data = try local.decryptFile(path: item.url.path)
+        } else {
+            data = try await client.fileData(vaultID: vaultID, path: item.url.path)
+        }
         guard let image = NSImage(data: data) else { throw MediaError.failedToLoadImage(item.name) }
         return image
     }
@@ -105,18 +130,25 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
     }
 
     public func fileSize(for item: MediaItem) async throws -> Int64 {
-        try await client.fileSize(vaultID: vaultID, path: item.url.path)
+        if let local = cached(item) { return try local.fileSize(path: item.url.path) }
+        return try await client.fileSize(vaultID: vaultID, path: item.url.path)
     }
 
     public func readChunks(for item: MediaItem, chunkSize: Int) -> AsyncThrowingStream<Data, Error> {
         let client = self.client, vaultID = self.vaultID, path = item.url.path
+        let local = cached(item)
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
                     var offset: Int64 = 0
                     while true {
-                        let chunk = try await client.readRange(vaultID: vaultID, path: path,
+                        let chunk: Data
+                        if let local {
+                            chunk = try local.readRange(path: path, offset: offset, length: Int32(chunkSize))
+                        } else {
+                            chunk = try await client.readRange(vaultID: vaultID, path: path,
                                                                offset: offset, length: chunkSize)
+                        }
                         if chunk.isEmpty { break }
                         offset += Int64(chunk.count)
                         continuation.yield(chunk)
@@ -132,8 +164,8 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
     }
 
     public func createPlayerItem(for item: MediaItem) throws -> AVPlayerItem {
-        let loader = EncryptedResourceLoader(bridge: RemoteRangeReader(client: client, vaultID: vaultID),
-                                             relativePath: item.url.path)
+        let reader: any EncryptedRangeReading = cached(item) ?? RemoteRangeReader(client: client, vaultID: vaultID)
+        let loader = EncryptedResourceLoader(bridge: reader, relativePath: item.url.path)
         let asset = try makeAsset(for: item, loader: loader, queueLabel: "com.imagethat.remoteloader")
         let playerItem = AVPlayerItem(asset: asset)
         objc_setAssociatedObject(playerItem, "resourceLoader", loader, .OBJC_ASSOCIATION_RETAIN)
@@ -146,6 +178,7 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
         // The server never overwrites, so write a hidden sibling and swap it
         // in. Should the final rename fail, the edit survives under that name.
         let path = item.url.path
+        dropCached(path)
         let dir = parentDirectory(path)
         let temp = ".imagethat-save-\(UUID().uuidString)-\(item.name)"
         try await client.upload(vaultID: vaultID, directory: dir, name: temp, data: imageData)
@@ -162,11 +195,14 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
     }
 
     public func deleteItem(_ item: MediaItem) async throws {
+        dropCached(item.url.path)
         try await client.delete(vaultID: vaultID, path: item.url.path)
     }
 
     /// `destinationPath` is a directory, as for VaultSource.
     public func moveItem(_ item: MediaItem, to destinationPath: String) async throws {
+        // The cache is keyed by path; the copy would be orphaned by the move.
+        dropCached(item.url.path)
         try await client.move(vaultID: vaultID, from: item.url.path, to: join(destinationPath, item.name))
     }
 
@@ -229,5 +265,24 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
     /// Item URLs carry the vault-relative path, matching DriveVaultSource.
     static func itemURL(_ path: String) -> URL {
         URL(string: path.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? path)!
+    }
+}
+
+// MARK: - OfflineCaching
+
+extension RemoteVaultSource: OfflineCaching {
+    public var canCache: Bool { cache != nil }
+
+    public func isCached(_ item: MediaItem) async -> Bool { cached(item) != nil }
+
+    public func cache(_ item: MediaItem, onProgress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+        guard let cache else { throw MediaError.failedToLoadImage(item.name) }
+        try await GocryptfsTransfer.cacheFile(session: cache.sessionID, path: item.url.path, onProgress: onProgress)
+    }
+
+    public func uncache(_ item: MediaItem) async { dropCached(item.url.path) }
+
+    public func cachedRanges(for item: MediaItem) async -> [ClosedRange<Double>] {
+        cached(item) == nil ? [] : [0...1]
     }
 }

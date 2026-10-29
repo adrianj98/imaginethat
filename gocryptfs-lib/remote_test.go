@@ -95,4 +95,32 @@ func TestOpenRemoteAgainstRealServer(t *testing.T) {
 	if rc := tMkdir(rid, "new"); rc != rcNoConfig {
 		t.Errorf("Mkdir on a remote session = %d, want %d (read-only)", rc, rcNoConfig)
 	}
+
+	// The same vault with a file cache: caching photo.jpg stores its
+	// ciphertext, and reads still match the local session.
+	cacheDir := t.TempDir()
+	cid := tOpenRemoteCached(ts.URL, id, fixturePassword, "", cacheDir)
+	if cid <= 0 {
+		t.Fatalf("GocryptfsOpenRemoteCached = %d", cid)
+	}
+	defer tClose(cid)
+	if tIsCached(cid, "photo.jpg") {
+		t.Fatal("cached before CacheFile")
+	}
+	j := tJobNew()
+	defer tJobFree(j)
+	if rc := tCacheFile(j, cid, "photo.jpg"); rc != 0 {
+		t.Fatalf("CacheFile = %d", rc)
+	}
+	if !tIsCached(cid, "photo.jpg") || tFileCacheSize(cacheDir) == 0 {
+		t.Fatal("CacheFile stored nothing")
+	}
+	lb, _ := tDecryptFile(lid, "photo.jpg")
+	if cb, err := tDecryptFile(cid, "photo.jpg"); err != nil || !bytes.Equal(cb, lb) {
+		t.Fatalf("cached read: %v, equal %v", err, bytes.Equal(cb, lb))
+	}
+	assertNoPlaintext(t, cacheDir, lb[:min(len(lb), 4096)])
+	if rc := tUncache(cid, "photo.jpg"); rc != 0 || tIsCached(cid, "photo.jpg") {
+		t.Fatalf("Uncache = %d", rc)
+	}
 }

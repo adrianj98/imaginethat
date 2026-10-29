@@ -163,6 +163,18 @@ public struct SecurityTab: View {
                     }
                 }
 
+                SettingsGroup(title: "Cached server files") {
+                    SettingsRow(title: Self.sizeLabel(remoteCacheBytes, empty: "No cached files"),
+                                subtitle: "Kept encrypted, exactly as the server stores them") {
+                        Button("Clear") {
+                            try? GocryptfsTransfer.clearFileCache(at: AppPaths.remoteFilesCache)
+                            updateCacheSize()
+                        }
+                        .buttonStyle(PillButtonStyle(height: 28))
+                        .font(.system(size: 12))
+                    }
+                }
+
                 SettingsGroup {
                     SettingsRow(title: "Store passwords unencrypted",
                                 subtitle: "Debug only — saved passwords become readable on disk.",
@@ -207,10 +219,16 @@ public struct SecurityTab: View {
         return "\(formatter.string(fromByteCount: bytes)) on disk"
     }
 
+    private static func sizeLabel(_ bytes: Int64, empty: String) -> String {
+        bytes == 0 ? empty : "\(ByteCountFormatter().string(fromByteCount: bytes)) on disk"
+    }
+
     @State private var cacheBytes: Int64 = 0
+    @State private var remoteCacheBytes: Int64 = 0
 
     private func updateCacheSize() {
         cacheBytes = GocryptfsThumbnails.cacheSize(at: AppPaths.thumbnailCache)
+        remoteCacheBytes = GocryptfsTransfer.fileCacheSize(at: AppPaths.remoteFilesCache)
     }
 }
 

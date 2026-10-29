@@ -5,7 +5,7 @@ import CLibGocryptfs
 /// Mirrors GocryptfsBridge but opens the vault from in-memory config bytes
 /// and reads encrypted file content through DriveVaultFS callbacks.
 public final class DriveVaultBridge: VaultThumbnailing, @unchecked Sendable {
-    private let sessionID: Int32
+    let sessionID: Int32
     // Kept alive so the C callback pointers remain valid for the session lifetime.
     let fs: DriveVaultFS
     public let folderId: String

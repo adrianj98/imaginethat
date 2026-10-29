@@ -52,6 +52,17 @@ public extension MediaSource {
     func cachedRanges(for item: MediaItem) async -> [ClosedRange<Double>] { [] }
 }
 
+/// A source whose files can be kept on this Mac on request, so they open and
+/// play without the network. What is kept is ciphertext, never plaintext.
+public protocol OfflineCaching: MediaSource {
+    /// False when caching is unavailable for this source right now.
+    var canCache: Bool { get }
+    func isCached(_ item: MediaItem) async -> Bool
+    /// Fetch the whole file, retrying and resuming on network errors.
+    func cache(_ item: MediaItem, onProgress: @escaping @Sendable (Int64, Int64) -> Void) async throws
+    func uncache(_ item: MediaItem) async
+}
+
 /// Protocol for media sources that support writing/saving edited images.
 public protocol WritableMediaSource: MediaSource {
     /// Replace the original file with edited image data.

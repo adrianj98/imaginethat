@@ -218,3 +218,59 @@ func tOpenRemote(base, vaultID, password, pin string) int {
 	defer C.free(unsafe.Pointer(pn))
 	return int(GocryptfsOpenRemote(b, v, p, pn))
 }
+
+func tJobNew() int     { return int(GocryptfsJobNew()) }
+func tJobFree(j int)   { GocryptfsJobFree(C.int(j)) }
+func tJobCancel(j int) { GocryptfsJobCancel(C.int(j)) }
+
+func tJobProgress(j int) (done, total, retries int64, rc int) {
+	var d, t, r C.int64_t
+	rc = int(GocryptfsJobProgress(C.int(j), &d, &t, &r))
+	return int64(d), int64(t), int64(r), rc
+}
+
+func tCopyFileIn(j, dst int, dstPath, src string) int {
+	p, s := cstr(dstPath), cstr(src)
+	defer C.free(unsafe.Pointer(p))
+	defer C.free(unsafe.Pointer(s))
+	return int(GocryptfsCopyFileIn(C.int(j), C.int(dst), p, s))
+}
+
+func tCopyVaultIn(j, dst int, dstPath string, src int, srcPath string) int {
+	p, s := cstr(dstPath), cstr(srcPath)
+	defer C.free(unsafe.Pointer(p))
+	defer C.free(unsafe.Pointer(s))
+	return int(GocryptfsCopyVaultIn(C.int(j), C.int(dst), p, C.int(src), s))
+}
+
+func tCacheFile(j, id int, path string) int {
+	p := cstr(path)
+	defer C.free(unsafe.Pointer(p))
+	return int(GocryptfsCacheFile(C.int(j), C.int(id), p))
+}
+
+func tIsCached(id int, path string) bool {
+	p := cstr(path)
+	defer C.free(unsafe.Pointer(p))
+	return GocryptfsIsCached(C.int(id), p) == 1
+}
+
+func tUncache(id int, path string) int {
+	p := cstr(path)
+	defer C.free(unsafe.Pointer(p))
+	return int(GocryptfsUncache(C.int(id), p))
+}
+
+func tOpenRemoteCached(base, vaultID, password, pin, dir string) int {
+	b, v, p, n, d := cstr(base), cstr(vaultID), cstr(password), cstr(pin), cstr(dir)
+	for _, s := range []*C.char{b, v, p, n, d} {
+		defer C.free(unsafe.Pointer(s))
+	}
+	return int(GocryptfsOpenRemoteCached(b, v, p, n, d))
+}
+
+func tFileCacheSize(dir string) int64 {
+	d := cstr(dir)
+	defer C.free(unsafe.Pointer(d))
+	return int64(GocryptfsFileCacheSize(d))
+}

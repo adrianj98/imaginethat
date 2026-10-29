@@ -241,6 +241,12 @@ public struct ThumbnailCell: View {
         .help(item.name)
         .accessibilityLabel(item.name)
         .contextMenu {
+            if let caching = appState.mediaSource as? OfflineCaching, caching.canCache {
+                Button("Cache File") {
+                    appState.cacheFile(item)
+                }
+                .disabled(appState.isCaching(item))
+            }
             if isInVault {
                 Button("Delete", role: .destructive) {
                     appState.deleteItem(item)

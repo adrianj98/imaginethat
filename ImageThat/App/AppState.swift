@@ -84,6 +84,16 @@ public class AppState: ObservableObject {
     /// Human-readable status during transfer
     @Published public var fileTransferStatus: String? = nil
 
+    /// Files being cached for offline use (remote and Drive vaults), keyed by
+    /// item URL, with their progress 0...1.
+    @Published public private(set) var cacheProgress: [URL: Double] = [:]
+    /// Bumped when a file is cached or uncached, so views re-ask the source.
+    @Published public private(set) var cacheRevision = 0
+    private var cacheTasks: [URL: Task<Void, Never>] = [:]
+    /// Per unlocked remote vault (password key): a ciphertext-mode session with
+    /// a file cache, which RemoteVaultSource reads cached files through.
+    private var remoteCaches: [String: GocryptfsBridge] = [:]
+
     /// Current file transfer task (for cancellation)
     private var fileTransferTask: Task<Void, Never>? = nil
 
@@ -549,13 +559,19 @@ public class AppState: ObservableObject {
 
                     print("importFiles: copying \(name) (\(size) bytes) to \(destPath)")
 
-                    // Use larger chunks (1MB) for better throughput
-                    let chunkSize = 1_048_576  // 1MB chunks
-                    let sourceChunks = localSource.readChunks(for: item, chunkSize: chunkSize)
+                    if let vaultSource = dest as? VaultSource {
+                        // Local vaults copy in the Go engine, which retries and
+                        // resumes on read errors (files on a network share).
+                        try await Self.engineCopy(.file(url), into: vaultSource, at: destPath)
+                    } else {
+                        // Use larger chunks (1MB) for better throughput
+                        let chunkSize = 1_048_576  // 1MB chunks
+                        let sourceChunks = localSource.readChunks(for: item, chunkSize: chunkSize)
 
-                    // Pass chunks directly to destination.
-                    // Destination tracks write progress and posts notifications.
-                    try await dest.writeChunks(sourceChunks, to: destPath, totalSize: size)
+                        // Pass chunks directly to destination.
+                        // Destination tracks write progress and posts notifications.
+                        try await dest.writeChunks(sourceChunks, to: destPath, totalSize: size)
+                    }
 
                     print("importFiles: successfully copied \(name)")
                 } catch {
@@ -600,32 +616,21 @@ public class AppState: ObservableObject {
             return
         }
 
-        // Cross-source → copy using readChunks / writeChunks
+        // Cross-source → copy in the Go engine (retries and resumes on read
+        // errors; the file appears only once complete)
         Task {
             do {
-                let sourceMediaSource: any MediaSource
-                let sourceItem: MediaItem
-
+                let from: EngineCopySource
                 if transfer.isVault, let bridge = vaultBridges[transfer.sourceRootPath] {
-                    // Vault source
-                    let vs = VaultSource(bridge: bridge, currentPath: "")
-                    sourceMediaSource = vs
-                    let urlString = transfer.itemRelativePath.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? transfer.itemRelativePath
-                    let url = URL(string: urlString) ?? URL(fileURLWithPath: transfer.itemRelativePath)
-                    sourceItem = MediaItem(name: url.lastPathComponent, url: url, mediaType: .image)
+                    from = .vault(bridge, transfer.itemRelativePath)
                 } else {
-                    // Local folder source
                     let rootURL = URL(fileURLWithPath: transfer.sourceRootPath)
-                    sourceMediaSource = FolderSource(rootURL: rootURL)
-                    let fileURL = rootURL.appendingPathComponent(transfer.itemRelativePath)
-                    sourceItem = MediaItem(url: fileURL)
+                    from = .file(rootURL.appendingPathComponent(transfer.itemRelativePath))
                 }
 
                 let destFileName = (transfer.itemRelativePath as NSString).lastPathComponent
                 let destPath = destVaultPath.isEmpty ? destFileName : "\(destVaultPath)/\(destFileName)"
-                let fileSize = try await sourceMediaSource.fileSize(for: sourceItem)
-                let chunks = sourceMediaSource.readChunks(for: sourceItem, chunkSize: 1_048_576)  // 1MB chunks
-                try await destSource.writeChunks(chunks, to: destPath, totalSize: fileSize)
+                try await Self.engineCopy(from, into: destSource, at: destPath)
                 self.loadMedia(from: mediaSource ?? destSource)
             } catch {
                 self.errorMessage = error.localizedDescription
@@ -1315,6 +1320,9 @@ extension AppState {
         unlockedRemoteVaults = unlockedRemoteVaults.filter {
             URL(string: $0).flatMap(RemoteLocation.parse)?.server != server
         }
+        remoteCaches = remoteCaches.filter {
+            URL(string: $0.key).flatMap(RemoteLocation.parse)?.server != server
+        }
         let saved = (AppSettings.shared.stringArray(forKey: Self.serversKey) ?? []).filter { $0 != server }
         AppSettings.shared.set(saved, forKey: Self.serversKey)
         serverSidebarItems.removeAll { RemoteLocation.parse($0.url)?.server == server }
@@ -1383,7 +1391,8 @@ extension AppState {
 
     private func showRemoteVault(client: RemoteServerClient, vaultID: String, key: String, path: String) {
         let source = RemoteVaultSource(client: client, vaultID: vaultID,
-                                       vaultName: Self.remoteVaultNames[key] ?? "Vault", currentPath: path)
+                                       vaultName: Self.remoteVaultNames[key] ?? "Vault", currentPath: path,
+                                       cache: remoteCaches[key])
         mediaSource = source
         viewMode = .grid
         selectedIndex = 0
@@ -1452,6 +1461,7 @@ extension AppState {
                 }
             }
             unlockedRemoteVaults.insert(key)
+            openRemoteCache(server: server, vaultID: vaultID, password: password, key: key)
             showRemoteVault(client: client, vaultID: vaultID, key: key, path: subpath ?? "")
             if let root = findItem(in: serverSidebarItems, where: { $0.url.absoluteString == key && $0.vaultPath == "" }) {
                 expandRemoteSidebarItem(root, client: client, vaultID: vaultID)
@@ -1532,7 +1542,8 @@ extension AppState {
         let destSource: any WritableMediaSource
         if let location = RemoteLocation.parse(sidebarItem.url), let vaultID = location.vaultID,
            let client = serverClients[location.server] {
-            destSource = RemoteVaultSource(client: client, vaultID: vaultID, vaultName: "", currentPath: destPath)
+            destSource = RemoteVaultSource(client: client, vaultID: vaultID, vaultName: "", currentPath: destPath,
+                                           cache: remoteCaches[RemoteLocation.passwordKey(server: location.server, vaultID: vaultID)])
         } else if let bridge = vaultBridges[sidebarItem.url.path] {
             destSource = VaultSource(bridge: bridge, currentPath: destPath)
         } else {
@@ -1543,6 +1554,9 @@ extension AppState {
         let mediaType: MediaType = SupportedFormats.videoExtensions.contains(ext) ? .video : .image
         let sourceSource: any MediaSource
         let sourceItem: MediaItem
+        // Set when the Go engine can read the source itself, for a copy into a
+        // local vault that retries and resumes.
+        var engineSource: EngineCopySource?
         if let location = URL(string: transfer.sourceRootPath).flatMap(RemoteLocation.parse),
            let vaultID = location.vaultID, let client = serverClients[location.server] {
             if transfer.sourceRootPath == sidebarItem.url.absoluteString,
@@ -1550,17 +1564,21 @@ extension AppState {
                 moveItem(item, to: destPath)
                 return
             }
-            sourceSource = RemoteVaultSource(client: client, vaultID: vaultID, vaultName: "")
+            let cache = remoteCaches[RemoteLocation.passwordKey(server: location.server, vaultID: vaultID)]
+            sourceSource = RemoteVaultSource(client: client, vaultID: vaultID, vaultName: "", cache: cache)
             sourceItem = MediaItem(name: (transfer.itemRelativePath as NSString).lastPathComponent,
                                    url: RemoteVaultSource.itemURL(transfer.itemRelativePath), mediaType: mediaType)
+            if let cache { engineSource = .vault(cache, transfer.itemRelativePath) }
         } else if transfer.isVault, let bridge = vaultBridges[transfer.sourceRootPath] {
             sourceSource = VaultSource(bridge: bridge, currentPath: "")
             sourceItem = MediaItem(name: (transfer.itemRelativePath as NSString).lastPathComponent,
                                    url: RemoteVaultSource.itemURL(transfer.itemRelativePath), mediaType: mediaType)
+            engineSource = .vault(bridge, transfer.itemRelativePath)
         } else if !transfer.isVault {
             let rootURL = URL(fileURLWithPath: transfer.sourceRootPath)
             sourceSource = FolderSource(rootURL: rootURL)
             sourceItem = MediaItem(url: rootURL.appendingPathComponent(transfer.itemRelativePath))
+            engineSource = .file(sourceItem.url)
         } else {
             return
         }
@@ -1568,6 +1586,11 @@ extension AppState {
         Task {
             do {
                 let name = (transfer.itemRelativePath as NSString).lastPathComponent
+                if let engineSource, let vaultDest = destSource as? VaultSource {
+                    try await Self.engineCopy(engineSource, into: vaultDest, at: destPath.isEmpty ? name : "\(destPath)/\(name)")
+                    if let current = mediaSource { loadMedia(from: current) }
+                    return
+                }
                 let size = try await sourceSource.fileSize(for: sourceItem)
                 let chunks = sourceSource.readChunks(for: sourceItem, chunkSize: 1_048_576)
                 try await destSource.writeChunks(chunks, to: destPath.isEmpty ? name : "\(destPath)/\(name)", totalSize: size)
@@ -1575,6 +1598,91 @@ extension AppState {
             } catch {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    // MARK: - Engine copies and offline caching
+
+    enum EngineCopySource: Sendable {
+        case file(URL)
+        case vault(GocryptfsBridge, String)
+    }
+
+    /// Copies one file into a local vault through the Go engine. Reads that
+    /// fail transiently (a network share, a remote server) are retried with
+    /// backoff and resume where they stopped, and the file appears only once
+    /// every byte is in. Progress goes out like VaultSource.writeChunks'.
+    nonisolated static func engineCopy(_ from: EngineCopySource, into dest: VaultSource, at destPath: String) async throws {
+        let startTime = Date()
+        let report: @Sendable (Int64, Int64) -> Void = { done, total in
+            NotificationCenter.default.post(name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
+                                            object: (current: done, total: total, startTime: startTime))
+        }
+        switch from {
+        case .file(let url):
+            try await GocryptfsTransfer.copyFile(url, into: dest.bridge, at: destPath, onProgress: report)
+        case .vault(let source, let path):
+            try await GocryptfsTransfer.copy(from: source, path: path, into: dest.bridge, at: destPath, onProgress: report)
+        }
+    }
+
+    /// Opens the remote vault a second time in ciphertext mode with a file
+    /// cache. It costs a key derivation and a round trip, so it runs in the
+    /// background; the current remote source picks it up when it is ready.
+    private func openRemoteCache(server: String, vaultID: String, password: String, key: String) {
+        guard remoteCaches[key] == nil, let base = URL(string: server) else { return }
+        Task.detached(priority: .utility) { [weak self] in
+            guard let bridge = try? GocryptfsBridge(remoteServer: base, vaultID: vaultID, password: password,
+                                                    cacheDir: AppPaths.remoteFilesCache) else { return }
+            await self?.adoptRemoteCache(bridge, server: server, vaultID: vaultID, key: key)
+        }
+    }
+
+    private func adoptRemoteCache(_ bridge: GocryptfsBridge, server: String, vaultID: String, key: String) {
+        guard unlockedRemoteVaults.contains(key) else { return }
+        remoteCaches[key] = bridge
+        if let current = mediaSource as? RemoteVaultSource, current.cache == nil,
+           current.vaultID == vaultID, current.client.baseURL.absoluteString == server {
+            mediaSource = current.withCache(bridge)
+            cacheRevision += 1
+        }
+    }
+
+    public func isCaching(_ item: MediaItem) -> Bool { cacheProgress[item.url] != nil }
+
+    /// Keeps a remote or Drive vault file on this Mac (as ciphertext), so it
+    /// opens and plays without the network.
+    public func cacheFile(_ item: MediaItem) {
+        guard let source = mediaSource as? OfflineCaching, source.canCache, cacheProgress[item.url] == nil else { return }
+        let url = item.url
+        cacheProgress[url] = 0
+        cacheTasks[url] = Task {
+            do {
+                try await source.cache(item) { done, total in
+                    guard total > 0 else { return }
+                    Task { @MainActor in
+                        if self.cacheProgress[url] != nil { self.cacheProgress[url] = Double(done) / Double(total) }
+                    }
+                }
+            } catch is CancellationError {
+            } catch {
+                errorMessage = "Couldn't cache \(item.name): \(error.localizedDescription)"
+            }
+            cacheProgress[url] = nil
+            cacheTasks[url] = nil
+            cacheRevision += 1
+        }
+    }
+
+    public func cancelCaching(_ item: MediaItem) {
+        cacheTasks[item.url]?.cancel()
+    }
+
+    public func uncacheFile(_ item: MediaItem) {
+        guard let source = mediaSource as? OfflineCaching else { return }
+        Task {
+            await source.uncache(item)
+            cacheRevision += 1
         }
     }
 }

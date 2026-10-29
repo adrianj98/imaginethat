@@ -403,3 +403,29 @@ final class DriveVaultResourceLoader: NSObject, AVAssetResourceLoaderDelegate, @
         return true
     }
 }
+
+// MARK: - OfflineCaching
+
+extension DriveVaultSource: OfflineCaching {
+    public var canCache: Bool { true }
+
+    /// Cached when the Drive caches cover the whole ciphertext.
+    public func isCached(_ item: MediaItem) async -> Bool {
+        let ranges = await cachedRanges(for: item)
+        return ranges.count == 1 && ranges[0].lowerBound <= 0 && ranges[0].upperBound >= 1
+    }
+
+    /// The engine reads the file's ciphertext through once, retrying and
+    /// resuming; DriveVaultFS stores every block it downloads in the Drive
+    /// caches. Those caches still evict by their size limit (Settings).
+    public func cache(_ item: MediaItem, onProgress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
+        try await GocryptfsTransfer.cacheFile(session: bridge.sessionID, path: item.url.path, onProgress: onProgress)
+    }
+
+    public func uncache(_ item: MediaItem) async {
+        guard let cipherPath = bridge.cipherPath(forPlainPath: item.url.path),
+              let fileId = bridge.fs.getFileId(forCipherPath: cipherPath) else { return }
+        await DriveCache.shared.invalidate(fileId: fileId)
+        DriveRangeCache.shared.invalidate(fileId: fileId)
+    }
+}
