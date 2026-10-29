@@ -40,6 +40,11 @@ import java.io.File
 import java.security.SecureRandom
 
 /**
+ * WARNING: this test works on the debug app's REAL data (noBackupFilesDir/offline-vault and the
+ * encrypted state file), because it must prove what the real app writes. It wipes both. To avoid
+ * destroying a developer's data it refuses to run when an offline vault or saved state exists that
+ * this test did not create (it marks its own vault with [SENTINEL] in noBackupFilesDir).
+ *
  * The app's central guarantee: decrypted vault content never reaches disk. Drives the real app
  * (real KeyVault, real offline vault in noBackupFilesDir, the app's Coil loader) through a remote
  * view, Save offline, an offline view and an upload, then searches every file under the app's
@@ -53,6 +58,9 @@ class NoPlaintextOnDiskTest {
     private val session = container.session
     private val offlineDir = File(app.noBackupFilesDir, "offline-vault")
     private val marker1 = ByteArray(64).also { SecureRandom().nextBytes(it) }
+    /** Trailing bytes of the JPEG served by /thumb: the only marker the Coil path ever sees. */
+    private val marker1b = ByteArray(64).also { SecureRandom().nextBytes(it) }
+    private val sentinel = File(app.noBackupFilesDir, SENTINEL)
     private val marker2 = ByteArray(64).also { SecureRandom().nextBytes(it) }
     private val password = "correct-horse-battery"
     private var server: MockWebServer? = null
@@ -66,21 +74,33 @@ class NoPlaintextOnDiskTest {
         it.write(marker)
     }.toByteArray()
 
-    private fun jpeg(): ByteArray = ByteArrayOutputStream().also {
+    /** A real JPEG; [marker] follows EOI, which decoders ignore. */
+    private fun jpeg(marker: ByteArray): ByteArray = ByteArrayOutputStream().also {
         Bitmap.createBitmap(32, 24, Bitmap.Config.ARGB_8888).apply { eraseColor(0xFFCC6633.toInt()) }.compress(Bitmap.CompressFormat.JPEG, 80, it)
+        it.write(marker)
     }.toByteArray()
 
     @Before fun setUp() {
-        session.lockAll()
-        offlineDir.deleteRecursively()
-        container.keys.store().update { AppState() }
+        rule.runOnUiThread { session.lockAll() }
+        val foreign = (offlineDir.exists() || container.keys.state() != AppState()) && !sentinel.exists()
+        check(!foreign) {
+            "Refusing to run: the app has an offline vault or saved state that this test did not create " +
+                "(no $SENTINEL). This test wipes them; clear the app's data (adb shell pm clear ${app.packageName}) first."
+        }
+        wipe()
+        sentinel.writeText("created by NoPlaintextOnDiskTest; safe to wipe")
     }
 
     @After fun tearDown() {
         server?.shutdown()
         rule.runOnUiThread { session.lockAll() }
+        wipe()
+    }
+
+    private fun wipe() {
         offlineDir.deleteRecursively()
         container.keys.store().update { AppState() }
+        sentinel.delete()
     }
 
     private fun startServer(image: ByteArray, thumb: ByteArray): MockWebServer {
@@ -99,7 +119,7 @@ class NoPlaintextOnDiskTest {
                         path == "/api/vaults/v1/unlock" -> { unlocked = true; json("{}") }
                         path == "/api/vaults/v1/list" ->
                             json("""{"path":"/","entries":[{"name":"pic.png","isDir":false,"size":${image.size},"mediaType":"image"}]}""")
-                        path == "/api/vaults/v1/thumb" -> MockResponse().setHeader("Content-Type", "image/jpeg").setBody(Buffer().write(thumb))
+                        path == "/api/vaults/v1/thumb" -> thumbResponse(thumb)
                         path == "/api/vaults/v1/file" -> fileResponse(request, image)
                         path == "/api/logout" -> json("{}")
                         else -> MockResponse().setResponseCode(404).setBody("""{"error":"not found"}""")
@@ -109,6 +129,11 @@ class NoPlaintextOnDiskTest {
             it.start()
             server = it
         }
+    }
+
+    private fun thumbResponse(thumb: ByteArray): MockResponse {
+        thumbRequests.incrementAndGet()
+        return MockResponse().setHeader("Content-Type", "image/jpeg").setBody(Buffer().write(thumb))
     }
 
     private fun fileResponse(request: RecordedRequest, image: ByteArray): MockResponse {
@@ -135,7 +160,7 @@ class NoPlaintextOnDiskTest {
     private fun List<String>.leaks(): String = joinToString("\n")
 
     @Test fun nothingDecryptedOrIdentifyingReachesDisk() {
-        val s = startServer(png(marker1), jpeg())
+        val s = startServer(png(marker1), jpeg(marker1b))
         val serverStrings = listOf("localhost:${s.port}", "127.0.0.1:${s.port}")
 
         rule.setContent {
@@ -173,6 +198,9 @@ class NoPlaintextOnDiskTest {
         waitForTag("viewer-image")
         rule.onNodeWithTag("viewer-close").performClick()
         waitForTag("browser-grid")
+        // Thumbnails go through Coil; load one for real, bypassing the memory cache so it is fetched.
+        val remoteId = session.openSourceIds.value.single { it != OFFLINE_ID }
+        loadThumbnail(remoteId, "/pic.png")
         rule.onNodeWithTag("item-pic.png").performTouchInput { longClick() }
         waitForTag("action-save-offline")
         rule.onNodeWithTag("action-save-offline").performClick()
@@ -193,6 +221,7 @@ class NoPlaintextOnDiskTest {
         dir += "/" + vaults[0].name
         rule.onNodeWithTag("item-${vaults[0].name}").performClick()
         waitForTag("item-pic.png")
+        loadThumbnail(OFFLINE_ID, "$dir/pic.png")
         rule.onNodeWithTag("item-pic.png").performClick()
         waitForTag("viewer-image")
         rule.onNodeWithTag("viewer-close").performClick()
@@ -209,28 +238,51 @@ class NoPlaintextOnDiskTest {
         assertTrue("offline vault must have gocryptfs.conf", File(offlineDir, "gocryptfs.conf").exists())
         assertTrue("server must not be remembered", container.keys.state().servers.isEmpty())
 
-        val leaks = scan(marker1, marker2, serverStrings)
+        assertTrue("grid never requested the remote thumbnail", thumbRequests.get() > 0)
+
+        // Let async writers (Coil, ExoPlayer, engine) finish before looking.
+        rule.waitForIdle()
+        Thread.sleep(2_000)
+        val leaks = scan(listOf("marker1" to marker1, "marker1b(thumb)" to marker1b, "marker2" to marker2), serverStrings)
         assertTrue("plaintext found on disk:\n${leaks.leaks()}", leaks.isEmpty())
     }
 
-    private fun scan(m1: ByteArray, m2: ByteArray, urls: List<String>): List<String> {
-        val needles = listOf("marker1" to m1, "marker2" to m2) +
+    private val thumbRequests = java.util.concurrent.atomic.AtomicInteger()
+
+    private fun loadThumbnail(sourceId: String, path: String) {
+        val loader = coil3.SingletonImageLoader.get(app)
+        val req = coil3.request.ImageRequest.Builder(app)
+            .data(ai.alertd.imagethat.media.VaultUri.build(sourceId, path, 128))
+            .memoryCachePolicy(coil3.request.CachePolicy.DISABLED)
+            .build()
+        val result = runBlocking { loader.execute(req) }
+        assertTrue("thumbnail did not load: $result", result is coil3.request.SuccessResult)
+    }
+
+    private fun scan(markers: List<Pair<String, ByteArray>>, urls: List<String>): List<String> {
+        val needles = markers +
             urls.flatMap { listOf("server-address '$it'" to it.toByteArray(), "server-url 'https://$it'" to "https://$it".toByteArray()) }
         val roots = listOfNotNull(
-            app.filesDir, app.cacheDir, app.codeCacheDir, app.noBackupFilesDir, app.externalCacheDir, app.dataDir,
+            app.filesDir, app.cacheDir, app.codeCacheDir, app.noBackupFilesDir, app.externalCacheDir, app.getExternalFilesDir(null), app.dataDir,
         ).map { it.canonicalFile }.distinct()
         val seen = HashSet<String>()
         val found = ArrayList<String>()
+        val unreadable = ArrayList<String>()
         for (root in roots) {
             root.walkTopDown()
                 .onEnter { !java.nio.file.Files.isSymbolicLink(it.toPath()) }
+                .onFail { f, e -> unreadable += "${f.absolutePath} (${e.message})" }
                 .filter { it.isFile && !java.nio.file.Files.isSymbolicLink(it.toPath()) && seen.add(it.canonicalPath) }
                 .forEach { f ->
-                    val bytes = try { f.readBytes() } catch (e: Exception) { return@forEach }
-                    for ((label, n) in needles) if (bytes.indexOf(n) >= 0) found += "${f.absolutePath} (${bytes.size} bytes) contains $label"
+                    try {
+                        for ((label, n) in needles) if (containsStreaming(f, n)) found += "${f.absolutePath} (${f.length()} bytes) contains $label"
+                    } catch (e: Exception) {
+                        unreadable += "${f.absolutePath} (${e.message})"
+                    }
                 }
         }
         assertTrue("scan visited no files", seen.isNotEmpty())
+        assertTrue("could not read files under the app's data dirs:\n${unreadable.joinToString("\n")}", unreadable.isEmpty())
         return found
     }
 }
@@ -243,3 +295,23 @@ private fun ByteArray.indexOf(needle: ByteArray): Int {
     }
     return -1
 }
+
+/** Streams [f] in chunks with a (needle - 1) byte overlap so a match across a chunk boundary is found. */
+private fun containsStreaming(f: File, needle: ByteArray): Boolean {
+    val keep = needle.size - 1
+    val buf = ByteArray(64 * 1024 + keep)
+    var have = 0
+    f.inputStream().use { input ->
+        while (true) {
+            val n = input.read(buf, have, buf.size - have)
+            if (n < 0) return false
+            have += n
+            if (buf.copyOf(have).indexOf(needle) >= 0) return true
+            val tail = minOf(keep, have)
+            System.arraycopy(buf, have - tail, buf, 0, tail)
+            have = tail
+        }
+    }
+}
+
+private const val SENTINEL = ".imagethat-test-owned"
