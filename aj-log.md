@@ -452,3 +452,8 @@ User request: "opening the app should require a biometric and then everything in
 - **ui/Session.kt, local/LocalVaults.kt, ui/UnlockDialog.kt, ui/HomeScreen.kt:** removing a server now locks its open vaults and logs out of its HTTP session. Removing a folder closes its Go vault (`Session.closeRemoved`, `LocalVaults.close`, and a close hook on `registerSource`). `lockAll` and the removal share `logoutAndClose`. *Why:* removing a server or folder only edited the state file. Its vaults stayed unlocked in memory, still counted as unlocked on Home, and nothing in the UI could lock them.
 - **keys/AppUnlocker.kt:** if the user cancels the prompt that makes a new master key after invalidation, the old wrapped key is marked unreadable (`UNREADABLE`). *Why:* the new key couldn't open the old wrapped key, so every later open took two prompts. Now it takes one, and the "saved passwords cleared" notice still shows.
 - **Tests:** `AppUnlockerTest.cancelAfterInvalidationStillShowsTheNoticeNextTime` now asserts a single prompt. New instrumented test `removingAServerLocksItsOpenVaultsOnly`.
+
+## 2026-10-29 — Merged client-decrypt mode into main; release v0.4.0
+- User asked to merge `browsergoctypto` into `main` and tag a release. Merged with a merge commit (as v0.3.0 was) and tagged `v0.4.0` (new feature → minor bump); pushing the tag runs `release.yml`.
+- Before merging: `go test ./...` (webserver), vitest 8/8 and the web build passed again; CI had not run on the branch.
+- Known gaps shipped in this release: read-only in client-decrypt mode; Mac and Android write buttons fail with "read-only" instead of being hidden; the Mac and Android login screens not tried by hand.
