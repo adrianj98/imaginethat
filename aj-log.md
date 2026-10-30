@@ -457,3 +457,9 @@ User request: "opening the app should require a biometric and then everything in
 - User asked to merge `browsergoctypto` into `main` and tag a release. Merged with a merge commit (as v0.3.0 was) and tagged `v0.4.0` (new feature → minor bump); pushing the tag runs `release.yml`.
 - Before merging: `go test ./...` (webserver), vitest 8/8 and the web build passed again; CI had not run on the branch.
 - Known gaps shipped in this release: read-only in client-decrypt mode; Mac and Android write buttons fail with "read-only" instead of being hidden; the Mac and Android login screens not tried by hand.
+
+## 2026-10-29 — Fix Android UI tests broken by the mode probe
+- CI on `main` after the merge: `UnlockFlowTest.plainHttpWarnsAndConnects` and `searchFiltersTheServersVaults` newly failed. Cause: the app now asks `/api/info` before listing vaults, and those tests answer from a MockWebServer queue, so the probe consumed the queued vault list.
+- `UnlockFlowTest.kt`: `ServerDecryptQueue` dispatcher answers `/api/info` with 404 (a server from before client-decrypt mode) and serves the queue otherwise; used by `startServer` and the plain-HTTP test, which now expects `/api/info` then `/api/vaults`. Test-only, so the v0.4.0 release build is unaffected.
+- Verified on `pixel6b`: full instrumented suite 94 tests, 0 failures (1 skipped: the opt-in client-decrypt server test). The other 13 instrumented failures in CI already failed on `main` before the merge and pass locally, so they are the CI emulator, not this change.
+- Core CI's `TestThumbDiskRoundTripAndSealing` failure is in `core/cache`, untouched by this branch: the test XORs random bytes and checks no `FF D8` appears, which happens by chance about 1 run in 20. Re-ran CI rather than change it here.
