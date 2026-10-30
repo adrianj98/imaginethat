@@ -20,17 +20,9 @@ public enum AppPaths {
     /// `~/.imagethat/cache/thumbnails`
     public static let thumbnailCache: URL = ensureDir(cacheRoot.appendingPathComponent("thumbnails", isDirectory: true))
 
-    /// `~/.imagethat/cache/drive-files` — full-file Drive cache.
-    public static let driveFilesCache: URL = ensureDir(cacheRoot.appendingPathComponent("drive-files", isDirectory: true))
-
-    /// `~/.imagethat/cache/drive-files-index.json`
-    public static let driveFilesIndex: URL = cacheRoot.appendingPathComponent("drive-files-index.json")
-
-    /// `~/.imagethat/cache/drive-ranges` — byte-range Drive cache.
-    public static let driveRangesCache: URL = ensureDir(cacheRoot.appendingPathComponent("drive-ranges", isDirectory: true))
-
-    /// `~/.imagethat/cache/drive-ranges-index.json`
-    public static let driveRangesIndex: URL = cacheRoot.appendingPathComponent("drive-ranges-index.json")
+    /// `~/.imagethat/cache/drive` — the engine's Drive cache: ciphertext
+    /// ranges of Drive vault files, shared by every Drive vault.
+    public static let driveCache: URL = ensureDir(cacheRoot.appendingPathComponent("drive", isDirectory: true))
 
     /// `~/.imagethat/cache/remote-files` — files from imagethat-web servers the
     /// user chose to keep, as ciphertext exactly as the server stores them.
@@ -38,6 +30,15 @@ public enum AppPaths {
 
     /// `~/.imagethat/passwords` — vault password store.
     public static let passwordsDir: URL = ensureDir(root.appendingPathComponent("passwords", isDirectory: true))
+
+    /// Deletes the Drive caches the app kept before the Go engine took Drive
+    /// over (whole files and byte ranges, each with an index). Nothing reads
+    /// them any more.
+    public static func removeLegacyDriveCaches() {
+        for name in ["drive-files", "drive-files-index.json", "drive-ranges", "drive-ranges-index.json"] {
+            try? FileManager.default.removeItem(at: cacheRoot.appendingPathComponent(name))
+        }
+    }
 
     private static func ensureDir(_ url: URL) -> URL {
         try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

@@ -12,26 +12,22 @@ public final class GoogleDriveSource: WritableMediaSource, @unchecked Sendable {
     public let rootDisplayName = "Google Drive"
 
     private let service: GoogleDriveService
-    private let cache: DriveCache
 
     // Metadata populated by listMedia() — safe to read after the await returns.
     private var fileSizes: [String: Int64] = [:]         // fileId → size
     private var thumbnailLinks: [String: String] = [:]   // fileId → thumbnailLink
-    private var modifiedTimes: [String: String] = [:]    // fileId → modifiedTime
     private var mimeTypes: [String: String] = [:]        // fileId → mimeType
 
     init(
         folderId: String,
         parentFolderId: String = "root",
         currentPath: String = "",
-        service: GoogleDriveService = .shared,
-        cache: DriveCache = .shared
+        service: GoogleDriveService = .shared
     ) {
         self.folderId = folderId
         self.parentFolderId = parentFolderId
         self.currentPath = currentPath
         self.service = service
-        self.cache = cache
     }
 
     // MARK: - MediaSource
@@ -57,7 +53,6 @@ public final class GoogleDriveSource: WritableMediaSource, @unchecked Sendable {
 
             fileSizes[file.id] = file.size
             if let link = file.thumbnailLink { thumbnailLinks[file.id] = link }
-            modifiedTimes[file.id] = file.modifiedTime
             mimeTypes[file.id] = file.mimeType
         }
 
@@ -71,25 +66,17 @@ public final class GoogleDriveSource: WritableMediaSource, @unchecked Sendable {
 
     public func loadImage(for item: MediaItem) async throws -> NSImage {
         let fileId = try extractFileId(from: item)
-        let modTime = modifiedTimes[fileId] ?? ""
-
-        if let cached = await cache.get(fileId: fileId, modifiedTime: modTime),
-           let image = NSImage(data: cached) {
-            return image
-        }
-
         let data = try await service.downloadData(fileId: fileId)
-        await cache.store(fileId: fileId, modifiedTime: modTime, data: data)
-
         guard let image = NSImage(data: data) else { throw GoogleDriveError.invalidResponse }
         return image
     }
 
     public func loadThumbnail(for item: MediaItem, size: CGSize) async throws -> NSImage {
         let fileId = try extractFileId(from: item)
+        let maxEdge = Int(max(size.width, size.height) * 2)
 
         if let link = thumbnailLinks[fileId],
-           let data = try? await service.downloadThumbnail(urlString: link),
+           let data = try? await service.downloadThumbnail(urlString: link, maxEdge: maxEdge),
            let image = NSImage(data: data) {
             return image
         }
@@ -120,63 +107,41 @@ public final class GoogleDriveSource: WritableMediaSource, @unchecked Sendable {
 
     public func fileSize(for item: MediaItem) async throws -> Int64 {
         let fileId = try extractFileId(from: item)
-        if let cached = fileSizes[fileId] { return cached }
-        return try await service.fileSize(fileId: fileId)
+        if let known = fileSizes[fileId] { return known }
+        // Not listed through this source yet: list its folder to learn it.
+        _ = try await listMedia()
+        guard let known = fileSizes[fileId] else { throw GoogleDriveError.notFound(item.name) }
+        return known
     }
 
     public func readChunks(for item: MediaItem, chunkSize: Int) -> AsyncThrowingStream<Data, Error> {
-        guard let fileId = item.url.host else {
-            return AsyncThrowingStream { $0.finish(throwing: GoogleDriveError.invalidResponse) }
-        }
-
         let service = self.service
-        let cache = self.cache
-        let modTime = modifiedTimes[fileId] ?? ""
-        let knownSize = fileSizes[fileId] ?? 0
-        let maxCacheable: Int64 = 100 * 1_048_576  // 100 MB
-
+        let knownSize = item.url.host.flatMap { fileSizes[$0] }
         return AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 do {
-                    // Serve from disk cache if available
-                    if let cached = await cache.get(fileId: fileId, modifiedTime: modTime) {
-                        var offset = 0
-                        while offset < cached.count {
-                            let end = min(offset + chunkSize, cached.count)
-                            continuation.yield(cached[offset..<end])
-                            offset = end
-                        }
-                        continuation.finish()
-                        return
+                    let fileId = try self.extractFileId(from: item)
+                    let totalSize: Int64
+                    if let knownSize {
+                        totalSize = knownSize
+                    } else {
+                        totalSize = try await self.fileSize(for: item)
                     }
-
-                    // Stream from Drive
-                    let totalSize = knownSize > 0 ? knownSize : (try await service.fileSize(fileId: fileId))
-                    let shouldCache = totalSize <= maxCacheable && totalSize > 0
-                    var accumulated = shouldCache ? Data() : nil
-                    if shouldCache { accumulated!.reserveCapacity(Int(totalSize)) }
-
                     var offset: Int64 = 0
                     while offset < totalSize {
                         let toRead = Int(min(Int64(chunkSize), totalSize - offset))
-                        let chunk = try await service.downloadRange(fileId: fileId, offset: offset, length: toRead)
+                        let chunk = try await service.readRange(fileId: fileId, offset: offset, length: toRead)
                         if chunk.isEmpty { break }
-
                         continuation.yield(chunk)
-                        accumulated?.append(chunk)
                         offset += Int64(chunk.count)
                         if chunk.count < toRead { break }
                     }
-
-                    if let data = accumulated, !data.isEmpty {
-                        await cache.store(fileId: fileId, modifiedTime: modTime, data: data)
-                    }
-
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -186,7 +151,6 @@ public final class GoogleDriveSource: WritableMediaSource, @unchecked Sendable {
         let fileId = try extractFileId(from: item)
         let mime = mimeTypeForName(item.name)
         try await service.updateFile(fileId: fileId, data: imageData, mimeType: mime)
-        await cache.invalidate(fileId: fileId)
     }
 
     public func saveImageCopy(_ imageData: Data, for item: MediaItem, suffix: String) async throws -> MediaItem {
@@ -207,7 +171,6 @@ public final class GoogleDriveSource: WritableMediaSource, @unchecked Sendable {
     public func deleteItem(_ item: MediaItem) async throws {
         let fileId = try extractFileId(from: item)
         try await service.deleteFile(fileId: fileId)
-        await cache.invalidate(fileId: fileId)
     }
 
     public func moveItem(_ item: MediaItem, to destinationPath: String) async throws {
@@ -316,7 +279,7 @@ final class GoogleDriveResourceLoader: NSObject, AVAssetResourceLoaderDelegate, 
                         guard !loadingRequest.isCancelled else { return }
                         let remaining = totalToRead - bytesRead
                         let toRead = Int(min(Int64(chunkSize), remaining))
-                        let chunk = try await service.downloadRange(
+                        let chunk = try await service.readRange(
                             fileId: fileId,
                             offset: offset + bytesRead,
                             length: toRead

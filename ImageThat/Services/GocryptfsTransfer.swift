@@ -87,8 +87,8 @@ public enum GocryptfsTransfer {
     }
 
     /// Keep a file available locally. A remote session opened with a cache
-    /// stores its ciphertext on disk; a Drive session has its ciphertext read
-    /// through once, which fills the Drive caches.
+    /// stores its ciphertext on disk; a Drive session pins the file's
+    /// ciphertext in the Drive cache, where eviction leaves it alone.
     public static func cacheFile(session: Int32, path: String,
                                  onProgress: (@Sendable (Int64, Int64) -> Void)? = nil) async throws {
         try await GocryptfsJob().run({ job in
@@ -96,7 +96,7 @@ public enum GocryptfsTransfer {
         }, onProgress: onProgress)
     }
 
-    /// Whether a cached remote session holds the file on disk.
+    /// Whether a cached remote session, or the Drive cache, holds the file on disk.
     public static func isCached(session: Int32, path: String) -> Bool {
         path.withCString { p in GocryptfsIsCached(session, UnsafeMutablePointer(mutating: p)) == 1 }
     }
@@ -116,36 +116,37 @@ public enum GocryptfsTransfer {
     }
 }
 
-extension GocryptfsBridge {
-    /// Opens a vault on an imagethat-web server in ciphertext mode, with a
-    /// file cache in `cacheDir`: this Mac decrypts, and files passed to
-    /// `GocryptfsTransfer.cacheFile` are kept on disk as ciphertext. The
-    /// session is read-only; writes go through `RemoteServerClient`.
-    /// `accessPassword` is the server's, for a client-decrypt server; empty
-    /// for a server-decrypt one.
-    public convenience init(remoteServer baseURL: URL, vaultID: String, password: String,
-                            accessPassword: String = "", cacheDir: URL) throws {
-        let id = baseURL.absoluteString.withCString { b in
-            vaultID.withCString { v in
-                password.withCString { p in
-                    "".withCString { pin in
-                        accessPassword.withCString { a in
-                            cacheDir.path.withCString { d in
-                                GocryptfsOpenRemoteCached(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: v),
-                                                          UnsafeMutablePointer(mutating: p), UnsafeMutablePointer(mutating: pin),
-                                                          UnsafeMutablePointer(mutating: a), UnsafeMutablePointer(mutating: d))
-                            }
-                        }
-                    }
-                }
-            }
+/// The engine's Drive cache: ciphertext ranges downloaded from every Drive
+/// vault, in one directory with one size limit. Files pinned with
+/// `GocryptfsTransfer.cacheFile` are never evicted.
+public enum GocryptfsDriveCache {
+    public static let directory = AppPaths.driveCache
+
+    private static let defaultMaxBytes: Int64 = 10 * 1_073_741_824  // 10 GB
+    private static let maxBytesKey = "googleDriveCacheMaxBytes"
+
+    /// The limit chosen in Settings; 0 means unlimited.
+    public static var maxBytes: Int64 {
+        get { AppSettings.shared.int64(forKey: maxBytesKey) ?? defaultMaxBytes }
+        set {
+            AppSettings.shared.set(newValue, forKey: maxBytesKey)
+            applyLimit()
         }
-        switch id {
-        case -1: throw GocryptfsError.configNotFound
-        case -2: throw GocryptfsError.wrongPassword
-        default:
-            guard id > 0 else { throw GocryptfsError.cryptoError }
-            self.init(sessionID: id, vaultPath: baseURL.appendingPathComponent(vaultID))
-        }
+    }
+
+    /// Hands the limit to the engine, which evicts down to it. Call it before
+    /// the first Drive vault opens; the engine does not remember it.
+    public static func applyLimit() {
+        let limit = maxBytes > 0 ? maxBytes : Int64.max
+        _ = directory.path.withCString { GocryptfsDriveCacheLimit(UnsafeMutablePointer(mutating: $0), limit) }
+    }
+
+    public static func size() -> Int64 {
+        directory.path.withCString { GocryptfsDriveCacheSize(UnsafeMutablePointer(mutating: $0)) }
+    }
+
+    public static func clear() throws {
+        let rc = directory.path.withCString { GocryptfsDriveCacheClear(UnsafeMutablePointer(mutating: $0)) }
+        guard rc == 0 else { throw GocryptfsError.deleteFailed("Drive cache: " + GocryptfsBridge.describeWriteCode(rc)) }
     }
 }

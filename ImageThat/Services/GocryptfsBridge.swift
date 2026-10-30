@@ -24,14 +24,9 @@ public enum GocryptfsError: LocalizedError {
     case moveFailed(String)
     case mkdirFailed(String)
     case deleteFailed(String)
-    case wrongAccessPassword
-    case serverUnreachable
 
     public var errorDescription: String? {
         switch self {
-        case .wrongAccessPassword: return "Wrong server access password"
-        case .serverUnreachable: return "The server could not be reached"
-
         case .configNotFound: return "gocryptfs.conf not found"
         case .wrongPassword: return "Wrong password"
         case .cryptoError: return "Crypto initialization failed"
@@ -72,39 +67,12 @@ public final class GocryptfsBridge: @unchecked Sendable {
         }
     }
 
-    /// Wraps a session another open export created (see GocryptfsTransfer.swift).
+    /// Wraps a session another open export created: a Drive vault
+    /// (`GoogleDriveService.openVault`) or a vault on an imagethat-web server
+    /// (`RemoteServerClient.openVault`). Both are ordinary engine sessions.
     init(sessionID: Int32, vaultPath: URL) {
         self.sessionID = sessionID
         self.vaultPath = vaultPath
-    }
-
-    /// Opens a vault on an imagethat-web server running in client-decrypt
-    /// mode: the library logs in with the server's access password, fetches
-    /// only ciphertext and unlocks the vault here, so the vault password never
-    /// leaves this Mac. The session is read-only. Blocks on the network and
-    /// scrypt; call it off the main thread.
-    public init(server: URL, vaultID: String, password: String, accessPassword: String) throws {
-        self.vaultPath = server
-        let id = server.absoluteString.withCString { base in
-            vaultID.withCString { vid in
-                password.withCString { pw in
-                    "".withCString { pin in
-                        accessPassword.withCString { access in
-                            GocryptfsOpenRemote(UnsafeMutablePointer(mutating: base), UnsafeMutablePointer(mutating: vid),
-                                                UnsafeMutablePointer(mutating: pw), UnsafeMutablePointer(mutating: pin),
-                                                UnsafeMutablePointer(mutating: access))
-                        }
-                    }
-                }
-            }
-        }
-        switch id {
-        case -1: throw GocryptfsError.configNotFound
-        case -2: throw GocryptfsError.wrongPassword
-        case -7: throw GocryptfsError.wrongAccessPassword
-        case let id where id > 0: self.sessionID = id
-        default: throw GocryptfsError.serverUnreachable
-        }
     }
 
     deinit {
@@ -300,6 +268,32 @@ public final class GocryptfsBridge: @unchecked Sendable {
         }
     }
 
+    /// Resolve a vault-relative plaintext path to its cipher equivalent.
+    public func cipherPath(forPlainPath plainPath: String, isDir: Bool = false) -> String? {
+        let ptr = plainPath.withCString { pathPtr in
+            GocryptfsResolveCipherPath(sessionID, UnsafeMutablePointer(mutating: pathPtr), isDir ? 1 : 0)
+        }
+        guard let ptr else { return nil }
+        let s = String(cString: ptr)
+        free(ptr)
+        return s
+    }
+
+    /// Parts of a Drive vault file held in the engine's Drive cache, as
+    /// fractions of its length. Empty for other sessions.
+    public func cachedRanges(path: String) -> [ClosedRange<Double>] {
+        let result: DecryptResult = path.withCString { pathPtr in
+            GocryptfsCachedRanges(sessionID, UnsafeMutablePointer(mutating: pathPtr))
+        }
+        defer { GocryptfsFreeDecryptResult(result) }
+        guard result.error == nil, let dataPtr = result.data, result.size > 0,
+              let pairs = try? JSONDecoder().decode([[Double]].self, from: Data(bytes: dataPtr, count: Int(result.size)))
+        else { return [] }
+        return pairs.compactMap { pair in
+            guard pair.count == 2, pair[0] <= pair[1] else { return nil }
+            return max(0, pair[0])...min(1, pair[1])
+        }
+    }
 
     // MARK: - Thumbnails (core/thumb through the engine)
 
@@ -344,8 +338,8 @@ public final class GocryptfsBridge: @unchecked Sendable {
 extension GocryptfsBridge: VaultThumbnailing {}
 
 /// Preview caching and rendering a vault session offers through the engine.
-/// Both local (`GocryptfsBridge`) and Drive (`DriveVaultBridge`) sessions
-/// provide it, so `AppState` treats them alike.
+/// Local and Drive vault sessions (both `GocryptfsBridge`) provide it, so
+/// `AppState` treats them alike.
 public protocol VaultThumbnailing: AnyObject {
     func configureThumbnails(sourceID: String, diskDir: URL?, memBytes: Int64, diskBytes: Int64) throws
     func thumbnail(path: String, maxEdge: Int) throws -> Data?
@@ -412,15 +406,17 @@ public enum GocryptfsThumbnails {
 /// Streams plaintext into a new vault file with bounded memory.
 ///
 /// The Go engine encrypts each chunk as it arrives into a temporary ciphertext
-/// file and renames it into place on `finish()`. Nothing decrypted is written
-/// anywhere. `abort()`, or releasing the writer without finishing, discards the
-/// file and leaves no entry and no temp file behind.
+/// file (on Drive, a resumable upload) and renames it into place on `finish()`.
+/// Nothing decrypted is written anywhere. `abort()`, or releasing the writer
+/// without finishing, discards the file and leaves no entry and no temp file
+/// behind. Uploads to an imagethat-web server use the same writer
+/// (`GocryptfsServerUploadBegin`).
 public final class VaultFileWriter: @unchecked Sendable {
     private let writerID: Int32
     public let path: String
     private var ended = false
 
-    fileprivate init(writerID: Int32, path: String) {
+    init(writerID: Int32, path: String) {
         self.writerID = writerID
         self.path = path
     }

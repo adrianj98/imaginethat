@@ -1,23 +1,49 @@
 import Foundation
-import Security
 import AppKit
+import CLibGocryptfs
 
 public enum GoogleDriveError: LocalizedError {
     case notConnected
     case authFailed(String)
     case authCancelled
-    case httpError(Int, String)
     case invalidResponse
-    case uploadFailed(String)
+    case notFound(String)
+    case requestFailed(String)
 
     public var errorDescription: String? {
         switch self {
         case .notConnected: return "Not connected to Google Drive"
         case .authFailed(let msg): return "Google Drive authentication failed: \(msg)"
         case .authCancelled: return "Connection cancelled"
-        case .httpError(let code, let msg): return "HTTP \(code): \(msg)"
         case .invalidResponse: return "Invalid response from Google Drive"
-        case .uploadFailed(let msg): return "Upload failed: \(msg)"
+        case .notFound(let msg): return "Not found on Google Drive: \(msg)"
+        case .requestFailed(let msg): return "Google Drive: \(msg)"
+        }
+    }
+
+    /// An engine error string, which starts with a code shared with the
+    /// Android app ("not_found: ...", "auth: ...").
+    init(engineMessage message: String) {
+        let parts = message.split(separator: ":", maxSplits: 1)
+        let code = parts.count == 2 ? String(parts[0]) : ""
+        let text = parts.count == 2 ? parts[1].trimmingCharacters(in: .whitespaces) : message
+        switch code {
+        case "not_connected": self = .notConnected
+        case "auth": self = .authFailed(text)
+        case "cancelled": self = .authCancelled
+        case "not_found": self = .notFound(text)
+        default: self = .requestFailed(text)
+        }
+    }
+
+    /// A negative return code of the engine's Drive calls (see libgocryptfs.h).
+    init(code rc: Int32) {
+        switch rc {
+        case -1: self = .notFound("no such file or folder")
+        case -4: self = .requestFailed("already exists")
+        case -7: self = .authCancelled
+        case -9: self = .authFailed("access was refused; connect Google Drive again")
+        default: self = .requestFailed("the request failed (code \(rc))")
         }
     }
 }
@@ -29,6 +55,7 @@ public struct DriveFile: Sendable {
     public let size: Int64
     public let thumbnailLink: String?
     public let modifiedTime: String
+    public let isFolder: Bool
 }
 
 public struct DriveFolder: Sendable {
@@ -36,72 +63,22 @@ public struct DriveFolder: Sendable {
     public let name: String
 }
 
-public struct DriveAllEntry: Sendable {
-    public let id: String
-    public let name: String
-    public let isFolder: Bool
-    public let size: Int64
-    public let modifiedTime: String
-}
-
-// MARK: - Auth manager (opens the system browser + local server catches the redirect)
-
-@MainActor
-final class GoogleDriveAuthManager {
-    static let shared = GoogleDriveAuthManager()
-    private var server: LocalOAuthServer?
-
-    func startAuth(clientId: String) async throws -> (code: String, redirectURI: String) {
-        let server = LocalOAuthServer()
-        self.server = server
-
-        let port = try await server.start()
-        let redirectURI = "http://127.0.0.1:\(port)/oauth"
-
-        var components = URLComponents(string: "https://accounts.google.com/o/oauth2/v2/auth")!
-        components.queryItems = [
-            URLQueryItem(name: "client_id", value: clientId),
-            URLQueryItem(name: "redirect_uri", value: redirectURI),
-            URLQueryItem(name: "response_type", value: "code"),
-            URLQueryItem(name: "scope", value: "https://www.googleapis.com/auth/drive"),
-            URLQueryItem(name: "access_type", value: "offline"),
-            URLQueryItem(name: "prompt", value: "consent"),
-        ]
-        guard let authURL = components.url else {
-            throw GoogleDriveError.authFailed("Invalid auth URL")
-        }
-
-        NSWorkspace.shared.open(authURL)
-
-        let callbackURL = try await server.waitForCallback(timeout: 300)
-        self.server = nil
-
-        guard let code = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?
-            .queryItems?.first(where: { $0.name == "code" })?.value else {
-            throw GoogleDriveError.authFailed("No authorization code in redirect")
-        }
-
-        return (code: code, redirectURI: redirectURI)
-    }
-
-    /// Cancel an in-flight `startAuth` call. The pending continuation throws
-    /// `GoogleDriveError.authCancelled`.
-    func cancelAuth() {
-        server?.cancel()
-        server = nil
-    }
-}
-
 // MARK: - Google Drive Service
 
-public actor GoogleDriveService {
+/// The user's Google Drive account, through the Go engine (core/drive): the
+/// same code the Android app runs for sign-in, listing, uploads and Drive
+/// vaults. The account is an engine handle made from the OAuth client ID and
+/// secret and the refresh token stored in AppSettings.
+///
+/// Engine calls block on the network, so each runs off the caller's thread.
+public final class GoogleDriveService: @unchecked Sendable {
     public static let shared = GoogleDriveService()
 
-    private var clientId: String?
-    private var clientSecret: String?
-    private var accessToken: String?
-    private var tokenExpiry: Date = .distantPast
-    private var refreshToken: String?
+    private let lock = NSLock()
+    /// The signed-in account's handle, 0 when signed out.
+    private var account: Int32 = 0
+    /// A handle whose sign-in waits for the browser, 0 when none does.
+    private var signingIn: Int32 = 0
 
     private static let udClientId     = "gdrive.clientId"
     private static let udClientSecret = "gdrive.clientSecret"
@@ -111,103 +88,142 @@ public actor GoogleDriveService {
 
     // MARK: - Connection state
 
-    public var isConnected: Bool { refreshToken != nil }
+    public var isConnected: Bool { lock.withLock { account > 0 } }
 
+    /// Opens the stored account, if there is one.
     public func loadSavedCredentials() {
         let s = AppSettings.shared
-        clientId     = s.string(forKey: Self.udClientId)
-        clientSecret = s.string(forKey: Self.udClientSecret)
-        refreshToken = s.string(forKey: Self.udRefreshToken)
+        guard let clientId = s.string(forKey: Self.udClientId),
+              let clientSecret = s.string(forKey: Self.udClientSecret),
+              let refreshToken = s.string(forKey: Self.udRefreshToken), !refreshToken.isEmpty else { return }
+        replaceAccount(with: Self.newHandle(clientId: clientId, clientSecret: clientSecret, refreshToken: refreshToken))
     }
 
     public func disconnect() {
-        accessToken = nil
-        refreshToken = nil
-        clientId = nil
-        clientSecret = nil
-        tokenExpiry = .distantPast
+        replaceAccount(with: 0, signOut: true)
         let s = AppSettings.shared
         s.removeObject(forKey: Self.udClientId)
         s.removeObject(forKey: Self.udClientSecret)
         s.removeObject(forKey: Self.udRefreshToken)
     }
 
+    private func replaceAccount(with handle: Int32, signOut: Bool = false) {
+        let old = lock.withLock { () -> Int32 in
+            let old = account
+            account = handle
+            return old
+        }
+        guard old > 0 else { return }
+        if signOut { GocryptfsDriveSignOut(old) }
+        GocryptfsDriveFree(old)
+    }
+
+    private static func newHandle(clientId: String, clientSecret: String, refreshToken: String) -> Int32 {
+        clientId.withCString { id in
+            clientSecret.withCString { secret in
+                refreshToken.withCString { token in
+                    GocryptfsDriveNew(UnsafeMutablePointer(mutating: id), UnsafeMutablePointer(mutating: secret),
+                                      UnsafeMutablePointer(mutating: token))
+                }
+            }
+        }
+    }
+
     // MARK: - OAuth
 
+    /// Signs in in the system browser. The engine listens on a loopback port
+    /// for Google's redirect and exchanges the code; the refresh token it
+    /// returns is stored like before.
     public func authorize(clientId: String, clientSecret: String) async throws {
-        self.clientId = clientId
-        self.clientSecret = clientSecret
         let s = AppSettings.shared
         s.set(clientId, forKey: Self.udClientId)
         s.set(clientSecret, forKey: Self.udClientSecret)
 
-        // Opens the system browser; local server catches the redirect on http://127.0.0.1:PORT
-        let result = try await GoogleDriveAuthManager.shared.startAuth(clientId: clientId)
-        try await exchangeCode(result.code, clientId: clientId, clientSecret: clientSecret, redirectURI: result.redirectURI)
+        let handle = Self.newHandle(clientId: clientId, clientSecret: clientSecret, refreshToken: "")
+        lock.withLock { signingIn = handle }
+        defer { lock.withLock { if signingIn == handle { signingIn = 0 } } }
+
+        guard let urlPtr = GocryptfsDriveSignInStart(handle) else {
+            GocryptfsDriveFree(handle)
+            throw GoogleDriveError.authFailed("Could not start the sign-in")
+        }
+        let urlString = String(cString: urlPtr)
+        free(urlPtr)
+        guard let authURL = URL(string: urlString) else {
+            GocryptfsDriveFree(handle)
+            throw GoogleDriveError.authFailed("Invalid auth URL")
+        }
+        await MainActor.run { _ = NSWorkspace.shared.open(authURL) }
+
+        let rc = await Task.detached { GocryptfsDriveSignInWait(handle) }.value
+        guard rc == 0 else {
+            GocryptfsDriveFree(handle)
+            throw GoogleDriveError(code: rc)
+        }
+        let tokenPtr = GocryptfsDriveRefreshToken(handle)
+        let refreshToken = tokenPtr.map { String(cString: $0) } ?? ""
+        free(tokenPtr)
+        guard !refreshToken.isEmpty else {
+            GocryptfsDriveFree(handle)
+            throw GoogleDriveError.authFailed("Google returned no refresh token")
+        }
+        s.set(refreshToken, forKey: Self.udRefreshToken)
+        replaceAccount(with: handle)
     }
 
-    private func exchangeCode(_ code: String, clientId: String, clientSecret: String, redirectURI: String) async throws {
-        var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = formEncode([
-            "code": code,
-            "client_id": clientId,
-            "client_secret": clientSecret,
-            "redirect_uri": redirectURI,
-            "grant_type": "authorization_code",
-        ])
-
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-
-        guard let newAccessToken = json["access_token"] as? String,
-              let newRefreshToken = json["refresh_token"] as? String else {
-            let errMsg = json["error_description"] as? String ?? String(data: data, encoding: .utf8) ?? "Unknown"
-            throw GoogleDriveError.authFailed(errMsg)
+    /// Ends an `authorize` that waits for the browser; it throws `authCancelled`.
+    public func cancelAuthorization() {
+        lock.withLock {
+            if signingIn > 0 { GocryptfsDriveSignInCancel(signingIn) }
         }
-
-        let expiresIn = json["expires_in"] as? Int ?? 3600
-        accessToken = newAccessToken
-        tokenExpiry = Date().addingTimeInterval(TimeInterval(expiresIn - 60))
-        refreshToken = newRefreshToken
-        AppSettings.shared.set(newRefreshToken, forKey: Self.udRefreshToken)
     }
 
-    // MARK: - Token management
+    // MARK: - Engine plumbing
 
-    private func validAccessToken() async throws -> String {
-        if let token = accessToken, Date() < tokenExpiry { return token }
-        try await refreshAccessToken()
-        guard let token = accessToken else { throw GoogleDriveError.notConnected }
-        return token
+    /// Runs a blocking engine call with the account handle, off the caller's thread.
+    private func withAccount<T: Sendable>(_ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
+        let handle = lock.withLock { account }
+        guard handle > 0 else { throw GoogleDriveError.notConnected }
+        return try await Task.detached { try body(handle) }.value
     }
 
-    private func refreshAccessToken() async throws {
-        guard let rt = refreshToken, let cid = clientId, let cs = clientSecret else {
-            throw GoogleDriveError.notConnected
+    /// The bytes of an engine result, or the error it carries. Frees it.
+    private static func take(_ result: DecryptResult) throws -> Data {
+        defer { GocryptfsFreeDecryptResult(result) }
+        if let errPtr = result.error {
+            throw GoogleDriveError(engineMessage: String(cString: errPtr))
         }
+        guard let dataPtr = result.data, result.size > 0 else { return Data() }
+        return Data(bytes: dataPtr, count: Int(result.size))
+    }
 
-        var request = URLRequest(url: URL(string: "https://oauth2.googleapis.com/token")!)
-        request.httpMethod = "POST"
-        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-        request.httpBody = formEncode([
-            "refresh_token": rt,
-            "client_id": cid,
-            "client_secret": cs,
-            "grant_type": "refresh_token",
-        ])
+    private static func check(_ rc: Int32) throws {
+        guard rc == 0 else { throw GoogleDriveError(code: rc) }
+    }
 
-        let (data, _) = try await URLSession.shared.data(for: request)
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
+    /// A Drive file as the engine reports it. Size comes as a string, the way
+    /// the Drive API sends it.
+    private struct EngineFile: Decodable {
+        let id: String
+        let name: String
+        let mimeType: String?
+        let size: String?
+        let modifiedTime: String?
+        let thumbnailLink: String?
+        let isFolder: Bool?
 
-        guard let newToken = json["access_token"] as? String else {
-            throw GoogleDriveError.authFailed("Token refresh failed")
+        var file: DriveFile {
+            DriveFile(id: id, name: name, mimeType: mimeType ?? "", size: Int64(size ?? "0") ?? 0,
+                      thumbnailLink: thumbnailLink, modifiedTime: modifiedTime ?? "", isFolder: isFolder ?? false)
         }
+    }
 
-        let expiresIn = json["expires_in"] as? Int ?? 3600
-        accessToken = newToken
-        tokenExpiry = Date().addingTimeInterval(TimeInterval(expiresIn - 60))
+    private static func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            throw GoogleDriveError.invalidResponse
+        }
     }
 
     // MARK: - Drive API: reads
@@ -219,332 +235,161 @@ public actor GoogleDriveService {
         public let descendantPath: [String]
     }
 
-    /// Walks up the parent chain from `folderId`, returning the first ancestor
-    /// that contains `gocryptfs.conf` along with the chain of plaintext folder
-    /// names from that ancestor down to `folderId`. Returns nil if no ancestor
-    /// is a vault root (stops at My Drive).
-    public func findVaultRoot(forDescendant folderId: String, maxDepth: Int = 8) async -> VaultRootMatch? {
-        var current = folderId
-        var pathComponents: [String] = []
-        for _ in 0..<maxDepth {
-            guard let info = try? await folderInfo(of: current),
-                  let parent = info.parents.first else { return nil }
-            pathComponents.insert(info.name, at: 0)
-            if let hasConf = try? await fileExists(name: "gocryptfs.conf", in: parent), hasConf {
-                return VaultRootMatch(rootFolderId: parent, descendantPath: pathComponents)
+    /// The vault `folderId` is, or lies inside: the nearest folder at or above
+    /// it holding gocryptfs.conf, with the folder names from there down to
+    /// `folderId`. Nil when there is none (the search stops at My Drive).
+    public func findVaultRoot(forDescendant folderId: String) async -> VaultRootMatch? {
+        struct Root: Decodable {
+            let rootId: String
+            let path: [String]?
+        }
+        let data = try? await withAccount { handle in
+            try folderId.withCString { f in
+                try Self.take(GocryptfsDriveFindVaultRoot(handle, UnsafeMutablePointer(mutating: f)))
             }
-            current = parent
         }
-        return nil
+        guard let data, let root = try? Self.decode(Root.self, data) else { return nil }
+        return VaultRootMatch(rootFolderId: root.rootId, descendantPath: root.path ?? [])
     }
 
-    private struct FolderInfo: Sendable {
-        let name: String
-        let parents: [String]
-    }
-
-    private func folderInfo(of folderId: String) async throws -> FolderInfo {
-        let token = try await validAccessToken()
-        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files/\(folderId)")!
-        components.queryItems = [URLQueryItem(name: "fields", value: "name,parents")]
-        var request = URLRequest(url: components.url!)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try checkHTTP(response, data: data)
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        return FolderInfo(
-            name: json["name"] as? String ?? "",
-            parents: json["parents"] as? [String] ?? []
-        )
-    }
-
-    public func fileExists(name: String, in folderId: String) async throws -> Bool {
-        let token = try await validAccessToken()
-        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
-        let escapedName = name.replacingOccurrences(of: "'", with: "\\'")
-        components.queryItems = [
-            URLQueryItem(name: "q", value: "name='\(escapedName)' and '\(folderId)' in parents and trashed=false"),
-            URLQueryItem(name: "fields", value: "files(id)"),
-            URLQueryItem(name: "pageSize", value: "1"),
-        ]
-        var request = URLRequest(url: components.url!)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try checkHTTP(response, data: data)
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        let files = json["files"] as? [[String: Any]] ?? []
-        return !files.isEmpty
-    }
-
-    /// Runs a files.list query and follows nextPageToken to the end. Drive
-    /// returns at most 1000 entries per page, so a single request silently
-    /// truncated large folders (and could miss a vault's gocryptfs.diriv).
-    private func listAllPages(query: String, fields: String, orderBy: String? = nil) async throws -> [[String: Any]] {
-        var all: [[String: Any]] = []
-        var pageToken: String?
-        repeat {
-            let token = try await validAccessToken()
-            var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
-            var items = [
-                URLQueryItem(name: "q", value: query),
-                URLQueryItem(name: "fields", value: "nextPageToken,files(\(fields))"),
-                URLQueryItem(name: "pageSize", value: "1000"),
-            ]
-            if let orderBy { items.append(URLQueryItem(name: "orderBy", value: orderBy)) }
-            if let pageToken { items.append(URLQueryItem(name: "pageToken", value: pageToken)) }
-            components.queryItems = items
-            var request = URLRequest(url: components.url!)
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            let (data, response) = try await URLSession.shared.data(for: request)
-            try checkHTTP(response, data: data)
-            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-            all.append(contentsOf: json["files"] as? [[String: Any]] ?? [])
-            pageToken = json["nextPageToken"] as? String
-        } while pageToken != nil
-        return all
-    }
-
-    public func listAllEntries(in folderId: String) async throws -> [DriveAllEntry] {
-        let files = try await listAllPages(query: "'\(folderId)' in parents and trashed=false",
-                                           fields: "id,name,mimeType,size,modifiedTime")
-        return files.compactMap { dict in
-            guard let id = dict["id"] as? String, let name = dict["name"] as? String else { return nil }
-            let mimeType = dict["mimeType"] as? String ?? ""
-            let isFolder = mimeType == "application/vnd.google-apps.folder"
-            let size = Int64(dict["size"] as? String ?? "0") ?? 0
-            let modifiedTime = dict["modifiedTime"] as? String ?? ""
-            return DriveAllEntry(id: id, name: name, isFolder: isFolder, size: size, modifiedTime: modifiedTime)
+    /// A folder's entries ("root" is My Drive). `mediaOnly` keeps folders,
+    /// images and videos, folders first.
+    public func list(in folderId: String, mediaOnly: Bool) async throws -> [DriveFile] {
+        let data = try await withAccount { handle in
+            try folderId.withCString { f in
+                try Self.take(GocryptfsDriveList(handle, UnsafeMutablePointer(mutating: f), mediaOnly ? 1 : 0))
+            }
         }
+        return try Self.decode([EngineFile].self, data).map(\.file)
     }
 
+    /// Images and videos in a folder.
     public func listFiles(in folderId: String) async throws -> [DriveFile] {
-        let mimeFilter = "mimeType contains 'image/' or mimeType contains 'video/'"
-        let files = try await listAllPages(query: "'\(folderId)' in parents and (\(mimeFilter)) and trashed=false",
-                                           fields: "id,name,mimeType,size,thumbnailLink,modifiedTime",
-                                           orderBy: "name")
-        return files.compactMap(parseFile)
+        try await list(in: folderId, mediaOnly: true).filter { !$0.isFolder }
     }
 
     public func listFolders(in folderId: String) async throws -> [DriveFolder] {
-        let files = try await listAllPages(
-            query: "'\(folderId)' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
-            fields: "id,name", orderBy: "name")
-        return files.compactMap { dict in
-            guard let id = dict["id"] as? String, let name = dict["name"] as? String else { return nil }
-            return DriveFolder(id: id, name: name)
+        try await list(in: folderId, mediaOnly: true)
+            .filter(\.isFolder)
+            .map { DriveFolder(id: $0.id, name: $0.name) }
+    }
+
+    /// Up to `length` bytes at `offset` of a plain file; fewer at its end.
+    public func readRange(fileId: String, offset: Int64, length: Int) async throws -> Data {
+        try await withAccount { handle in
+            try fileId.withCString { f in
+                try Self.take(GocryptfsDriveReadRange(handle, UnsafeMutablePointer(mutating: f), offset, Int64(length)))
+            }
         }
     }
 
+    /// A whole plain file. Drive answers a range past the end with what
+    /// there is, so one large range reads all of it.
     public func downloadData(fileId: String) async throws -> Data {
-        let token = try await validAccessToken()
-        let url = URL(string: "https://www.googleapis.com/drive/v3/files/\(fileId)?alt=media")!
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try checkHTTP(response, data: data)
-        return data
+        try await readRange(fileId: fileId, offset: 0, length: 1 << 40)
     }
 
-    public func downloadRange(fileId: String, offset: Int64, length: Int) async throws -> Data {
-        let token = try await validAccessToken()
-        let url = URL(string: "https://www.googleapis.com/drive/v3/files/\(fileId)?alt=media")!
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("bytes=\(offset)-\(offset + Int64(length) - 1)", forHTTPHeaderField: "Range")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, http.statusCode == 416 { return Data() }
-        try checkHTTP(response, data: data)
-        return data
-    }
-
-    public func downloadThumbnail(urlString: String) async throws -> Data {
-        let token = try await validAccessToken()
-        guard let url = URL(string: urlString) else { throw GoogleDriveError.invalidResponse }
-        var request = URLRequest(url: url)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try checkHTTP(response, data: data)
-        return data
-    }
-
-    public func fileSize(fileId: String) async throws -> Int64 {
-        let token = try await validAccessToken()
-        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files/\(fileId)")!
-        components.queryItems = [URLQueryItem(name: "fields", value: "size")]
-        var request = URLRequest(url: components.url!)
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        try checkHTTP(response, data: data)
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        return Int64(json["size"] as? String ?? "0") ?? 0
+    /// Drive's own preview of a plain file, at most `maxEdge` pixels.
+    public func downloadThumbnail(urlString: String, maxEdge: Int) async throws -> Data {
+        try await withAccount { handle in
+            try urlString.withCString { l in
+                try Self.take(GocryptfsDriveThumbnail(handle, UnsafeMutablePointer(mutating: l), Int32(maxEdge)))
+            }
+        }
     }
 
     // MARK: - Drive API: writes
 
     public func uploadFile(name: String, parentId: String, data: Data, mimeType: String) async throws -> DriveFile {
-        let token = try await validAccessToken()
-        if data.count > 5 * 1024 * 1024 {
-            return try await resumableUpload(name: name, parentId: parentId, data: data, mimeType: mimeType, token: token)
-        }
-        return try await multipartUpload(name: name, parentId: parentId, data: data, mimeType: mimeType, token: token)
-    }
-
-    private func multipartUpload(name: String, parentId: String, data: Data, mimeType: String, token: String) async throws -> DriveFile {
-        let boundary = "boundary-\(UUID().uuidString)"
-        var components = URLComponents(string: "https://www.googleapis.com/upload/drive/v3/files")!
-        components.queryItems = [
-            URLQueryItem(name: "uploadType", value: "multipart"),
-            URLQueryItem(name: "fields", value: "id,name,mimeType,size,thumbnailLink,modifiedTime"),
-        ]
-        var request = URLRequest(url: components.url!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("multipart/related; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-
-        let metadata = try JSONSerialization.data(withJSONObject: ["name": name, "parents": [parentId]])
-        var body = Data()
-        body.append("--\(boundary)\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n".data(using: .utf8)!)
-        body.append(metadata)
-        body.append("\r\n--\(boundary)\r\nContent-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
-        body.append(data)
-        body.append("\r\n--\(boundary)--".data(using: .utf8)!)
-        request.httpBody = body
-
-        let (responseData, response) = try await URLSession.shared.data(for: request)
-        try checkHTTP(response, data: responseData)
-        return try parseFileResponse(responseData)
-    }
-
-    private func resumableUpload(name: String, parentId: String, data: Data, mimeType: String, token: String) async throws -> DriveFile {
-        var initComponents = URLComponents(string: "https://www.googleapis.com/upload/drive/v3/files")!
-        initComponents.queryItems = [
-            URLQueryItem(name: "uploadType", value: "resumable"),
-            URLQueryItem(name: "fields", value: "id,name,mimeType,size,thumbnailLink,modifiedTime"),
-        ]
-        var initRequest = URLRequest(url: initComponents.url!)
-        initRequest.httpMethod = "POST"
-        initRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        initRequest.setValue("application/json; charset=UTF-8", forHTTPHeaderField: "Content-Type")
-        initRequest.setValue(mimeType, forHTTPHeaderField: "X-Upload-Content-Type")
-        initRequest.setValue("\(data.count)", forHTTPHeaderField: "X-Upload-Content-Length")
-        initRequest.httpBody = try JSONSerialization.data(withJSONObject: ["name": name, "parents": [parentId]])
-
-        let (_, initResponse) = try await URLSession.shared.data(for: initRequest)
-        guard let http = initResponse as? HTTPURLResponse,
-              let locationStr = http.value(forHTTPHeaderField: "Location"),
-              let uploadURL = URL(string: locationStr) else {
-            throw GoogleDriveError.uploadFailed("No upload location in response")
-        }
-
-        var uploadRequest = URLRequest(url: uploadURL)
-        uploadRequest.httpMethod = "PUT"
-        uploadRequest.setValue(mimeType, forHTTPHeaderField: "Content-Type")
-        uploadRequest.httpBody = data
-
-        let (responseData, response) = try await URLSession.shared.data(for: uploadRequest)
-        try checkHTTP(response, data: responseData)
-        return try parseFileResponse(responseData)
+        try await upload(parentId: parentId, name: name, mimeType: mimeType, updateFileId: "", data: data)
     }
 
     public func updateFile(fileId: String, data: Data, mimeType: String) async throws {
-        let token = try await validAccessToken()
-        var components = URLComponents(string: "https://www.googleapis.com/upload/drive/v3/files/\(fileId)")!
-        components.queryItems = [URLQueryItem(name: "uploadType", value: "media")]
-        var request = URLRequest(url: components.url!)
-        request.httpMethod = "PATCH"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue(mimeType, forHTTPHeaderField: "Content-Type")
-        request.httpBody = data
-        let (responseData, response) = try await URLSession.shared.data(for: request)
-        try checkHTTP(response, data: responseData)
+        _ = try await upload(parentId: "", name: "", mimeType: mimeType, updateFileId: fileId, data: data)
     }
 
+    private func upload(parentId: String, name: String, mimeType: String, updateFileId: String,
+                        data: Data) async throws -> DriveFile {
+        let result = try await withAccount { handle in
+            try data.withUnsafeBytes { buf in
+                try parentId.withCString { p in
+                    try name.withCString { n in
+                        try mimeType.withCString { m in
+                            try updateFileId.withCString { u in
+                                try Self.take(GocryptfsDriveUpload(
+                                    handle, UnsafeMutablePointer(mutating: p), UnsafeMutablePointer(mutating: n),
+                                    UnsafeMutablePointer(mutating: m), UnsafeMutablePointer(mutating: u),
+                                    UnsafeMutableRawPointer(mutating: buf.baseAddress), Int64(data.count)))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return try Self.decode(EngineFile.self, result).file
+    }
+
+    /// Deletes a file, or a folder with everything in it.
     public func deleteFile(fileId: String) async throws {
-        let token = try await validAccessToken()
-        let url = URL(string: "https://www.googleapis.com/drive/v3/files/\(fileId)")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "DELETE"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        let (_, response) = try await URLSession.shared.data(for: request)
-        if let http = response as? HTTPURLResponse, http.statusCode != 204, http.statusCode != 200 {
-            throw GoogleDriveError.httpError(http.statusCode, "Delete failed")
+        try await withAccount { handle in
+            try fileId.withCString { f in try Self.check(GocryptfsDriveDelete(handle, UnsafeMutablePointer(mutating: f))) }
         }
     }
 
     public func moveFile(fileId: String, from oldParentId: String, to newParentId: String) async throws {
-        let token = try await validAccessToken()
-        var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files/\(fileId)")!
-        components.queryItems = [
-            URLQueryItem(name: "addParents", value: newParentId),
-            URLQueryItem(name: "removeParents", value: oldParentId),
-            URLQueryItem(name: "fields", value: "id"),
-        ]
-        var request = URLRequest(url: components.url!)
-        request.httpMethod = "PATCH"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = "{}".data(using: .utf8)
-        let (responseData, response) = try await URLSession.shared.data(for: request)
-        try checkHTTP(response, data: responseData)
+        try await withAccount { handle in
+            try fileId.withCString { f in
+                try oldParentId.withCString { o in
+                    try newParentId.withCString { n in
+                        try "".withCString { keepName in
+                            try Self.check(GocryptfsDriveMove(handle, UnsafeMutablePointer(mutating: f),
+                                                              UnsafeMutablePointer(mutating: o), UnsafeMutablePointer(mutating: n),
+                                                              UnsafeMutablePointer(mutating: keepName)))
+                        }
+                    }
+                }
+            }
+        }
     }
 
     public func createFolder(name: String, parentId: String) async throws -> DriveFolder {
-        let token = try await validAccessToken()
-        var request = URLRequest(url: URL(string: "https://www.googleapis.com/drive/v3/files")!)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "name": name,
-            "mimeType": "application/vnd.google-apps.folder",
-            "parents": [parentId]
-        ])
-        let (responseData, response) = try await URLSession.shared.data(for: request)
-        try checkHTTP(response, data: responseData)
-        let json = try JSONSerialization.jsonObject(with: responseData) as? [String: Any] ?? [:]
-        guard let id = json["id"] as? String, let folderName = json["name"] as? String else {
-            throw GoogleDriveError.invalidResponse
+        let data = try await withAccount { handle in
+            try parentId.withCString { p in
+                try name.withCString { n in
+                    try Self.take(GocryptfsDriveCreateFolder(handle, UnsafeMutablePointer(mutating: p),
+                                                             UnsafeMutablePointer(mutating: n)))
+                }
+            }
         }
-        return DriveFolder(id: id, name: folderName)
+        let folder = try Self.decode(EngineFile.self, data)
+        return DriveFolder(id: folder.id, name: folder.name)
     }
 
-    // MARK: - Helpers
+    // MARK: - Drive vaults
 
-    private func checkHTTP(_ response: URLResponse, data: Data) throws {
-        guard let http = response as? HTTPURLResponse else { return }
-        guard (200..<300).contains(http.statusCode) else {
-            let msg = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])
-                .flatMap { $0["error"] as? [String: Any] }
-                .flatMap { $0["message"] as? String }
-                ?? String(data: data, encoding: .utf8)
-                ?? "Unknown error"
-            throw GoogleDriveError.httpError(http.statusCode, msg)
+    /// Unlocks the gocryptfs vault in Drive folder `folderId`. The result is
+    /// an ordinary writable engine session, like a local vault's: the engine
+    /// does every gocryptfs read and write on Drive itself, and keeps the
+    /// ciphertext it downloads in the shared Drive cache. Blocks on the
+    /// network and scrypt, off the caller's thread.
+    public func openVault(folderId: String, password: String) async throws -> GocryptfsBridge {
+        GocryptfsDriveCache.applyLimit()
+        let cacheDir = GocryptfsDriveCache.directory.path
+        let id = try await withAccount { handle in
+            folderId.withCString { f in
+                password.withCString { p in
+                    cacheDir.withCString { d in
+                        GocryptfsOpenDrive(handle, UnsafeMutablePointer(mutating: f), UnsafeMutablePointer(mutating: p),
+                                           UnsafeMutablePointer(mutating: d))
+                    }
+                }
+            }
         }
-    }
-
-    private func parseFile(_ dict: [String: Any]) -> DriveFile? {
-        guard let id = dict["id"] as? String,
-              let name = dict["name"] as? String,
-              let mimeType = dict["mimeType"] as? String else { return nil }
-        return DriveFile(
-            id: id,
-            name: name,
-            mimeType: mimeType,
-            size: Int64(dict["size"] as? String ?? "0") ?? 0,
-            thumbnailLink: dict["thumbnailLink"] as? String,
-            modifiedTime: dict["modifiedTime"] as? String ?? ""
-        )
-    }
-
-    private func parseFileResponse(_ data: Data) throws -> DriveFile {
-        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        guard let file = parseFile(json) else { throw GoogleDriveError.invalidResponse }
-        return file
-    }
-
-    private func formEncode(_ params: [String: String]) -> Data {
-        params.map { k, v in
-            "\(k)=\(v.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? v)"
-        }.joined(separator: "&").data(using: .utf8) ?? Data()
+        switch id {
+        case -1: throw GocryptfsError.configNotFound
+        case -2: throw GocryptfsError.wrongPassword
+        case let id where id > 0: return GocryptfsBridge(sessionID: id, vaultPath: URL(string: "gdrive://\(folderId)")!)
+        default: throw GoogleDriveError(code: id)
+        }
     }
 }

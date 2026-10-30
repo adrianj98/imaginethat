@@ -9,7 +9,7 @@ public struct GoogleDriveSetupView: View {
     @State private var showJSONImporter = false
 
     // Cache settings
-    @State private var selectedLimit: Int64 = DriveCache.maxBytes
+    @State private var selectedLimit: Int64 = GocryptfsDriveCache.maxBytes
 
     private let limitOptions: [(label: String, bytes: Int64)] = [
         ("1 GB", 1_073_741_824),
@@ -87,7 +87,7 @@ public struct GoogleDriveSetupView: View {
                 }
                 .pickerStyle(.segmented)
                 .onChange(of: selectedLimit) { _, newValue in
-                    DriveCache.maxBytes = newValue
+                    GocryptfsDriveCache.maxBytes = newValue
                 }
 
                 HStack {
@@ -96,10 +96,8 @@ public struct GoogleDriveSetupView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Clear Cache") {
-                        Task {
-                            await DriveCache.shared.clear()
-                            await refreshCacheUsage()
-                        }
+                        try? GocryptfsDriveCache.clear()
+                        refreshCacheUsage()
                     }
                     .font(.caption)
                 }
@@ -138,7 +136,7 @@ public struct GoogleDriveSetupView: View {
         .padding(24)
         .frame(width: 480)
         .task {
-            await refreshCacheUsage()
+            refreshCacheUsage()
             // Pre-fill from saved credentials so the user doesn't have to re-enter
             // them on every reconnect.
             if clientId.isEmpty {
@@ -173,9 +171,8 @@ public struct GoogleDriveSetupView: View {
         return "Cache: \(formatter.string(fromByteCount: cacheUsageBytes))"
     }
 
-    @MainActor
-    private func refreshCacheUsage() async {
-        cacheUsageBytes = await DriveCache.shared.currentSize()
+    private func refreshCacheUsage() {
+        cacheUsageBytes = GocryptfsDriveCache.size()
     }
 
     private func handleJSONImport(_ result: Result<[URL], Error>) {
