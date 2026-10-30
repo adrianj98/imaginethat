@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from '../api'
 import type { Entry } from '../api'
+import type { Backend } from '../backend'
 import Icon from './Icon'
 import InfoCard from './InfoCard'
 
 interface Props {
+  backend: Backend
   vaultId: string
   dir: string
   folderName: string
@@ -29,6 +31,7 @@ function initialShowInfo(): boolean {
  * arrows that fade when the mouse rests, zoom, and an optional info card.
  */
 export default function Lightbox({
+  backend,
   vaultId,
   dir,
   folderName,
@@ -95,9 +98,9 @@ export default function Lightbox({
     const next = items[index + 1]
     if (next && next.mediaType === 'image') {
       const img = new Image()
-      img.src = api.fileUrl(vaultId, api.joinPath(dir, next.name))
+      img.src = backend.fileUrl(vaultId, dir, next)
     }
-  }, [vaultId, dir, items, index])
+  }, [backend, vaultId, dir, items, index])
 
   // Arrows show on mouse movement and fade after two idle seconds, unless
   // the pointer rests on one of them.
@@ -125,7 +128,7 @@ export default function Lightbox({
   }
 
   if (!item) return null
-  const src = api.fileUrl(vaultId, api.joinPath(dir, item.name))
+  const src = backend.fileUrl(vaultId, dir, item)
   const isImage = item.mediaType === 'image'
 
   const arrowProps = {
@@ -197,7 +200,7 @@ export default function Lightbox({
         )}
 
         <div className="capsule glass">
-          <a className="icon-btn" href={api.fileUrl(vaultId, api.joinPath(dir, item.name), true)} title="Download" aria-label="Download">
+          <a className="icon-btn" href={backend.fileUrl(vaultId, dir, item, true)} title="Download" aria-label="Download">
             <Icon name="download" />
           </a>
           <button
@@ -270,6 +273,7 @@ export default function Lightbox({
 
       {showInfo && (
         <InfoCard
+          backend={backend}
           vaultId={vaultId}
           dir={dir}
           entry={item}

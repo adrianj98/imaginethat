@@ -20,6 +20,17 @@ internal data class VaultsResponse(val vaults: List<RemoteVault>)
 @Serializable
 internal data class ApiErrorBody(val error: String = "")
 
+@Serializable
+internal data class InfoResponse(val mode: String = "")
+
+/** How a server works (its -mode flag). */
+enum class ServerMode {
+    /** The server unlocks vaults and sends plaintext. */
+    SERVER_DECRYPT,
+    /** The server sends only ciphertext behind an access password; vaults are decrypted on the phone. */
+    CLIENT_DECRYPT,
+}
+
 /**
  * Failures of the remote API. Mapping from the Go server's status codes:
  * 401 -> [Locked] (or [WrongPassword] on unlock), 403 -> [OriginRejected] for
@@ -31,6 +42,8 @@ sealed class RemoteError(message: String, cause: Throwable? = null) : Exception(
     /** No session / vault locked / session expired (401). */
     object Locked : RemoteError("vault is locked")
     object WrongPassword : RemoteError("wrong password")
+    /** A client-decrypt server refused its access password. */
+    object WrongAccessPassword : RemoteError("wrong server access password")
     object RateLimited : RemoteError("too many attempts")
     object NotFound : RemoteError("not found")
     object Exists : RemoteError("already exists")

@@ -1,15 +1,18 @@
-import type { Vault } from '../api'
+import type { Mode, Vault } from '../api'
 import Icon from './Icon'
 
 interface Props {
+  mode: Mode
   vaults: Vault[] | null
   /** Open an unlocked vault, or ask for the password of a locked one. */
   onSelect: (vault: Vault) => void
   onLock: (id: string) => void
+  /** Client-decrypt servers only: end the server session. */
+  onLogout?: () => void
 }
 
 /** Vault picker shown when no vault is open: a grouped card of vaults. */
-export default function VaultList({ vaults, onSelect, onLock }: Props) {
+export default function VaultList({ mode, vaults, onSelect, onLock, onLogout }: Props) {
   return (
     <div className="home">
       <div className="home-brand">
@@ -72,8 +75,15 @@ export default function VaultList({ vaults, onSelect, onLock }: Props) {
 
       <p className="footnote">
         <Icon name="lock" size={12} />
-        Vaults are decrypted on the server, in memory only.
+        {mode === 'client-decrypt'
+          ? 'Vaults are decrypted in this browser; the server only sees encrypted files.'
+          : 'Vaults are decrypted on the server, in memory only.'}
       </p>
+      {onLogout && (
+        <button className="pill" type="button" onClick={onLogout}>
+          Log out
+        </button>
+      )}
     </div>
   )
 }

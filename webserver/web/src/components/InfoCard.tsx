@@ -1,8 +1,11 @@
 import * as api from '../api'
 import type { Entry } from '../api'
+import type { Backend } from '../backend'
 import Icon from './Icon'
+import Thumbnail from './Thumbnail'
 
 interface Props {
+  backend: Backend
   vaultId: string
   dir: string
   /** The selected item; null shows the folder summary instead. */
@@ -39,6 +42,7 @@ export function kindOf(entry: Entry): string {
 
 /** Floating info card (the macOS ItemInfoCard): preview, name, facts, actions. */
 export default function InfoCard({
+  backend,
   vaultId,
   dir,
   entry,
@@ -68,7 +72,6 @@ export default function InfoCard({
     )
   }
 
-  const path = api.joinPath(dir, entry.name)
   const summary = [
     kindOf(entry),
     dimensions ? `${dimensions.width} × ${dimensions.height}` : '',
@@ -81,11 +84,8 @@ export default function InfoCard({
     <aside className="info-card glass card" aria-label="Info">
       {showPreview && (
         <div className="info-preview">
-          {api.hasThumbnail(entry.name) || entry.mediaType === 'video' ? (
-            <img src={api.thumbUrl(vaultId, path)} alt="" decoding="async" />
-          ) : (
-            <Icon name={entry.isDir ? 'folder' : 'doc'} size={40} />
-          )}
+          {/* Keyed so a new selection starts a fresh lazy load. */}
+          <Thumbnail key={entry.name} backend={backend} vaultId={vaultId} dir={dir} entry={entry} />
         </div>
       )}
 
@@ -101,7 +101,7 @@ export default function InfoCard({
 
       <div className="info-actions">
         {!entry.isDir && (
-          <a className="pill" href={api.fileUrl(vaultId, path, true)}>
+          <a className="pill" href={backend.fileUrl(vaultId, dir, entry, true)}>
             <Icon name="download" size={14} />
             Download
           </a>

@@ -211,12 +211,24 @@ func tThumbCacheSize(dir string) int64 {
 }
 
 func tOpenRemote(base, vaultID, password, pin string) int {
-	b, v, p, pn := cstr(base), cstr(vaultID), cstr(password), cstr(pin)
+	return tOpenRemoteAccess(base, vaultID, password, pin, "")
+}
+
+func tOpenRemoteAccess(base, vaultID, password, pin, access string) int {
+	b, v, p, pn, a := cstr(base), cstr(vaultID), cstr(password), cstr(pin), cstr(access)
 	defer C.free(unsafe.Pointer(b))
 	defer C.free(unsafe.Pointer(v))
 	defer C.free(unsafe.Pointer(p))
 	defer C.free(unsafe.Pointer(pn))
-	return int(GocryptfsOpenRemote(b, v, p, pn))
+	defer C.free(unsafe.Pointer(a))
+	return int(GocryptfsOpenRemote(b, v, p, pn, a))
+}
+
+func tServerMode(base string) int {
+	b, pn := cstr(base), cstr("")
+	defer C.free(unsafe.Pointer(b))
+	defer C.free(unsafe.Pointer(pn))
+	return int(GocryptfsServerMode(b, pn))
 }
 
 func tJobNew() int     { return int(GocryptfsJobNew()) }
@@ -261,12 +273,12 @@ func tUncache(id int, path string) int {
 	return int(GocryptfsUncache(C.int(id), p))
 }
 
-func tOpenRemoteCached(base, vaultID, password, pin, dir string) int {
-	b, v, p, n, d := cstr(base), cstr(vaultID), cstr(password), cstr(pin), cstr(dir)
-	for _, s := range []*C.char{b, v, p, n, d} {
+func tOpenRemoteCached(base, vaultID, password, pin, access, dir string) int {
+	b, v, p, n, a, d := cstr(base), cstr(vaultID), cstr(password), cstr(pin), cstr(access), cstr(dir)
+	for _, s := range []*C.char{b, v, p, n, a, d} {
 		defer C.free(unsafe.Pointer(s))
 	}
-	return int(GocryptfsOpenRemoteCached(b, v, p, n, d))
+	return int(GocryptfsOpenRemoteCached(b, v, p, n, a, d))
 }
 
 func tFileCacheSize(dir string) int64 {

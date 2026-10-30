@@ -7,10 +7,13 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -19,6 +22,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/adrianm/imagethat/webserver/server"
 )
@@ -38,11 +43,22 @@ func main() {
 		tlsKey      = flag.String("tls-key", "", "TLS key file")
 		insecure    = flag.Bool("insecure", false, "allow binding a non-loopback address without TLS")
 		ffmpegFlag  = flag.String("ffmpeg", "auto", "ffmpeg binary for server-side video thumbnails: 'auto' searches PATH, 'off' disables, or an explicit path")
+		mode        = flag.String("mode", server.ModeServerDecrypt, "server-decrypt: the server unlocks vaults and sends plaintext; client-decrypt: it only sends ciphertext and never sees a vault password")
+		accessFile  = flag.String("access-password-file", "", "file holding the bcrypt hash of the server access password (client-decrypt mode; make one with -hash-password)")
+		hashPw      = flag.Bool("hash-password", false, "read a password and print the bcrypt hash for -access-password-file, then exit")
 	)
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println("imagethat-web", version)
+		return
+	}
+
+	if *hashPw {
+		if err := printPasswordHash(); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -56,16 +72,33 @@ func main() {
 		fatal(logger, err.Error())
 	}
 
-	ffmpegPath := resolveFFmpeg(*ffmpegFlag, logger)
+	var accessHash []byte
+	if *accessFile != "" {
+		b, err := os.ReadFile(*accessFile)
+		if err != nil {
+			fatal(logger, fmt.Sprintf("-access-password-file: %v", err))
+		}
+		accessHash = bytes.TrimSpace(b)
+	}
+
+	// Client-decrypt mode never sees plaintext, so there is nothing to
+	// thumbnail on the server.
+	var ffmpegPath string
+	if *mode != server.ModeClientDecrypt {
+		ffmpegPath = resolveFFmpeg(*ffmpegFlag, logger)
+	}
 
 	srv, err := server.New(server.Config{
-		Root:            *root,
-		ScanDepth:       *scanDepth,
-		IdleTimeout:     *idleTimeout,
-		ThumbCacheBytes: *thumbCache << 20,
-		TLS:             useTLS,
-		FFmpegPath:      ffmpegPath,
-		Logger:          logger,
+		Root:               *root,
+		ScanDepth:          *scanDepth,
+		IdleTimeout:        *idleTimeout,
+		ThumbCacheBytes:    *thumbCache << 20,
+		TLS:                useTLS,
+		FFmpegPath:         ffmpegPath,
+		Logger:             logger,
+		Mode:               *mode,
+		AccessPasswordHash: accessHash,
+		Version:            version,
 	})
 	if err != nil {
 		fatal(logger, err.Error())
@@ -90,7 +123,7 @@ func main() {
 	if useTLS {
 		scheme = "https"
 	}
-	logger.Printf("serving vaults under %s at %s://%s", *root, scheme, ln.Addr())
+	logger.Printf("serving vaults under %s at %s://%s (%s)", *root, scheme, ln.Addr(), *mode)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -169,6 +202,48 @@ func resolveFFmpeg(value string, logger *log.Logger) string {
 		logger.Printf("video thumbnails: using ffmpeg at %s", p)
 		return p
 	}
+}
+
+// printPasswordHash reads a password, from the terminal without echo or else
+// one line of stdin, and prints its bcrypt hash.
+func printPasswordHash() error {
+	var pw []byte
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		fmt.Fprint(os.Stderr, "Access password: ")
+		first, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return err
+		}
+		fmt.Fprint(os.Stderr, "Again: ")
+		again, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Fprintln(os.Stderr)
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(first, again) {
+			return errors.New("the passwords do not match")
+		}
+		pw = first
+	} else {
+		line, err := bufio.NewReader(os.Stdin).ReadBytes('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		pw = bytes.TrimRight(line, "\r\n")
+	}
+	if len(pw) == 0 {
+		return errors.New("empty password")
+	}
+	if len(pw) > 72 {
+		return errors.New("bcrypt uses at most 72 bytes of a password; choose a shorter one")
+	}
+	h, err := server.HashAccessPassword(string(pw))
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(h))
+	return nil
 }
 
 func fatal(logger *log.Logger, msg string) {

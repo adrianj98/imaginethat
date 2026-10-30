@@ -1,16 +1,18 @@
 import { useState } from 'react'
-import * as api from '../api'
 import type { Vault } from '../api'
+import type { Backend } from '../backend'
 import Icon from './Icon'
 
 interface Props {
+  backend: Backend
   vault: Vault
   onUnlocked: (id: string) => void
   onCancel: () => void
 }
 
 /** Centered unlock card over a dimmed page, as in the macOS VaultUnlockSheet. */
-export default function UnlockCard({ vault, onUnlocked, onCancel }: Props) {
+export default function UnlockCard({ backend, vault, onUnlocked, onCancel }: Props) {
+  const inBrowser = backend.mode === 'client-decrypt'
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -19,7 +21,7 @@ export default function UnlockCard({ vault, onUnlocked, onCancel }: Props) {
     setBusy(true)
     setError(null)
     try {
-      await api.unlockVault(vault.id, password)
+      await backend.unlock(vault.id, password)
       // Clear the password from component state as soon as it has been used.
       setPassword('')
       onUnlocked(vault.id)
@@ -56,7 +58,11 @@ export default function UnlockCard({ vault, onUnlocked, onCancel }: Props) {
           </span>
           <div>
             <h2 id="unlock-title">Unlock “{vault.name}”</h2>
-            <p>Decrypted in memory only — nothing is written to disk.</p>
+            <p>
+              {inBrowser
+                ? 'Decrypted in this browser — the password never leaves it.'
+                : 'Decrypted in memory only — nothing is written to disk.'}
+            </p>
           </div>
         </div>
 

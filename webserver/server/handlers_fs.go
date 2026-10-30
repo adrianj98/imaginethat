@@ -23,17 +23,25 @@ const maxJSONBody = 64 << 10
 func (s *Server) routes() {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("GET /api/info", s.handleInfo)
 	mux.HandleFunc("GET /api/vaults", s.handleListVaults)
-	mux.HandleFunc("POST /api/vaults/{id}/unlock", s.handleUnlock)
-	mux.HandleFunc("POST /api/vaults/{id}/lock", s.handleLock)
-	mux.HandleFunc("GET /api/vaults/{id}/list", s.handleList)
-	mux.HandleFunc("GET /api/vaults/{id}/file", s.handleFile)
-	mux.HandleFunc("GET /api/vaults/{id}/thumb", s.handleThumb)
-	mux.HandleFunc("POST /api/vaults/{id}/upload", s.handleUpload)
-	mux.HandleFunc("POST /api/vaults/{id}/mkdir", s.handleMkdir)
-	mux.HandleFunc("POST /api/vaults/{id}/move", s.handleMove)
-	mux.HandleFunc("DELETE /api/vaults/{id}/entry", s.handleDelete)
 	mux.HandleFunc("POST /api/logout", s.handleLogout)
+
+	if s.cfg.Mode == ModeClientDecrypt {
+		// No vault is ever unlocked here, so the endpoints that need one do
+		// not exist; clients decrypt the raw files themselves.
+		mux.HandleFunc("POST /api/login", s.handleLogin)
+	} else {
+		mux.HandleFunc("POST /api/vaults/{id}/unlock", s.handleUnlock)
+		mux.HandleFunc("POST /api/vaults/{id}/lock", s.handleLock)
+		mux.HandleFunc("GET /api/vaults/{id}/list", s.handleList)
+		mux.HandleFunc("GET /api/vaults/{id}/file", s.handleFile)
+		mux.HandleFunc("GET /api/vaults/{id}/thumb", s.handleThumb)
+		mux.HandleFunc("POST /api/vaults/{id}/upload", s.handleUpload)
+		mux.HandleFunc("POST /api/vaults/{id}/mkdir", s.handleMkdir)
+		mux.HandleFunc("POST /api/vaults/{id}/move", s.handleMove)
+		mux.HandleFunc("DELETE /api/vaults/{id}/entry", s.handleDelete)
+	}
 
 	// Ciphertext access for clients that decrypt themselves (handlers_raw.go).
 	mux.HandleFunc("GET /api/vaults/{id}/raw/list", s.handleRawList)
@@ -52,6 +60,11 @@ func (s *Server) routes() {
 // Sessions are created only by /unlock, which is rate limited.
 func (s *Server) handleListVaults(w http.ResponseWriter, r *http.Request) {
 	b, _ := s.existingSession(r)
+	if s.cfg.Mode == ModeClientDecrypt && (b == nil || !b.isLoggedIn()) {
+		// Vault names are only for clients that know the access password.
+		writeError(w, http.StatusUnauthorized, "login required")
+		return
+	}
 	// b is nil when there is no session yet; listVaults then reports every
 	// vault as locked, which is exactly right for a first visit.
 	writeJSON(w, http.StatusOK, map[string]any{"vaults": s.listVaults(b)})

@@ -280,7 +280,7 @@ class UnlockFlowTest {
     }
 
     @Test fun plainHttpWarnsAndConnects() {
-        val s = MockWebServer().also { it.start(); server = it }
+        val s = MockWebServer().also { it.dispatcher = ServerDecryptQueue(); it.start(); server = it }
         s.enqueue(json(vaultsLocked)) // connectivity check
         s.enqueue(json(vaultsLocked)) // vault list
         createOffline()
@@ -293,6 +293,7 @@ class UnlockFlowTest {
         rule.onNodeWithTag("connect-http-warning").assertIsDisplayed()
         rule.onNodeWithTag("connect-submit").performClick()
         waitForText("Holiday")
+        assertEquals("/api/info", s.takeRequest().path)
         assertEquals("/api/vaults", s.takeRequest().path)
     }
 
@@ -333,6 +334,7 @@ class UnlockFlowTest {
     private fun startServer(): MockWebServer {
         val hc = HandshakeCertificates.Builder().heldCertificate(cert).build()
         return MockWebServer().also {
+            it.dispatcher = ServerDecryptQueue()
             it.useHttps(hc.sslSocketFactory(), false)
             it.start()
             server = it
@@ -341,6 +343,16 @@ class UnlockFlowTest {
 
     private fun json(body: String, code: Int = 200) = MockResponse().setResponseCode(code)
         .setHeader("Content-Type", "application/json").setBody(body)
+
+    /**
+     * The enqueued responses, in order, with `/api/info` answered 404 like a server from before
+     * client-decrypt mode, so the app's mode probe doesn't eat a queued response.
+     */
+    private class ServerDecryptQueue : okhttp3.mockwebserver.QueueDispatcher() {
+        override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse =
+            if (request.requestUrl!!.encodedPath == "/api/info") MockResponse().setResponseCode(404).setBody("""{"error":"not found"}""")
+            else super.dispatch(request)
+    }
 
     private val vaultsLocked = """{"vaults":[{"id":"v1","name":"Holiday","unlocked":false}]}"""
 

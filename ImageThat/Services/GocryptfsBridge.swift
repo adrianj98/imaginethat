@@ -24,9 +24,14 @@ public enum GocryptfsError: LocalizedError {
     case moveFailed(String)
     case mkdirFailed(String)
     case deleteFailed(String)
+    case wrongAccessPassword
+    case serverUnreachable
 
     public var errorDescription: String? {
         switch self {
+        case .wrongAccessPassword: return "Wrong server access password"
+        case .serverUnreachable: return "The server could not be reached"
+
         case .configNotFound: return "gocryptfs.conf not found"
         case .wrongPassword: return "Wrong password"
         case .cryptoError: return "Crypto initialization failed"
@@ -71,6 +76,35 @@ public final class GocryptfsBridge: @unchecked Sendable {
     init(sessionID: Int32, vaultPath: URL) {
         self.sessionID = sessionID
         self.vaultPath = vaultPath
+    }
+
+    /// Opens a vault on an imagethat-web server running in client-decrypt
+    /// mode: the library logs in with the server's access password, fetches
+    /// only ciphertext and unlocks the vault here, so the vault password never
+    /// leaves this Mac. The session is read-only. Blocks on the network and
+    /// scrypt; call it off the main thread.
+    public init(server: URL, vaultID: String, password: String, accessPassword: String) throws {
+        self.vaultPath = server
+        let id = server.absoluteString.withCString { base in
+            vaultID.withCString { vid in
+                password.withCString { pw in
+                    "".withCString { pin in
+                        accessPassword.withCString { access in
+                            GocryptfsOpenRemote(UnsafeMutablePointer(mutating: base), UnsafeMutablePointer(mutating: vid),
+                                                UnsafeMutablePointer(mutating: pw), UnsafeMutablePointer(mutating: pin),
+                                                UnsafeMutablePointer(mutating: access))
+                        }
+                    }
+                }
+            }
+        }
+        switch id {
+        case -1: throw GocryptfsError.configNotFound
+        case -2: throw GocryptfsError.wrongPassword
+        case -7: throw GocryptfsError.wrongAccessPassword
+        case let id where id > 0: self.sessionID = id
+        default: throw GocryptfsError.serverUnreachable
+        }
     }
 
     deinit {

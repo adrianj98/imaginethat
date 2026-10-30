@@ -48,11 +48,22 @@ func (c *Client) OpenVaultCached(ctx context.Context, vaultID, password, cacheDi
 	if err != nil {
 		return nil, fmt.Errorf("remote: cache dir: %w", err)
 	}
-	if err := c.Unlock(ctx, vaultID, password); err != nil {
-		return nil, err
+	// As in OpenVault: a client-decrypt server (after Login) never gets the
+	// vault password; a server-decrypt one must unlock before serving raw files.
+	if _, ok := c.loggedIn(); !ok {
+		if err := c.Unlock(ctx, vaultID, password); err != nil {
+			return nil, err
+		}
 	}
 	raw := &RawFS{c: c, vaultID: vaultID}
-	return vault.Open(&CachedFS{RawFS: raw, files: files, prefix: c.base.String() + "\x00" + vaultID + "\x00"}, password)
+	s, err := vault.Open(&CachedFS{RawFS: raw, files: files, prefix: c.base.String() + "\x00" + vaultID + "\x00"}, password)
+	if errors.Is(err, vault.ErrWrongPassword) {
+		return nil, ErrWrongPassword
+	}
+	if err != nil && errors.Is(err, vault.ErrNoConfig) {
+		return nil, ErrNotFound
+	}
+	return s, err
 }
 
 func (f *CachedFS) key(path string) string { return f.prefix + path }

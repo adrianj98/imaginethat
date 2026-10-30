@@ -21,6 +21,12 @@ public struct VaultUnlockSheet: View {
         }
     }
 
+    /// A server URL with no vault: the prompt is for a client-decrypt
+    /// server's access password rather than a vault password.
+    private var isServerLogin: Bool {
+        appState.pendingVaultURL.flatMap(RemoteLocation.parse).map { $0.vaultID == nil } ?? false
+    }
+
     public init() {}
 
     private var vaultName: String {
@@ -39,7 +45,7 @@ public struct VaultUnlockSheet: View {
             VStack(spacing: 10) {
                 Image(systemName: "lock.shield")
                     .font(.system(size: 44, weight: .light))
-                Text("\(vaultName) is locked")
+                Text(isServerLogin ? "\(vaultName) needs its access password" : "\(vaultName) is locked")
             }
             .foregroundStyle(.tertiary)
 
@@ -62,10 +68,11 @@ public struct VaultUnlockSheet: View {
                     .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(Color.accentColor))
                     .shadow(color: Color.accentColor.opacity(0.35), radius: 12, y: 8)
                 VStack(spacing: 4) {
-                    Text("Unlock \u{201C}\(vaultName)\u{201D}")
+                    Text(isServerLogin ? "Log in to \u{201C}\(vaultName)\u{201D}" : "Unlock \u{201C}\(vaultName)\u{201D}")
                         .font(.system(size: 17, weight: .bold))
                         .multilineTextAlignment(.center)
-                    Text("Decrypted in memory only — nothing is written to disk.")
+                    Text(isServerLogin ? "Vaults on this server are decrypted on this Mac; their passwords never leave it."
+                         : "Decrypted in memory only — nothing is written to disk.")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -73,7 +80,7 @@ public struct VaultUnlockSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                SecureField("Password", text: $password)
+                SecureField(isServerLogin ? "Server access password" : "Password", text: $password)
                     .textFieldStyle(.plain)
                     .font(.system(size: 14))
                     .padding(.horizontal, 14)

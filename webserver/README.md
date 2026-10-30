@@ -116,6 +116,9 @@ valid session cookie. Run it on loopback, or behind TLS on a network you trust.
 | `-thumb-cache` | `256` | Per-vault encrypted thumbnail budget, in MiB |
 | `-tls-cert`, `-tls-key` | — | Serve HTTPS |
 | `-insecure` | `false` | Permit a non-loopback bind without TLS |
+| `-mode` | `server-decrypt` | `server-decrypt` or `client-decrypt` (see below) |
+| `-access-password-file` | — | bcrypt hash of the server access password; required in `client-decrypt` mode |
+| `-hash-password` | | Read a password and print its hash for `-access-password-file`, then exit |
 | `-version` | | Print the version and exit |
 
 ## HTTP API
@@ -125,7 +128,9 @@ are additionally checked against the `Origin` header.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/api/vaults` | Discovered vaults and their lock state |
+| `GET` | `/api/info` | `{"mode": ..., "version": ...}`; no session needed |
+| `POST` | `/api/login` | `{"password": "..."}` — server access password, `client-decrypt` mode only |
+| `GET` | `/api/vaults` | Discovered vaults and their lock state (`client-decrypt`: after login) |
 | `POST` | `/api/vaults/{id}/unlock` | `{"password": "..."}` |
 | `POST` | `/api/vaults/{id}/lock` | Lock and wipe keys |
 | `GET` | `/api/vaults/{id}/list?path=` | Directory listing |
@@ -136,7 +141,7 @@ are additionally checked against the `Origin` header.
 | `POST` | `/api/vaults/{id}/move` | `{"from": "...", "to": "..."}` |
 | `DELETE` | `/api/vaults/{id}/entry?path=` | Delete a file or directory tree |
 | `POST` | `/api/logout` | End the session, locking every vault |
-| `GET`, `HEAD` | `/api/vaults/{id}/raw/list?path=` | Ciphertext directory listing (encrypted names, ciphertext sizes) |
+| `GET`, `HEAD` | `/api/vaults/{id}/raw/list?path=` | Ciphertext directory listing (encrypted names, ciphertext sizes), plus `dirIV` and `longNames` (each `gocryptfs.longname.*` entry's sidecar) |
 | `GET`, `HEAD` | `/api/vaults/{id}/raw/file?path=` | Ciphertext file bytes as on disk; supports `Range`; `path=gocryptfs.conf` is the vault config |
 
 ### Decrypted or encrypted
@@ -150,6 +155,34 @@ the client caches is ciphertext. They need the same unlocked session as the
 rest, because ciphertext plus `gocryptfs.conf` would otherwise allow offline
 password guessing. Paths are ciphertext paths; `..` and symlinks leading out of
 the vault are refused.
+
+### Client-decrypt mode
+
+With `-mode=client-decrypt` the server never sees a vault password, key or
+plaintext. It serves only the `raw/` endpoints, gated by a separate **server
+access password** checked at `/api/login`; every client (the browser UI, the
+macOS and Android apps) unlocks and decrypts vaults itself. `/unlock`, the
+decrypted endpoints, thumbnails and writes do not exist in this mode.
+
+The access password is needed because the raw files include
+`gocryptfs.conf`, which would otherwise let anyone who can reach the port
+guess vault passwords offline. Create the hash file once:
+
+```
+imagethat-web -hash-password > ~/.imagethat-access
+imagethat-web -root ~/Vaults -mode client-decrypt -access-password-file ~/.imagethat-access
+```
+
+In the browser UI, a vault's password goes only to scrypt in the page. A
+service worker (`web/src/sw.ts`) serves `/decrypted/<vault>/<cipher path>`:
+it fetches just the ciphertext blocks a request needs from `raw/file` and
+decrypts them with WebCrypto, so `<img>`, seeking `<video>` and streamed
+downloads work without the server seeing plaintext. Keys stay in the page's
+memory; the worker asks the page for one per request, so reloading or closing
+the tab locks every vault. Thumbnails are made in the browser. This needs a
+secure context: HTTPS, or `localhost`. The browser opens AES-GCM vaults (the
+gocryptfs default); AES-SIV and XChaCha20 vaults need the apps. Writing is
+not available in this mode yet.
 
 Video seeking works because `vault.File` implements `io.ReadSeeker`, letting
 `http.ServeContent` answer range requests directly out of the encrypted file.

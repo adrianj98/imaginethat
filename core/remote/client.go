@@ -4,8 +4,11 @@
 // password the client already holds. What crosses the network and anything a
 // client caches is ciphertext, exactly as for a vault in Google Drive.
 //
-// The server's decrypted endpoints are unaffected; writes still go through
-// them, since a vault opened here is read-only.
+// A server in server-decrypt mode wants the vault password at /unlock before
+// it serves the raw files; its decrypted endpoints are unaffected and writes
+// still go through them, since a vault opened here is read-only. A server in
+// client-decrypt mode never sees a vault password: the client logs in with
+// the server's access password (Login) and unlocks the vault locally.
 package remote
 
 import (
@@ -41,6 +44,17 @@ var (
 	ErrNotFound = errors.New("remote: not found")
 	// ErrCertMismatch means the server's certificate is not the pinned one.
 	ErrCertMismatch = errors.New("remote: server certificate does not match the pinned fingerprint")
+	// ErrWrongAccessPassword means a client-decrypt server refused its
+	// access password.
+	ErrWrongAccessPassword = errors.New("remote: wrong server access password")
+	// ErrNotClientDecrypt means Login was tried on a server-decrypt server.
+	ErrNotClientDecrypt = errors.New("remote: the server is not in client-decrypt mode")
+)
+
+// Server modes, as reported by Info.
+const (
+	ModeServerDecrypt = "server-decrypt"
+	ModeClientDecrypt = "client-decrypt"
 )
 
 // Options configures a Client.
@@ -55,13 +69,16 @@ type Options struct {
 }
 
 // Client talks to one imagethat-web server. Its session cookie and the
-// passwords it re-unlocks with live in memory only.
+// passwords it re-authenticates with live in memory only.
 type Client struct {
 	base *url.URL
 	hc   *http.Client
 
 	mu        sync.Mutex
 	passwords map[string]string // vault ID -> password, for re-unlock after the server's idle timeout
+	// accessPassword is set by Login (client-decrypt servers), for logging in
+	// again after the server's idle timeout.
+	accessPassword string
 }
 
 // New returns a client for the server at baseURL (e.g. https://nas:8347).
@@ -117,6 +134,73 @@ func (c *Client) endpoint(path string, query url.Values) string {
 	return u.String()
 }
 
+// Info reports the server's mode, ModeServerDecrypt or ModeClientDecrypt.
+// Servers older than the mode switch have no /api/info and are
+// server-decrypt.
+func (c *Client) Info(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("/api/info", nil), nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return "", wrapTransport(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return ModeServerDecrypt, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("remote: info: HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return "", fmt.Errorf("remote: info: %w", err)
+	}
+	if body.Mode == "" {
+		return ModeServerDecrypt, nil
+	}
+	return body.Mode, nil
+}
+
+// Login sends a client-decrypt server its access password. After it,
+// OpenVault unlocks vaults locally and never sends a vault password.
+func (c *Client) Login(ctx context.Context, accessPassword string) error {
+	body, _ := json.Marshal(map[string]string{"password": accessPassword})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/api/login", nil), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return wrapTransport(err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	switch resp.StatusCode {
+	case http.StatusOK:
+		c.mu.Lock()
+		c.accessPassword = accessPassword
+		c.mu.Unlock()
+		return nil
+	case http.StatusUnauthorized:
+		return ErrWrongAccessPassword
+	case http.StatusNotFound, http.StatusMethodNotAllowed:
+		return ErrNotClientDecrypt
+	default:
+		return fmt.Errorf("remote: login: HTTP %d", resp.StatusCode)
+	}
+}
+
+func (c *Client) loggedIn() (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.accessPassword, c.accessPassword != ""
+}
+
 // Unlock proves the password to the server, which then holds the vault
 // unlocked for this client's session.
 func (c *Client) Unlock(ctx context.Context, vaultID, password string) error {
@@ -148,18 +232,29 @@ func (c *Client) Unlock(ctx context.Context, vaultID, password string) error {
 	}
 }
 
-// OpenVault unlocks the vault on the server and opens it here over the
-// server's ciphertext endpoints. The session decrypts locally; it is
-// read-only.
+// OpenVault opens a vault here over the server's ciphertext endpoints; the
+// session decrypts locally and is read-only. After Login (client-decrypt) the
+// password is used only here; otherwise the vault is first unlocked on the
+// server, which wants the password before it serves the raw files.
 func (c *Client) OpenVault(ctx context.Context, vaultID, password string) (*vault.Session, error) {
-	if err := c.Unlock(ctx, vaultID, password); err != nil {
-		return nil, err
+	if _, ok := c.loggedIn(); !ok {
+		if err := c.Unlock(ctx, vaultID, password); err != nil {
+			return nil, err
+		}
 	}
-	return vault.Open(&RawFS{c: c, vaultID: vaultID}, password)
+	s, err := vault.Open(&RawFS{c: c, vaultID: vaultID}, password)
+	if errors.Is(err, vault.ErrWrongPassword) {
+		return nil, ErrWrongPassword
+	}
+	if err != nil && errors.Is(err, vault.ErrNoConfig) {
+		return nil, ErrNotFound
+	}
+	return s, err
 }
 
-// do sends a request for vaultID, re-unlocking once if the server has expired
-// the session (its idle timeout) and the password is known.
+// do sends a request for vaultID, authenticating again once if the server has
+// expired the session (its idle timeout): logging in on a client-decrypt
+// server, re-unlocking with the known password otherwise.
 func (c *Client) do(vaultID string, build func() (*http.Request, error)) (*http.Response, error) {
 	for attempt := 0; ; attempt++ {
 		req, err := build()
@@ -174,6 +269,12 @@ func (c *Client) do(vaultID string, build func() (*http.Request, error)) (*http.
 			return resp, nil
 		}
 		resp.Body.Close()
+		if access, ok := c.loggedIn(); ok {
+			if err := c.Login(req.Context(), access); err != nil {
+				return nil, fmt.Errorf("%w: login again failed: %v", ErrLocked, err)
+			}
+			continue
+		}
 		c.mu.Lock()
 		pw, ok := c.passwords[vaultID]
 		c.mu.Unlock()

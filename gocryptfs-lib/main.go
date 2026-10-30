@@ -220,25 +220,39 @@ func GocryptfsOpenVFS(
 // The session is read-only (writes go through the server's decrypted API)
 // and works with every read and thumbnail export.
 //
+// accessPassword is the server's access password for a server in
+// client-decrypt mode (see GocryptfsServerMode); the vault password then
+// never leaves this process. Pass empty for a server-decrypt server, which is
+// sent the vault password to unlock the vault there.
+//
 // Returns a session id, or -1 no such vault, -2 wrong password, -3 network or
-// server error, -6 certificate does not match the pin.
+// server error, -6 certificate does not match the pin, -7 wrong access
+// password.
 //
 //export GocryptfsOpenRemote
-func GocryptfsOpenRemote(baseURL *C.char, vaultID *C.char, password *C.char, pinnedSHA256 *C.char) C.int {
+func GocryptfsOpenRemote(baseURL *C.char, vaultID *C.char, password *C.char, pinnedSHA256 *C.char, accessPassword *C.char) C.int {
 	client, err := remote.New(C.GoString(baseURL), remote.Options{PinnedSHA256: C.GoString(pinnedSHA256)})
 	if err != nil {
 		return rcCrypto
 	}
-	s, err := client.OpenVault(context.Background(), C.GoString(vaultID), C.GoString(password))
+	ctx := context.Background()
+	if access := C.GoString(accessPassword); access != "" {
+		if err := client.Login(ctx, access); err != nil {
+			return remoteRC(err)
+		}
+	}
+	s, err := client.OpenVault(ctx, C.GoString(vaultID), C.GoString(password))
 	if err != nil {
-		return remoteOpenCode(err)
+		return remoteRC(err)
 	}
 	return register(s)
 }
 
-// remoteOpenCode maps a failed remote open to GocryptfsOpenRemote's codes.
-func remoteOpenCode(err error) C.int {
+// remoteRC maps a core/remote error onto GocryptfsOpenRemote's return codes.
+func remoteRC(err error) C.int {
 	switch {
+	case errors.Is(err, remote.ErrWrongAccessPassword):
+		return -7
 	case errors.Is(err, remote.ErrWrongPassword), errors.Is(err, vault.ErrWrongPassword):
 		return rcWrongPassword
 	case errors.Is(err, remote.ErrNotFound), errors.Is(err, vault.ErrNoConfig):
@@ -248,6 +262,27 @@ func remoteOpenCode(err error) C.int {
 	default:
 		return rcCrypto
 	}
+}
+
+// GocryptfsServerMode asks an imagethat-web server how it works: 0
+// server-decrypt (send it the vault password), 1 client-decrypt (log in with
+// its access password and decrypt here). -3 network or server error, -6
+// certificate does not match the pin.
+//
+//export GocryptfsServerMode
+func GocryptfsServerMode(baseURL *C.char, pinnedSHA256 *C.char) C.int {
+	client, err := remote.New(C.GoString(baseURL), remote.Options{PinnedSHA256: C.GoString(pinnedSHA256)})
+	if err != nil {
+		return rcCrypto
+	}
+	mode, err := client.Info(context.Background())
+	if err != nil {
+		return remoteRC(err)
+	}
+	if mode == remote.ModeClientDecrypt {
+		return 1
+	}
+	return 0
 }
 
 //export GocryptfsClose

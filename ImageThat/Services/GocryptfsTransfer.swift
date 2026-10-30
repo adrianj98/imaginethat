@@ -121,15 +121,20 @@ extension GocryptfsBridge {
     /// file cache in `cacheDir`: this Mac decrypts, and files passed to
     /// `GocryptfsTransfer.cacheFile` are kept on disk as ciphertext. The
     /// session is read-only; writes go through `RemoteServerClient`.
-    public convenience init(remoteServer baseURL: URL, vaultID: String, password: String, cacheDir: URL) throws {
+    /// `accessPassword` is the server's, for a client-decrypt server; empty
+    /// for a server-decrypt one.
+    public convenience init(remoteServer baseURL: URL, vaultID: String, password: String,
+                            accessPassword: String = "", cacheDir: URL) throws {
         let id = baseURL.absoluteString.withCString { b in
             vaultID.withCString { v in
                 password.withCString { p in
                     "".withCString { pin in
-                        cacheDir.path.withCString { d in
-                            GocryptfsOpenRemoteCached(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: v),
-                                                      UnsafeMutablePointer(mutating: p), UnsafeMutablePointer(mutating: pin),
-                                                      UnsafeMutablePointer(mutating: d))
+                        accessPassword.withCString { a in
+                            cacheDir.path.withCString { d in
+                                GocryptfsOpenRemoteCached(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: v),
+                                                          UnsafeMutablePointer(mutating: p), UnsafeMutablePointer(mutating: pin),
+                                                          UnsafeMutablePointer(mutating: a), UnsafeMutablePointer(mutating: d))
+                            }
                         }
                     }
                 }

@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from '../api'
 import type { Entry, Listing, Vault } from '../api'
+import type { Backend } from '../backend'
 import Thumbnail from './Thumbnail'
 import Lightbox from './Lightbox'
 import InfoCard from './InfoCard'
 import Icon from './Icon'
 
 interface Props {
+  backend: Backend
   vault: Vault
   /** Current folder within the vault; owned by the URL, not this component. */
   path: string
@@ -56,6 +58,7 @@ function useWide(): boolean {
 
 /** Directory browser: breadcrumb, folders, media grid, and write actions. */
 export default function Browser({
+  backend,
   vault,
   path,
   onNavigate,
@@ -80,7 +83,7 @@ export default function Browser({
     async (target: string) => {
       setError(null)
       try {
-        setListing(await api.listDir(vault.id, target))
+        setListing(await backend.listDir(vault.id, target))
       } catch (e) {
         if (e instanceof api.ApiError && e.status === 401) {
           onSessionLost()
@@ -89,7 +92,7 @@ export default function Browser({
         setError(e instanceof Error ? e.message : String(e))
       }
     },
-    [vault.id, onSessionLost],
+    [backend, vault.id, onSessionLost],
   )
 
   useEffect(() => {
@@ -134,7 +137,7 @@ export default function Browser({
     if (idx >= 0) {
       setSelected(entry.name)
       setViewerIndex(idx)
-    } else window.open(api.fileUrl(vault.id, api.joinPath(path, entry.name)), '_blank')
+    } else window.open(backend.fileUrl(vault.id, path, entry), '_blank')
   }
 
   async function refresh() {
@@ -204,6 +207,7 @@ export default function Browser({
     <div
       className={`browser${dragging ? ' dragging' : ''}${infoVisible ? ' with-info' : ''}`}
       onDragOver={(e) => {
+        if (!backend.canWrite) return
         e.preventDefault()
         setDragging(true)
       }}
@@ -211,6 +215,7 @@ export default function Browser({
         if (e.currentTarget === e.target) setDragging(false)
       }}
       onDrop={(e) => {
+        if (!backend.canWrite) return
         e.preventDefault()
         setDragging(false)
         if (e.dataTransfer.files.length) void handleFiles(e.dataTransfer.files)
@@ -277,24 +282,28 @@ export default function Browser({
         </label>
 
         <div className="capsule glass">
-          <button
-            className="icon-btn"
-            type="button"
-            title="Upload"
-            aria-label="Upload"
-            onClick={() => fileInput.current?.click()}
-          >
-            <Icon name="upload" />
-          </button>
-          <button
-            className="icon-btn"
-            type="button"
-            title="New Folder"
-            aria-label="New Folder"
-            onClick={() => void handleNewFolder()}
-          >
-            <Icon name="folder-plus" />
-          </button>
+          {backend.canWrite && (
+            <>
+              <button
+                className="icon-btn"
+                type="button"
+                title="Upload"
+                aria-label="Upload"
+                onClick={() => fileInput.current?.click()}
+              >
+                <Icon name="upload" />
+              </button>
+              <button
+                className="icon-btn"
+                type="button"
+                title="New Folder"
+                aria-label="New Folder"
+                onClick={() => void handleNewFolder()}
+              >
+                <Icon name="folder-plus" />
+              </button>
+            </>
+          )}
           {wide && (
             <button
               className={`icon-btn${showInfo ? ' on' : ''}`}
@@ -341,7 +350,9 @@ export default function Browser({
       ) : entries.length === 0 ? (
         <div className="empty-state">
           <Icon name={query ? 'search' : 'photo'} size={44} />
-          {query ? `Nothing matches “${search.trim()}”` : 'This folder is empty. Drop files here to upload.'}
+          {query
+            ? `Nothing matches “${search.trim()}”`
+            : `This folder is empty.${backend.canWrite ? ' Drop files here to upload.' : ''}`}
         </div>
       ) : (
         <div className="grid" role="listbox" aria-label={title}>
@@ -375,7 +386,7 @@ export default function Browser({
                   }
                 }}
               >
-                <Thumbnail vaultId={vault.id} dir={path} entry={entry} />
+                <Thumbnail backend={backend} vaultId={vault.id} dir={path} entry={entry} />
                 {entry.mediaType === 'video' && (
                   <span className="badge play glass">
                     <Icon name="play" size={9} />
@@ -388,34 +399,38 @@ export default function Browser({
                 )}
                 {!entry.isDir && <span className="tile-caption">{entry.name}</span>}
                 <div className="tile-actions capsule glass" onClick={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()}>
-                  <button
-                    className="icon-btn"
-                    type="button"
-                    title="Rename"
-                    aria-label={`Rename ${entry.name}`}
-                    onClick={() => void handleRename(entry)}
-                  >
-                    <Icon name="pencil" size={13} />
-                  </button>
+                  {backend.canWrite && (
+                    <button
+                      className="icon-btn"
+                      type="button"
+                      title="Rename"
+                      aria-label={`Rename ${entry.name}`}
+                      onClick={() => void handleRename(entry)}
+                    >
+                      <Icon name="pencil" size={13} />
+                    </button>
+                  )}
                   {!entry.isDir && (
                     <a
                       className="icon-btn"
                       title="Download"
                       aria-label={`Download ${entry.name}`}
-                      href={api.fileUrl(vault.id, api.joinPath(path, entry.name), true)}
+                      href={backend.fileUrl(vault.id, path, entry, true)}
                     >
                       <Icon name="download" size={13} />
                     </a>
                   )}
-                  <button
-                    className="icon-btn danger"
-                    type="button"
-                    title="Delete"
-                    aria-label={`Delete ${entry.name}`}
-                    onClick={() => void handleDelete(entry)}
-                  >
-                    <Icon name="trash" size={13} />
-                  </button>
+                  {backend.canWrite && (
+                    <button
+                      className="icon-btn danger"
+                      type="button"
+                      title="Delete"
+                      aria-label={`Delete ${entry.name}`}
+                      onClick={() => void handleDelete(entry)}
+                    >
+                      <Icon name="trash" size={13} />
+                    </button>
+                  )}
                 </div>
               </div>
             )
@@ -425,13 +440,14 @@ export default function Browser({
 
       {infoVisible && (
         <InfoCard
+          backend={backend}
           vaultId={vault.id}
           dir={path}
           entry={selectedEntry}
           folderName={title}
           itemCount={allEntries.length}
-          onRename={(e) => void handleRename(e)}
-          onDelete={(e) => void handleDelete(e)}
+          onRename={backend.canWrite ? (e) => void handleRename(e) : undefined}
+          onDelete={backend.canWrite ? (e) => void handleDelete(e) : undefined}
         />
       )}
 
@@ -451,6 +467,7 @@ export default function Browser({
 
       {viewerIndex !== null && viewable[viewerIndex] && (
         <Lightbox
+          backend={backend}
           vaultId={vault.id}
           dir={path}
           folderName={title}

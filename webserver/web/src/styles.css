@@ -333,6 +333,11 @@ input {
   padding: 10px 10px 2px;
 }
 
+.sidebar-logout {
+  align-self: flex-start;
+  margin: 8px 10px 0;
+}
+
 .content {
   transition: padding-left 0.2s ease-out;
 }
@@ -618,6 +623,7 @@ input {
 }
 
 .info-preview {
+  position: relative;
   height: 150px;
   border-radius: 12px;
   overflow: hidden;

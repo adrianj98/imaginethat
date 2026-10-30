@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import * as api from './api'
 import type { Vault } from './api'
+import { type Backend, clientBackend, logout, serverBackend } from './backend'
 import VaultList from './components/VaultList'
 import Browser from './components/Browser'
 import Sidebar from './components/Sidebar'
 import UnlockCard from './components/UnlockCard'
 import Icon from './components/Icon'
-import { clearVideoThumbs } from './videoThumbs'
+import Login from './components/Login'
 
 // The URL hash is the single source of truth for where the user is:
 // #/v/<vaultId>/<path> inside a vault, anything else is the vault list.
@@ -46,6 +47,10 @@ function initialSidebar(): boolean {
 }
 
 export default function App() {
+  // Which way the server works decides who unlocks and decrypts vaults.
+  const [backend, setBackend] = useState<Backend | null>(null)
+  // Client-decrypt servers want their access password before anything else.
+  const [needsLogin, setNeedsLogin] = useState(false)
   const [vaults, setVaults] = useState<Vault[] | null>(null)
   const [route, setRoute] = useState<Route>(parseHash)
   const [error, setError] = useState<string | null>(null)
@@ -67,19 +72,35 @@ export default function App() {
     window.location.hash = target
   }, [])
 
+  useEffect(() => {
+    api
+      .info()
+      .then(({ mode }) => setBackend(mode === 'client-decrypt' ? clientBackend : serverBackend))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+  }, [])
+
   const refresh = useCallback(async () => {
+    if (!backend) return
     try {
-      const { vaults } = await api.listVaults()
-      setVaults(vaults)
+      setVaults(await backend.listVaults())
+      setNeedsLogin(false)
       setError(null)
     } catch (e) {
+      if (backend.mode === 'client-decrypt' && e instanceof api.ApiError && e.status === 401) {
+        setNeedsLogin(true)
+        return
+      }
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [backend])
 
   useEffect(() => {
     void refresh()
   }, [refresh])
+
+  useEffect(() => {
+    backend?.prepare().catch((e) => setError(e instanceof Error ? e.message : String(e)))
+  }, [backend])
 
   const toggleSidebar = useCallback(() => {
     setSidebar((open) => {
@@ -94,15 +115,23 @@ export default function App() {
 
   const handleLock = useCallback(
     async (id: string) => {
-      await api.lockVault(id)
-      // Captured video frames derive from vault content; drop them with the
-      // vault, mirroring the server's per-vault thumbnail LRU dying on lock.
-      clearVideoThumbs()
+      await backend?.lock(id)
       if (route.vaultId === id) navigate(null)
       await refresh()
     },
-    [navigate, refresh, route.vaultId],
+    [backend, navigate, refresh, route.vaultId],
   )
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await logout()
+    } finally {
+      setVaults(null)
+      navigate(null)
+      await refresh()
+    }
+  }, [navigate, refresh])
+  const onLogout = backend?.mode === 'client-decrypt' ? () => void handleLogout() : undefined
 
   const select = useCallback(
     (v: Vault) => {
@@ -136,7 +165,11 @@ export default function App() {
         </div>
       )}
 
-      {active && vaults ? (
+      {!backend ? (
+        !error && <p className="muted centered">Connecting…</p>
+      ) : needsLogin ? (
+        <Login onLoggedIn={() => void refresh()} />
+      ) : active && vaults ? (
         <>
           {sidebar && (
             <Sidebar
@@ -145,10 +178,12 @@ export default function App() {
               onSelect={select}
               onHome={() => navigate(null)}
               onLock={(id) => void handleLock(id)}
+              onLogout={onLogout}
             />
           )}
           <div className={`content${sidebar ? ' with-sidebar' : ''}`}>
             <Browser
+              backend={backend}
               vault={active}
               path={route.path}
               sidebarOpen={sidebar}
@@ -161,11 +196,18 @@ export default function App() {
           </div>
         </>
       ) : (
-        <VaultList vaults={vaults} onSelect={select} onLock={(id) => void handleLock(id)} />
+        <VaultList
+          mode={backend.mode}
+          vaults={vaults}
+          onSelect={select}
+          onLock={(id) => void handleLock(id)}
+          onLogout={onLogout}
+        />
       )}
 
-      {unlocking && (
+      {unlocking && backend && (
         <UnlockCard
+          backend={backend}
           vault={unlocking}
           onCancel={() => setUnlocking(null)}
           onUnlocked={(id) => {

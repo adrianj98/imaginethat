@@ -133,17 +133,24 @@ func GocryptfsCopyVaultIn(jobID C.int, destSession C.int, destPath *C.char, srcS
 
 // GocryptfsOpenRemoteCached is GocryptfsOpenRemote with a file cache in
 // cacheDir: files passed to GocryptfsCacheFile are kept there as ciphertext
-// and read from disk afterwards.
+// and read from disk afterwards. accessPassword and the return codes are as
+// for GocryptfsOpenRemote.
 //
 //export GocryptfsOpenRemoteCached
-func GocryptfsOpenRemoteCached(baseURL, vaultID, password, pinnedSHA256, cacheDir *C.char) C.int {
+func GocryptfsOpenRemoteCached(baseURL, vaultID, password, pinnedSHA256, accessPassword, cacheDir *C.char) C.int {
 	client, err := remote.New(C.GoString(baseURL), remote.Options{PinnedSHA256: C.GoString(pinnedSHA256)})
 	if err != nil {
 		return rcCrypto
 	}
-	s, err := client.OpenVaultCached(context.Background(), C.GoString(vaultID), C.GoString(password), C.GoString(cacheDir))
+	ctx := context.Background()
+	if access := C.GoString(accessPassword); access != "" {
+		if err := client.Login(ctx, access); err != nil {
+			return remoteRC(err)
+		}
+	}
+	s, err := client.OpenVaultCached(ctx, C.GoString(vaultID), C.GoString(password), C.GoString(cacheDir))
 	if err != nil {
-		return remoteOpenCode(err)
+		return remoteRC(err)
 	}
 	return register(s)
 }
