@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"github.com/adrianm/imagethat/core/remote"
+	"github.com/adrianm/imagethat/core/vault"
+	"github.com/adrianm/imagethat/core/xfer"
 )
 
 // The Go client's server-decrypt API (used by the Mac and Android apps for
@@ -95,6 +97,23 @@ func TestRemoteServerDecryptAPI(t *testing.T) {
 			}
 		}
 	}
+	// A copy out of the server into a local vault, through the retrying reader.
+	dst := t.TempDir()
+	if err := vault.Init(vault.NewLocalFS(dst), "pw"); err != nil {
+		t.Fatal(err)
+	}
+	local, err := vault.OpenLocal(dst, "pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Close()
+	if _, err := local.CopyIn(ctx, "copied.bin", rc.Opener(id, "Up/b.bin"), xfer.Options{}); err != nil {
+		t.Fatalf("CopyIn from server: %v", err)
+	}
+	if got, _ := local.ReadFile("copied.bin"); !bytes.Equal(got, data) {
+		t.Fatal("copy differs")
+	}
+
 	if err := rc.Delete(ctx, id, "Up"); err != nil {
 		t.Fatal(err)
 	}

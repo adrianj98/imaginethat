@@ -115,6 +115,9 @@ extern void GocryptfsJobFree(int jobID);
 extern int GocryptfsCopyFileIn(int jobID, int destSession, char* destPath, char* srcFilePath);
 // Copy a file from one open vault (local, Drive or remote) into another.
 extern int GocryptfsCopyVaultIn(int jobID, int destSession, char* destPath, int srcSession, char* srcPath);
+// Copy a file from a vault on a server-decrypt server (GocryptfsServerNew
+// handle, vault unlocked) into another vault.
+extern int GocryptfsCopyServerIn(int jobID, int destSession, char* destPath, int server, char* vaultID, char* srcPath);
 // GocryptfsOpenRemote with a ciphertext file cache in cacheDir.
 extern int GocryptfsOpenRemoteCached(char* baseURL, char* vaultID, char* password, char* pinnedSHA256, char* accessPassword, char* cacheDir);
 // Keep a file available locally: a cached remote session stores its ciphertext

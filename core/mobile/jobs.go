@@ -61,6 +61,21 @@ func (v *Vault) CopyFile(job *Job, destPath, filePath string) error {
 	return wrapErr(err)
 }
 
+// CopyFromServer copies srcPath from a vault on a server-decrypt server into
+// this vault at destPath, like CopyFrom.
+func (v *Vault) CopyFromServer(job *Job, destPath string, src *Server, vaultID, srcPath string) error {
+	_, err := v.s.CopyIn(job.ctx, destPath, src.c.Opener(vaultID, srcPath), withRemote(job.options()))
+	v.invalidateThumb(destPath)
+	return wrapErr(err)
+}
+
+// withRemote stops retries on server answers that will not change.
+func withRemote(o xfer.Options) xfer.Options {
+	o.Permanent = append(o.Permanent, remote.PermanentErrors...)
+	o.Permanent = append(o.Permanent, remote.ErrForbidden)
+	return o
+}
+
 // OpenRemoteCached is OpenRemote with a file cache in cacheDir: files passed
 // to CacheFile are kept there as ciphertext and read from disk afterwards,
 // also offline.

@@ -12,6 +12,7 @@ import (
 	"strconv"
 
 	"github.com/adrianm/imagethat/core/vault"
+	"github.com/adrianm/imagethat/core/xfer"
 )
 
 // The server-decrypt API: the server holds the vault unlocked for this
@@ -312,3 +313,37 @@ func (c *Client) Delete(ctx context.Context, vaultID, p string) error {
 	resp.Body.Close()
 	return nil
 }
+
+// Opener reads a file through the server-decrypt API as a copy source, so a
+// copy out of a server-decrypt vault retries and resumes like any other.
+func (c *Client) Opener(vaultID, p string) xfer.Opener {
+	return func() (xfer.Source, error) {
+		size, err := c.FileSize(context.Background(), vaultID, p)
+		if err != nil {
+			return nil, err
+		}
+		return serverSource{c: c, vaultID: vaultID, path: p, size: size}, nil
+	}
+}
+
+type serverSource struct {
+	c       *Client
+	vaultID string
+	path    string
+	size    int64
+}
+
+func (s serverSource) ReadAt(buf []byte, off int64) (int, error) {
+	b, err := s.c.ReadRange(context.Background(), s.vaultID, s.path, off, len(buf))
+	if err != nil {
+		return 0, err
+	}
+	n := copy(buf, b)
+	if n < len(buf) {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (s serverSource) Size() int64  { return s.size }
+func (s serverSource) Close() error { return nil }
