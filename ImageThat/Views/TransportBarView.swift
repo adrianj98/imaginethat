@@ -9,16 +9,23 @@ public struct TransportBarView: View {
     var cached: [ClosedRange<Double>]
     /// Parts the player has loaded into memory, as fractions (0...1).
     var buffered: [ClosedRange<Double>]
+    /// Playback is stalled waiting for data.
+    var isBuffering: Bool
+    /// Seconds loaded past the playhead, or nil before anything is loaded.
+    var bufferedAhead: Double?
     @State private var isScrubbing = false
     @State private var scrubPosition: Double = 0
 
     public init(player: AVPlayer, currentTime: Binding<Double>, duration: Binding<Double>,
-                cached: [ClosedRange<Double>] = [], buffered: [ClosedRange<Double>] = []) {
+                cached: [ClosedRange<Double>] = [], buffered: [ClosedRange<Double>] = [],
+                isBuffering: Bool = false, bufferedAhead: Double? = nil) {
         self.player = player
         self._currentTime = currentTime
         self._duration = duration
         self.cached = cached
         self.buffered = buffered
+        self.isBuffering = isBuffering
+        self.bufferedAhead = bufferedAhead
     }
 
     public var body: some View {
@@ -91,6 +98,8 @@ public struct TransportBarView: View {
             Text(formatTime(duration))
                 .monospacedDigit()
                 .foregroundStyle(Glass.label)
+
+            bufferStatus
                 .padding(.trailing, 6)
         }
         .font(.system(size: 12))
@@ -100,6 +109,43 @@ public struct TransportBarView: View {
         .frame(height: 48)
         .glassCard(dark: true, radius: 24)
         .padding(.bottom, 20)
+    }
+
+    /// Small status chip: a spinner while stalled, otherwise how much is
+    /// loaded ahead of the playhead.
+    @ViewBuilder private var bufferStatus: some View {
+        let toEnd = bufferedAhead.map { duration > 0 && currentTime + $0 >= duration - 0.5 } ?? false
+        HStack(spacing: 4) {
+            if isBuffering {
+                ProgressView()
+                    .controlSize(.mini)
+                    .tint(.white)
+                Text("Buffering")
+            } else if toEnd {
+                Image(systemName: "checkmark.circle")
+                Text("Loaded")
+            } else if let ahead = bufferedAhead {
+                Image(systemName: ahead < 5 ? "exclamationmark.circle" : "arrow.down.circle")
+                Text("\(Int(ahead))s")
+                    .monospacedDigit()
+            } else {
+                Image(systemName: "arrow.down.circle")
+                Text("—")
+            }
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(isBuffering || (!toEnd && (bufferedAhead.map { $0 < 5 } ?? false)) ? Glass.edited : Color.white.opacity(0.7))
+        .frame(minWidth: 64, alignment: .leading)
+        .help(bufferHelp(toEnd: toEnd))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(bufferHelp(toEnd: toEnd))
+    }
+
+    private func bufferHelp(toEnd: Bool) -> String {
+        if isBuffering { return "Buffering: waiting for data" }
+        if toEnd { return "Loaded to the end" }
+        if let ahead = bufferedAhead { return "Buffered \(Int(ahead)) seconds ahead" }
+        return "Nothing buffered yet"
     }
 
     private func togglePlayPause() {

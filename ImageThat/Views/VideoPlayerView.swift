@@ -13,6 +13,12 @@ public struct VideoPlayerView: View {
     @State private var cachedRanges: [ClosedRange<Double>] = []
     @State private var bufferedRanges: [ClosedRange<Double>] = []
     @State private var cacheTask: Task<Void, Never>?
+    /// The player is stalled waiting for data (shown after a short delay so
+    /// quick seeks don't flash the spinner).
+    @State private var isBuffering = false
+    @State private var bufferingTask: Task<Void, Never>?
+    /// Seconds loaded past the playhead, or nil before anything is loaded.
+    @State private var bufferedAhead: Double?
 
     public init(item: MediaItem) {
         self.item = item
@@ -36,11 +42,26 @@ public struct VideoPlayerView: View {
                     )
                     .allowsHitTesting(false)
 
+                    if isBuffering {
+                        BufferingBadge()
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .allowsHitTesting(false)
+                            .transition(.opacity)
+                    }
+
                     // Transport bar
                     TransportBarView(player: player, currentTime: $currentTime, duration: $duration,
-                                     cached: cachedRanges, buffered: bufferedRanges)
+                                     cached: cachedRanges, buffered: bufferedRanges,
+                                     isBuffering: isBuffering, bufferedAhead: bufferedAhead)
                         .opacity(showControls ? 1 : 0)
                         .animation(.easeOut(duration: 0.25), value: showControls)
+                }
+                .animation(.easeOut(duration: 0.2), value: isBuffering)
+                .onReceive(player.publisher(for: \.timeControlStatus).receive(on: RunLoop.main)) { status in
+                    updateBuffering(status == .waitingToPlayAtSpecifiedRate)
+                }
+                .onReceive(player.publisher(for: \.currentItem?.loadedTimeRanges).receive(on: RunLoop.main)) { _ in
+                    updateLoadedRanges(player)
                 }
             } else {
                 ProgressView()
@@ -55,12 +76,15 @@ public struct VideoPlayerView: View {
             player = nil
             hideTask?.cancel()
             cacheTask?.cancel()
+            bufferingTask?.cancel()
         }
         .onChange(of: item) { _, newItem in
             player?.pause()
             hideTask?.cancel()
             cachedRanges = []
             bufferedRanges = []
+            bufferedAhead = nil
+            updateBuffering(false)
             loadVideo()
         }
         .focusable()
@@ -99,14 +123,39 @@ public struct VideoPlayerView: View {
                 if !duration.isNaN && !duration.isInfinite && self.duration != duration {
                     self.duration = duration
                 }
-                if duration.isFinite, duration > 0 {
-                    self.bufferedRanges = item.loadedTimeRanges.map { value in
-                        let r = value.timeRangeValue
-                        let start = max(0, r.start.seconds / duration)
-                        return start...min(1, max(start, (r.start.seconds + r.duration.seconds) / duration))
-                    }
-                }
             }
+            self.updateLoadedRanges(player)
+        }
+    }
+
+    /// Recomputes the loaded strip and how far ahead of the playhead it reaches.
+    private func updateLoadedRanges(_ player: AVPlayer) {
+        guard let item = player.currentItem else { return }
+        let duration = item.duration.seconds
+        let now = player.currentTime().seconds
+        let ranges = item.loadedTimeRanges.map { $0.timeRangeValue }
+        if duration.isFinite, duration > 0 {
+            bufferedRanges = ranges.map { r in
+                let start = max(0, r.start.seconds / duration)
+                return start...min(1, max(start, (r.start.seconds + r.duration.seconds) / duration))
+            }
+        }
+        if let r = ranges.first(where: { $0.start.seconds <= now + 0.5 && now < $0.end.seconds }) {
+            bufferedAhead = max(0, r.end.seconds - now)
+        } else {
+            bufferedAhead = ranges.isEmpty ? nil : 0
+        }
+    }
+
+    private func updateBuffering(_ waiting: Bool) {
+        bufferingTask?.cancel()
+        guard waiting else {
+            isBuffering = false
+            return
+        }
+        bufferingTask = Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            if !Task.isCancelled { isBuffering = true }
         }
     }
 
@@ -152,6 +201,27 @@ public struct VideoPlayerView: View {
         } else {
             player.play()
         }
+    }
+}
+
+/// Centered spinner over the video while playback is stalled for data.
+private struct BufferingBadge: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+                .progressViewStyle(.circular)
+                .controlSize(.regular)
+                .tint(.white)
+            Text("Buffering…")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(Color.white.opacity(0.85))
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .glassCard(dark: true, radius: 16)
+        .environment(\.colorScheme, .dark)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Buffering")
     }
 }
 

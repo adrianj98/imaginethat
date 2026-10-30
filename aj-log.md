@@ -520,3 +520,12 @@ User request: "push to main and create a tag for release".
 - **VaultUnlockSheet:** kept the glass card; main's "Log in to Server" case now changes the card title, subtitle, background text and field placeholder.
 - **aj-log.md:** kept both sides.
 - **Checked:** web build + vitest (8 passed), core + shim tests ok (except the pre-existing `internal/tlog` vet failure), webserver tests ok, `make build` no errors, `make test-logic` 74 passed, `make golib-test` 69 checks 0 failed.
+
+## 2026-10-30 — Mac video player: buffering indicator and status
+
+**What:** `VideoPlayerView` now watches `AVPlayer.timeControlStatus` and the current item's `loadedTimeRanges` (Combine KVO publishers).
+- While playback stalls (`waitingToPlayAtSpecifiedRate`), a dark glass "Buffering…" badge with a spinner sits centered over the video. It shows even when the transport bar has auto-hidden, and appears only after 300 ms so quick seeks don't flash it.
+- `TransportBarView` has a status chip after the duration: a spinner + "Buffering" while stalled, otherwise the seconds loaded ahead of the playhead (e.g. "24s"), amber below 5 s, "Loaded" with a checkmark once the whole video is buffered. Hover text spells it out.
+- Loaded ranges are now also refreshed from KVO, so the faint strip keeps updating while the player is stalled (the periodic time observer stops firing then).
+
+**Why:** user asked for an icon that shows buffering, or the buffering status, in the Mac UI. Remote and Drive videos stream through the encrypted resource loader and can stall with no visible feedback.
