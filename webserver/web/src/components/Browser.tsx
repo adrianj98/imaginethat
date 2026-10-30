@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import * as api from '../api'
 import type { Entry, Listing, Vault } from '../api'
+import type { Backend } from '../backend'
 import Thumbnail from './Thumbnail'
 import Lightbox from './Lightbox'
 
 interface Props {
+  backend: Backend
   vault: Vault
   /** Current folder within the vault; owned by the URL, not this component. */
   path: string
@@ -25,7 +27,7 @@ interface UploadState {
 let nextUploadID = 0
 
 /** Directory browser: breadcrumb, folders, media grid, and write actions. */
-export default function Browser({ vault, path, onNavigate, onSessionLost }: Props) {
+export default function Browser({ backend, vault, path, onNavigate, onSessionLost }: Props) {
   const [listing, setListing] = useState<Listing | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [viewerIndex, setViewerIndex] = useState<number | null>(null)
@@ -37,7 +39,7 @@ export default function Browser({ vault, path, onNavigate, onSessionLost }: Prop
     async (target: string) => {
       setError(null)
       try {
-        setListing(await api.listDir(vault.id, target))
+        setListing(await backend.listDir(vault.id, target))
       } catch (e) {
         if (e instanceof api.ApiError && e.status === 401) {
           onSessionLost()
@@ -46,7 +48,7 @@ export default function Browser({ vault, path, onNavigate, onSessionLost }: Prop
         setError(e instanceof Error ? e.message : String(e))
       }
     },
-    [vault.id, onSessionLost],
+    [backend, vault.id, onSessionLost],
   )
 
   useEffect(() => {
@@ -122,6 +124,7 @@ export default function Browser({ vault, path, onNavigate, onSessionLost }: Prop
     <div
       className={`browser${dragging ? ' dragging' : ''}`}
       onDragOver={(e) => {
+        if (!backend.canWrite) return
         e.preventDefault()
         setDragging(true)
       }}
@@ -129,6 +132,7 @@ export default function Browser({ vault, path, onNavigate, onSessionLost }: Prop
         if (e.currentTarget === e.target) setDragging(false)
       }}
       onDrop={(e) => {
+        if (!backend.canWrite) return
         e.preventDefault()
         setDragging(false)
         if (e.dataTransfer.files.length) void handleFiles(e.dataTransfer.files)
@@ -152,6 +156,7 @@ export default function Browser({ vault, path, onNavigate, onSessionLost }: Prop
             </span>
           ))}
         </nav>
+        {backend.canWrite && (
         <div className="toolbar-actions">
           <button className="btn" type="button" onClick={() => void handleNewFolder()}>
             New folder
@@ -170,6 +175,7 @@ export default function Browser({ vault, path, onNavigate, onSessionLost }: Prop
             }}
           />
         </div>
+        )}
       </div>
 
       {error && <div className="banner error">{error}</div>}
@@ -189,7 +195,9 @@ export default function Browser({ vault, path, onNavigate, onSessionLost }: Prop
       {listing === null ? (
         <p className="muted centered">Loading…</p>
       ) : entries.length === 0 ? (
-        <p className="muted centered">This folder is empty. Drop files here to upload.</p>
+        <p className="muted centered">
+          This folder is empty.{backend.canWrite && ' Drop files here to upload.'}
+        </p>
       ) : (
         <div className="grid">
           {/* Tiles are keyed on the full path, not the bare name: keying on the
@@ -209,41 +217,45 @@ export default function Browser({ vault, path, onNavigate, onSessionLost }: Prop
                   } else {
                     const idx = viewable.findIndex((v) => v.name === entry.name)
                     if (idx >= 0) setViewerIndex(idx)
-                    else window.open(api.fileUrl(vault.id, api.joinPath(path, entry.name)), '_blank')
+                    else window.open(backend.fileUrl(vault.id, path, entry), '_blank')
                   }
                 }}
                 title={entry.name}
               >
-                <Thumbnail vaultId={vault.id} dir={path} entry={entry} />
+                <Thumbnail backend={backend} vaultId={vault.id} dir={path} entry={entry} />
                 <span className="tile-name">{entry.name}</span>
                 {!entry.isDir && <span className="tile-size">{api.formatSize(entry.size)}</span>}
               </button>
               <div className="tile-actions">
-                <button
-                  className="icon-btn"
-                  type="button"
-                  title="Rename"
-                  onClick={() => void handleRename(entry)}
-                >
-                  ✎
-                </button>
+                {backend.canWrite && (
+                  <button
+                    className="icon-btn"
+                    type="button"
+                    title="Rename"
+                    onClick={() => void handleRename(entry)}
+                  >
+                    ✎
+                  </button>
+                )}
                 {!entry.isDir && (
                   <a
                     className="icon-btn"
                     title="Download"
-                    href={api.fileUrl(vault.id, api.joinPath(path, entry.name), true)}
+                    href={backend.fileUrl(vault.id, path, entry, true)}
                   >
                     ↓
                   </a>
                 )}
-                <button
-                  className="icon-btn danger"
-                  type="button"
-                  title="Delete"
-                  onClick={() => void handleDelete(entry)}
-                >
-                  ✕
-                </button>
+                {backend.canWrite && (
+                  <button
+                    className="icon-btn danger"
+                    type="button"
+                    title="Delete"
+                    onClick={() => void handleDelete(entry)}
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
             </div>
           ))}
@@ -252,6 +264,7 @@ export default function Browser({ vault, path, onNavigate, onSessionLost }: Prop
 
       {viewerIndex !== null && viewable[viewerIndex] && (
         <Lightbox
+          backend={backend}
           vaultId={vault.id}
           dir={path}
           items={viewable}

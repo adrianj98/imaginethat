@@ -39,6 +39,9 @@ import kotlin.coroutines.resumeWithException
  * [probeCertificate]); when null the platform trust store is used.
  */
 class ApiClient(private val baseUrl: HttpUrl, private val pinnedSha256: String?) {
+    /** The pinned certificate, for the Go engine's own connection (core/remote). */
+    val pin: String? get() = pinnedSha256
+
     private val jar = MemoryCookieJar()
 
     internal val httpClient: OkHttpClient = OkHttpClient.Builder()
@@ -69,6 +72,32 @@ class ApiClient(private val baseUrl: HttpUrl, private val pinnedSha256: String?)
         url("vaults", id, op, query = query)
 
     private fun jsonBody(s: String) = s.toRequestBody(JSON)
+
+    /** The server's mode. Servers without /api/info predate the switch and decrypt themselves. */
+    suspend fun mode(): ServerMode = try {
+        fetch(Request.Builder().url(url("info")).get().build()) {
+            val mode = json.decodeFromString<InfoResponse>(it.body!!.string()).mode
+            if (mode == "client-decrypt") ServerMode.CLIENT_DECRYPT else ServerMode.SERVER_DECRYPT
+        }
+    } catch (e: RemoteError.NotFound) {
+        ServerMode.SERVER_DECRYPT
+    }
+
+    /**
+     * Logs in to a client-decrypt server with its access password, which lets this session list
+     * vaults; vault passwords then never go to the server. [accessPassword] is left untouched
+     * (caller zeroes it). A refused password is [RemoteError.WrongAccessPassword].
+     */
+    suspend fun login(accessPassword: CharArray) {
+        val body = PasswordBody(accessPassword)
+        try {
+            fetch(Request.Builder().url(url("login")).post(body).build(), unlock = true) {}
+        } catch (e: RemoteError.WrongPassword) {
+            throw RemoteError.WrongAccessPassword
+        } finally {
+            body.wipe()
+        }
+    }
 
     suspend fun vaults(): List<RemoteVault> =
         fetch(Request.Builder().url(url("vaults")).get().build()) {

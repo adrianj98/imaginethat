@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import * as api from '../api'
 import type { Entry } from '../api'
+import type { Backend } from '../backend'
+import { imageThumb } from '../imageThumbs'
 import { videoThumb } from '../videoThumbs'
 
 interface Props {
+  backend: Backend
   vaultId: string
   dir: string
   entry: Entry
@@ -19,13 +22,18 @@ interface Props {
  * Still images come from the server's /thumb endpoint. Videos try that same
  * endpoint first (the server answers when it has ffmpeg); a 204 or failure
  * falls back to capturing a frame in the browser (see videoThumbs.ts).
+ *
+ * In client-decrypt mode the server cannot make thumbnails, so images are
+ * scaled and video frames captured here, from the service worker's decrypted
+ * URL (see imageThumbs.ts).
  */
-export default function Thumbnail({ vaultId, dir, entry }: Props) {
+export default function Thumbnail({ backend, vaultId, dir, entry }: Props) {
+  const clientSide = backend.mode === 'client-decrypt'
   const ref = useRef<HTMLDivElement>(null)
   const [visible, setVisible] = useState(false)
   const [failed, setFailed] = useState(false)
   const [serverThumbFailed, setServerThumbFailed] = useState(false)
-  const [videoSrc, setVideoSrc] = useState<string | null>(null)
+  const [localSrc, setLocalSrc] = useState<string | null>(null)
 
   useEffect(() => {
     const el = ref.current
@@ -48,13 +56,20 @@ export default function Thumbnail({ vaultId, dir, entry }: Props) {
   // In-browser capture needs the browser itself to decode the container;
   // server-side ffmpeg does not, so only the fallback is gated on this.
   const canCaptureLocally = isVideo && !api.isLikelyUnplayable(entry.name)
+  const canScaleLocally = !entry.isDir && api.hasThumbnail(entry.name)
 
   useEffect(() => {
-    if (!visible || !canCaptureLocally || !serverThumbFailed || videoSrc || failed) return
+    if (!visible || localSrc || failed) return
+    let capture: Promise<string>
+    const key = `${vaultId}|${path}|320`
+    const url = backend.fileUrl(vaultId, dir, entry)
+    if (clientSide && canScaleLocally) capture = imageThumb(url, key)
+    else if (canCaptureLocally && (clientSide || serverThumbFailed)) capture = videoThumb(url, key)
+    else return
     let cancelled = false
-    videoThumb(api.fileUrl(vaultId, path), `${vaultId}|${path}|320`)
+    capture
       .then((dataUrl) => {
-        if (!cancelled) setVideoSrc(dataUrl)
+        if (!cancelled) setLocalSrc(dataUrl)
       })
       .catch(() => {
         if (!cancelled) setFailed(true)
@@ -64,10 +79,11 @@ export default function Thumbnail({ vaultId, dir, entry }: Props) {
     return () => {
       cancelled = true
     }
-  }, [visible, canCaptureLocally, serverThumbFailed, videoSrc, failed, vaultId, path])
+  }, [visible, clientSide, canScaleLocally, canCaptureLocally, serverThumbFailed, localSrc, failed, backend, vaultId, dir, entry, path])
 
   // Images always have a server thumbnail; videos only until proven otherwise.
   const showImage =
+    !clientSide &&
     visible &&
     !failed &&
     !entry.isDir &&
@@ -92,8 +108,8 @@ export default function Thumbnail({ vaultId, dir, entry }: Props) {
             else setFailed(true)
           }}
         />
-      ) : videoSrc ? (
-        <img src={videoSrc} alt="" decoding="async" />
+      ) : localSrc ? (
+        <img src={localSrc} alt="" decoding="async" />
       ) : (
         <span className="thumb-glyph" aria-hidden="true">
           {entry.mediaType === 'video' ? '🎞️' : entry.mediaType === 'image' ? '🖼️' : '📄'}

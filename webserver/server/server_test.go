@@ -41,6 +41,12 @@ func patternBytes(seed uint64, n int) []byte {
 // in a subdirectory so vault discovery has something to find.
 func newTestServer(t *testing.T) (*Server, string) {
 	t.Helper()
+	return newTestServerWith(t, nil)
+}
+
+// newTestServerWith is newTestServer with a hook to adjust the Config.
+func newTestServerWith(t *testing.T, adjust func(*Config)) (*Server, string) {
+	t.Helper()
 	if _, err := os.Stat(filepath.Join(fixtureSrc, "gocryptfs.conf")); err != nil {
 		t.Skipf("test vault missing at %s", fixtureSrc)
 	}
@@ -49,12 +55,16 @@ func newTestServer(t *testing.T) (*Server, string) {
 	dst := filepath.Join(root, "myvault")
 	copyTree(t, fixtureSrc, dst)
 
-	srv, err := New(Config{
+	cfg := Config{
 		Root:            root,
 		ScanDepth:       3,
 		ThumbCacheBytes: 8 << 20,
 		Logger:          log.New(io.Discard, "", 0),
-	})
+	}
+	if adjust != nil {
+		adjust(&cfg)
+	}
+	srv, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

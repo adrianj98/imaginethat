@@ -1,0 +1,122 @@
+{
+  "vault": "core/vault/testdata/vault",
+  "password": "test-password-123",
+  "entries": [
+    {
+      "path": "emptydir",
+      "cipherPath": "7qwiqeLI-a9tnz5dglqxdg",
+      "isDir": true,
+      "size": 0
+    },
+    {
+      "path": "subdir",
+      "cipherPath": "BlAYdIp94LSI2Eu2yA614w",
+      "isDir": true,
+      "size": 0
+    },
+    {
+      "path": "subdir/deeper",
+      "cipherPath": "BlAYdIp94LSI2Eu2yA614w/ULOYqNdglv-bv5Xy6RNqNA",
+      "isDir": true,
+      "size": 0
+    },
+    {
+      "path": "subdir/deeper/deep.bin",
+      "cipherPath": "BlAYdIp94LSI2Eu2yA614w/ULOYqNdglv-bv5Xy6RNqNA/a_9TOxD6VVOFn6fmvoGlEA",
+      "isDir": false,
+      "size": 12345,
+      "sha256": "c87171c209b4fcc8287b8a091d68473264efbe638965d585cd824b6c00249d63"
+    },
+    {
+      "path": "subdir/long-file-name-segment-long-file-name-segment-long-file-name-segment-long-file-name-segment-long-file-name-segment-long-file-name-segment-long-file-name-segment-long-file-name-segment-tail.bin",
+      "cipherPath": "BlAYdIp94LSI2Eu2yA614w/gocryptfs.longname.F5ctebHv_1Hy2uKBddhOJrQ5QYgkdXjJ9Zn0wtJOtfs",
+      "isDir": false,
+      "size": 777,
+      "sha256": "b10681a371b6188e326344f31b3c47f8eb3c8502a75b16ee3716f1411ebfa520"
+    },
+    {
+      "path": "subdir/nested.txt",
+      "cipherPath": "BlAYdIp94LSI2Eu2yA614w/HCPXTZgKMnPRZH5yhl8bEg",
+      "isDir": false,
+      "size": 64,
+      "sha256": "a96b0b5edf386c7c668d37af97114e309670243f2e28af323848bbbc2540a843"
+    },
+    {
+      "path": "block-4095.bin",
+      "cipherPath": "p3HCizZfZGMk28FO5_gL1g",
+      "isDir": false,
+      "size": 4095,
+      "sha256": "f0a8a7f997910b97e948180c98973f4c7221deb56b51ab2ff7be8c6203108dd0"
+    },
+    {
+      "path": "block-4096.bin",
+      "cipherPath": "U6GrTnkiF9j9c0stRti2Lg",
+      "isDir": false,
+      "size": 4096,
+      "sha256": "08a9fb1b77ca88af7f9383f91318c25042a6662fe444a58c31e120cbf05ba1dd"
+    },
+    {
+      "path": "block-4097.bin",
+      "cipherPath": "Cj4cXK1fL2j1mmcbQQ5PYg",
+      "isDir": false,
+      "size": 4097,
+      "sha256": "27509f1d3ac3588b53324c2f43226f49cc2015883b30c7f333b18d2973d033b3"
+    },
+    {
+      "path": "block-8192.bin",
+      "cipherPath": "BMAMhnAb0aHsoRFYo210Qw",
+      "isDir": false,
+      "size": 8192,
+      "sha256": "a0debf6b2bc137bb1a3854c7b82528c0cf0fa34505d07bf97daa93de7d3048af"
+    },
+    {
+      "path": "clip.mp4",
+      "cipherPath": "dU1Q1TUbiPiSkco6Md4hew",
+      "isDir": false,
+      "size": 60000,
+      "sha256": "034a4b68fdc07cf98390279d32b46fb79ee27c02dbb7c2d6ba3cba9e85842e90"
+    },
+    {
+      "path": "empty.bin",
+      "cipherPath": "2y27ai7Hmcpox1O0lgRXLA",
+      "isDir": false,
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "large.bin",
+      "cipherPath": "IDFF9V0PBNtrIfDkWev7vQ",
+      "isDir": false,
+      "size": 100000,
+      "sha256": "bdfe111248a87115739f1af9a831227e3d273661b7f2c52b6a61db39e944099e"
+    },
+    {
+      "path": "long-file-name-segment-long-file-name-segment-long-file-name-segment-long-file-name-segment-long-file-name-segment-long-file-name-segment-long-file-name-segment-long-file-name-segment-tail.bin",
+      "cipherPath": "gocryptfs.longname.ctHu25N94ULAPfdz6Ah9tUwV0ldwOJF9kobFrPyETN8",
+      "isDir": false,
+      "size": 5000,
+      "sha256": "a9c06142c978931c8bc0cfb13a985fe1c4172cba40ce7d573fe12b85a272098a"
+    },
+    {
+      "path": "onebyte.bin",
+      "cipherPath": "pOz7rlscgVfy7AuG8H31Tg",
+      "isDir": false,
+      "size": 1,
+      "sha256": "af193a8cdcd0e3fb39e71147e59efa5cad40763d2611f5beff34a274f514362f"
+    },
+    {
+      "path": "photo.jpg",
+      "cipherPath": "uwlVj22oKIjdnOw0ek8WhA",
+      "isDir": false,
+      "size": 7873,
+      "sha256": "c52295b8e7d984490fce94c63e984e3c8c6f7818ee44a10aa288032ea13ca240"
+    },
+    {
+      "path": "photo.png",
+      "cipherPath": "qB6Ix9jCG863-6JDqQpkbQ",
+      "isDir": false,
+      "size": 10874,
+      "sha256": "bc0b535a77020133e082542a8a1e9605f354c3e13ec817548df547522bc12027"
+    }
+  ]
+}

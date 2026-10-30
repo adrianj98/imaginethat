@@ -43,6 +43,20 @@ type browserSession struct {
 	mu       sync.Mutex
 	vaults   map[string]*unlockedVault
 	lastSeen time.Time
+	// loggedIn is set by /api/login in client-decrypt mode.
+	loggedIn bool
+}
+
+func (b *browserSession) setLoggedIn() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.loggedIn = true
+}
+
+func (b *browserSession) isLoggedIn() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.loggedIn
 }
 
 // unlocked returns the open vault for a vault ID, if any.

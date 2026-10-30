@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 import * as api from './api'
 import type { Vault } from './api'
+import { type Backend, clientBackend, logout, serverBackend } from './backend'
 import VaultList from './components/VaultList'
 import Browser from './components/Browser'
-import { clearVideoThumbs } from './videoThumbs'
+import Login from './components/Login'
 
 // The URL hash is the single source of truth for where the user is:
 // #/v/<vaultId>/<path> inside a vault, anything else is the vault list.
@@ -31,6 +32,10 @@ function hashFor(vaultId: string | null, path: string): string {
 }
 
 export default function App() {
+  // Which way the server works decides who unlocks and decrypts vaults.
+  const [backend, setBackend] = useState<Backend | null>(null)
+  // Client-decrypt servers want their access password before anything else.
+  const [needsLogin, setNeedsLogin] = useState(false)
   const [vaults, setVaults] = useState<Vault[] | null>(null)
   const [route, setRoute] = useState<Route>(parseHash)
   const [error, setError] = useState<string | null>(null)
@@ -49,31 +54,54 @@ export default function App() {
     window.location.hash = target
   }, [])
 
+  useEffect(() => {
+    api
+      .info()
+      .then(({ mode }) => setBackend(mode === 'client-decrypt' ? clientBackend : serverBackend))
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+  }, [])
+
   const refresh = useCallback(async () => {
+    if (!backend) return
     try {
-      const { vaults } = await api.listVaults()
-      setVaults(vaults)
+      setVaults(await backend.listVaults())
+      setNeedsLogin(false)
       setError(null)
     } catch (e) {
+      if (backend.mode === 'client-decrypt' && e instanceof api.ApiError && e.status === 401) {
+        setNeedsLogin(true)
+        return
+      }
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [])
+  }, [backend])
 
   useEffect(() => {
     void refresh()
   }, [refresh])
 
+  useEffect(() => {
+    backend?.prepare().catch((e) => setError(e instanceof Error ? e.message : String(e)))
+  }, [backend])
+
   const handleLock = useCallback(
     async (id: string) => {
-      await api.lockVault(id)
-      // Captured video frames derive from vault content; drop them with the
-      // vault, mirroring the server's per-vault thumbnail LRU dying on lock.
-      clearVideoThumbs()
+      await backend?.lock(id)
       navigate(null)
       await refresh()
     },
-    [navigate, refresh],
+    [backend, navigate, refresh],
   )
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await logout()
+    } finally {
+      setVaults(null)
+      navigate(null)
+      await refresh()
+    }
+  }, [navigate, refresh])
 
   // The route may name a vault that is locked or gone (deep link, expired
   // session): show the vault list then, and keep the hash so unlocking the
@@ -99,13 +127,23 @@ export default function App() {
             </button>
           </>
         )}
+        {backend?.mode === 'client-decrypt' && !needsLogin && (
+          <button className="btn topbar-logout" type="button" onClick={() => void handleLogout()}>
+            Log out
+          </button>
+        )}
       </header>
 
       {error && <div className="banner error">{error}</div>}
 
       <main>
-        {active ? (
+        {!backend ? (
+          !error && <p className="muted centered">Connecting…</p>
+        ) : needsLogin ? (
+          <Login onLoggedIn={() => void refresh()} />
+        ) : active ? (
           <Browser
+            backend={backend}
             vault={active}
             path={route.path}
             onNavigate={(path) => navigate(active.id, path)}
@@ -113,6 +151,7 @@ export default function App() {
           />
         ) : (
           <VaultList
+            backend={backend}
             vaults={vaults}
             onOpened={(id) => {
               // Unlocking the vault a deep link points at keeps its path.

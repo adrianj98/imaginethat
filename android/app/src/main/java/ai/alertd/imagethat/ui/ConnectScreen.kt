@@ -3,6 +3,7 @@ package ai.alertd.imagethat.ui
 import ai.alertd.imagethat.keys.SavedServer
 import ai.alertd.imagethat.remote.ApiClient
 import ai.alertd.imagethat.remote.RemoteError
+import ai.alertd.imagethat.remote.ServerMode
 import ai.alertd.imagethat.remote.probeCertificate
 import ai.alertd.imagethat.ui.components.AppIcons
 import ai.alertd.imagethat.ui.components.AppTextField
@@ -83,7 +84,9 @@ fun ConnectScreen(session: Session, onBack: () -> Unit, onConnected: (serverKey:
         scope.launch(Dispatchers.Main) {
             val api = ApiClient(target, pin)
             try {
-                api.vaults() // proves the server is reachable and speaks the API
+                // Proves the server is reachable and speaks the API. A client-decrypt server lists
+                // vaults only after its access password, which its vault screen asks for.
+                if (api.mode() == ServerMode.SERVER_DECRYPT) api.vaults()
                 val key = finishConnect(session, target, pin, api)
                 untrusted = null
                 onConnected(key)

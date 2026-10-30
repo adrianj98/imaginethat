@@ -36,7 +36,22 @@ type Config struct {
 	FFmpegPath string
 	// Logger receives request and error output.
 	Logger *log.Logger
+	// Mode is ModeServerDecrypt (the default) or ModeClientDecrypt.
+	Mode string
+	// AccessPasswordHash is the bcrypt hash a client-decrypt server checks at
+	// /api/login. Required in that mode, refused in the other.
+	AccessPasswordHash []byte
+	// Version is reported by /api/info.
+	Version string
 }
+
+// Server modes. In server-decrypt mode the server unlocks vaults and serves
+// plaintext. In client-decrypt mode it only ever serves ciphertext, behind a
+// server access password, and never sees a vault password or key.
+const (
+	ModeServerDecrypt = "server-decrypt"
+	ModeClientDecrypt = "client-decrypt"
+)
 
 // Vault is a discovered vault, as exposed to the client.
 //
@@ -82,6 +97,19 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.ThumbCacheBytes <= 0 {
 		cfg.ThumbCacheBytes = 256 << 20
+	}
+	switch cfg.Mode {
+	case "":
+		cfg.Mode = ModeServerDecrypt
+	case ModeServerDecrypt, ModeClientDecrypt:
+	default:
+		return nil, fmt.Errorf("server: unknown mode %q", cfg.Mode)
+	}
+	if cfg.Mode == ModeClientDecrypt && len(cfg.AccessPasswordHash) == 0 {
+		return nil, fmt.Errorf("server: %s mode needs an access password", ModeClientDecrypt)
+	}
+	if cfg.Mode == ModeServerDecrypt && len(cfg.AccessPasswordHash) != 0 {
+		return nil, fmt.Errorf("server: an access password is only used in %s mode", ModeClientDecrypt)
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = log.New(os.Stderr, "", log.LstdFlags)

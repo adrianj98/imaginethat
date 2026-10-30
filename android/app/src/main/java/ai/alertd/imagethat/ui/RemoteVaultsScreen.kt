@@ -1,9 +1,13 @@
 package ai.alertd.imagethat.ui
 
+import ai.alertd.imagethat.data.LocalSource
+import ai.alertd.imagethat.data.MobileVaultApi
 import ai.alertd.imagethat.data.RemoteSource
 import ai.alertd.imagethat.keys.PasswordIds
+import ai.alertd.imagethat.local.LocalError
 import ai.alertd.imagethat.remote.RemoteError
 import ai.alertd.imagethat.remote.RemoteVault
+import ai.alertd.imagethat.remote.ServerMode
 import ai.alertd.imagethat.ui.components.AppIcons
 import ai.alertd.imagethat.ui.components.Chevron
 import ai.alertd.imagethat.ui.components.ErrorText
@@ -70,11 +74,17 @@ private sealed interface Load {
     class Unreachable(val message: String) : Load
     /** Hard failure: the pinned certificate changed. No retry, no bypass. */
     class CertChanged(val sha256: String) : Load
+    /** A client-decrypt server wants its access password before it lists vaults. */
+    object NeedsLogin : Load
 }
 
 /**
  * The server's vaults with their lock state. Tap unlocks with the saved password when there is
  * one (no prompt), otherwise asks once and saves it; long-press offers to forget it.
+ *
+ * A client-decrypt server first wants its access password (saved like a vault password). Its
+ * vaults are then opened on the phone by the Go engine ([LocalVaults.openRemote]) and browsed as
+ * a [LocalSource]: the vault password never goes to the server, and they are read-only.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -89,17 +99,56 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
     /** A vault being unlocked with its saved password (no dialog). */
     var autoUnlocking by remember { mutableStateOf<String?>(null) }
     var forgetting by remember { mutableStateOf<RemoteVault?>(null) }
+    /** Showing the access password prompt of a client-decrypt server. */
+    var loggingIn by remember { mutableStateOf(false) }
+    val accessId = PasswordIds.serverAccess(serverKey)
+    fun clientDecrypt() = server?.mode == ServerMode.CLIENT_DECRYPT
+
+    /**
+     * A client-decrypt server's vaults, logging in first with the access password held for this
+     * session or saved. Unlocked means opened on this phone: the server holds nothing open.
+     */
+    suspend fun clientVaults(server: RemoteServer): List<RemoteVault> {
+        val vaults = try {
+            server.api.vaults()
+        } catch (e: RemoteError.Locked) {
+            val access = server.accessCopy() ?: session.savedPassword(accessId) ?: throw e
+            try {
+                server.api.login(access)
+                server.setAccess(access)
+            } finally {
+                access.fill('\u0000')
+            }
+            server.api.vaults()
+        }
+        return vaults.map { it.copy(unlocked = session.source(remoteSourceId(serverKey, it.id)) != null) }
+    }
 
     fun refresh() {
         if (server == null) return
         scope.launch(Dispatchers.Main) {
             load = try {
-                // The server forgets sessions when it restarts and then reports unlocked = false: that is just "locked" here.
-                Load.Loaded(server.api.vaults())
+                val mode = server.mode ?: server.api.mode().also { server.mode = it }
+                if (mode == ServerMode.CLIENT_DECRYPT) {
+                    Load.Loaded(clientVaults(server))
+                } else {
+                    // The server forgets sessions when it restarts and then reports unlocked = false: that is just "locked" here.
+                    Load.Loaded(server.api.vaults())
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: RemoteError.CertMismatch) {
                 Load.CertChanged(e.sha256)
+            } catch (e: RemoteError.Locked) {
+                loggingIn = true
+                Load.NeedsLogin
+            } catch (e: RemoteError.WrongAccessPassword) {
+                // The saved access password is stale.
+                session.forgetPassword(accessId)
+                server.forgetAccess()
+                notice = "The saved access password no longer works. Enter it again."
+                loggingIn = true
+                Load.NeedsLogin
             } catch (e: Exception) {
                 Load.Unreachable((e as? RemoteError.Network)?.let { "Server unreachable." } ?: (e.message ?: "Server error."))
             }
@@ -109,8 +158,52 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
 
     fun open(vault: RemoteVault) {
         val id = remoteSourceId(serverKey, vault.id)
-        if (session.source(id) == null) session.registerSource(id, vault.name, RemoteSource(server!!.api, vault.id))
+        if (session.source(id) == null) {
+            // A client-decrypt vault exists only once opened on this phone (see unlock).
+            if (clientDecrypt()) { refresh(); return }
+            session.registerSource(id, vault.name, RemoteSource(server!!.api, vault.id))
+        }
         onOpen(id)
+    }
+
+    fun login(pw: CharArray) {
+        busy = true
+        error = null
+        scope.launch(Dispatchers.Main) {
+            try {
+                server!!.api.login(pw)
+                server.setAccess(pw)
+                withContext(Dispatchers.IO) { runCatching { session.savePassword(accessId, pw) } }
+                loggingIn = false
+                notice = null
+                refresh()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                error = when (e) {
+                    is RemoteError.WrongAccessPassword -> "Wrong access password"
+                    is RemoteError.RateLimited -> "Too many attempts, wait a moment and try again"
+                    is RemoteError.Network -> "Server unreachable"
+                    else -> e.message ?: "Could not log in"
+                }
+            } finally {
+                pw.fill('\u0000')
+                busy = false
+            }
+        }
+    }
+
+    /** Client-decrypt: opens the vault on this phone and registers it as a [LocalSource]. */
+    suspend fun unlockHere(server: RemoteServer, v: RemoteVault, pw: CharArray) {
+        val access = server.accessCopy() ?: throw LocalError.WrongAccessPassword("not logged in")
+        val vault = try {
+            withContext(Dispatchers.IO) { session.local.openRemote(server.url, v.id, server.api.pin, pw.copyOf(), access) }
+        } catch (e: LocalError.WrongPassword) {
+            throw RemoteError.WrongPassword
+        }
+        session.registerSource(remoteSourceId(serverKey, v.id), v.name, LocalSource(MobileVaultApi(vault))) {
+            session.local.close(vault)
+        }
     }
 
     /** [fromSaved]: a wrong password means the saved one is stale: forget it and ask once. */
@@ -121,7 +214,7 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
         if (fromSaved) autoUnlocking = v.id
         scope.launch(Dispatchers.Main) {
             try {
-                server!!.api.unlock(v.id, pw)
+                if (clientDecrypt()) unlockHere(server!!, v, pw) else server!!.api.unlock(v.id, pw)
                 if (!fromSaved) withContext(Dispatchers.IO) { runCatching { session.savePassword(passwordId, pw) } }
                 unlocking = null
                 open(v)
@@ -140,12 +233,19 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
                         load = Load.CertChanged(e.sha256)
                         null
                     }
+                    is LocalError.WrongAccessPassword -> {
+                        // Logged out (or the access password changed): log in, then tap again.
+                        server?.forgetAccess()
+                        unlocking = null
+                        loggingIn = true
+                        null
+                    }
                     is RemoteError.Network -> "Server unreachable"
                     else -> e.message ?: "Could not unlock"
                 }
                 error = message
                 // A saved password that failed for another reason (network, 429) is kept; the dialog shows why.
-                if (fromSaved && e !is RemoteError.CertMismatch) unlocking = v
+                if (fromSaved && e !is RemoteError.CertMismatch && e !is LocalError.WrongAccessPassword) unlocking = v
             } finally {
                 pw.fill('\u0000')
                 busy = false
@@ -197,6 +297,7 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
             ).joinToString(" · ")
             is Load.Unreachable -> Palette.Destructive to "Unreachable"
             is Load.CertChanged -> Palette.Destructive to "Certificate changed"
+            Load.NeedsLogin -> Palette.TextTertiary to "Log in to see vaults"
         }
         ScreenTitle(
             server?.label ?: "Server", Modifier.padding(start = 8.dp, end = 8.dp, top = 8.dp),
@@ -220,6 +321,15 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
                         Text("It no longer matches the one you trusted, so the connection was refused. New SHA-256:", color = Palette.TextSecondary, style = MaterialTheme.typography.bodySmall)
                         Text(fingerprintDisplay(l.sha256), color = Palette.Text, style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace))
                         Text("Remove this server and connect again only if you expect the change.", color = Palette.TextSecondary, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                Load.NeedsLogin -> GroupCard {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            "This server keeps vaults encrypted and decrypts nothing itself. Log in with its access password; vault passwords stay on this phone.",
+                            color = Palette.TextSecondary, style = MaterialTheme.typography.bodyMedium,
+                        )
+                        OutlinePill("Log in", { error = null; loggingIn = true }, Modifier.testTag("server-login"))
                     }
                 }
                 is Load.Unreachable -> GroupCard {
@@ -254,6 +364,19 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
             }
             if (server == null) EmptyNote("Not connected. Go back and connect again.")
         }
+    }
+
+    if (loggingIn) {
+        UnlockDialog(
+            vaultName = "Server access password",
+            place = server?.label ?: "Server",
+            idleMinutes = session.idleTimeoutMinutes,
+            notice = notice,
+            error = error,
+            busy = busy,
+            onDismiss = { loggingIn = false },
+            onSubmit = { pw -> login(pw) },
+        )
     }
 
     unlocking?.let { v ->

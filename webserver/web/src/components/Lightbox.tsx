@@ -1,8 +1,10 @@
 import { useCallback, useEffect } from 'react'
 import * as api from '../api'
 import type { Entry } from '../api'
+import type { Backend } from '../backend'
 
 interface Props {
+  backend: Backend
   vaultId: string
   dir: string
   items: Entry[]
@@ -12,7 +14,7 @@ interface Props {
 }
 
 /** Full-screen viewer with keyboard navigation and next-image preloading. */
-export default function Lightbox({ vaultId, dir, items, index, onIndexChange, onClose }: Props) {
+export default function Lightbox({ backend, vaultId, dir, items, index, onIndexChange, onClose }: Props) {
   const item = items[index]
 
   const step = useCallback(
@@ -49,12 +51,12 @@ export default function Lightbox({ vaultId, dir, items, index, onIndexChange, on
     const next = items[index + 1]
     if (next && next.mediaType === 'image') {
       const img = new Image()
-      img.src = api.fileUrl(vaultId, api.joinPath(dir, next.name))
+      img.src = backend.fileUrl(vaultId, dir, next)
     }
-  }, [vaultId, dir, items, index])
+  }, [backend, vaultId, dir, items, index])
 
   if (!item) return null
-  const src = api.fileUrl(vaultId, api.joinPath(dir, item.name))
+  const src = backend.fileUrl(vaultId, dir, item)
 
   return (
     <div className="lightbox" role="dialog" aria-modal="true" aria-label={item.name}>
@@ -65,7 +67,7 @@ export default function Lightbox({ vaultId, dir, items, index, onIndexChange, on
         <span className="muted">
           {index + 1} / {items.length}
         </span>
-        <a className="btn" href={api.fileUrl(vaultId, api.joinPath(dir, item.name), true)}>
+        <a className="btn" href={backend.fileUrl(vaultId, dir, item, true)}>
           Download
         </a>
         <button className="btn" type="button" onClick={onClose} aria-label="Close">

@@ -421,6 +421,10 @@ public class AppState: ObservableObject {
                                                 saveToKeychain: saveToKeychain, subpath: subpath) }
             return
         }
+        if let remote = RemoteLocation.parse(url), remote.vaultID == nil {
+            Task { await self.loginToServer(remote.server, accessPassword: password, save: saveToKeychain) }
+            return
+        }
         if url.scheme == "gdrive", let folderId = url.host {
             Task { await self.unlockDriveVault(folderId: folderId, password: password, saveToKeychain: saveToKeychain, subpath: subpath) }
             return
@@ -1289,11 +1293,21 @@ extension AppState {
     }
 
     /// Checks the server answers, then remembers it and lists its vaults.
-    public func addServer(_ input: String) async throws {
+    ///
+    /// A client-decrypt server needs its access password first: without one
+    /// this throws RemoteServerError.accessPasswordRequired so the sheet can
+    /// ask for it. A good access password is remembered like a vault password.
+    public func addServer(_ input: String, accessPassword: String? = nil,
+                          saveAccessPassword: Bool = true) async throws {
         guard let server = Self.normalizeServerURL(input), let base = URL(string: server) else {
             throw RemoteServerError.invalidServerURL
         }
         let client = serverClients[server] ?? RemoteServerClient(baseURL: base)
+        if try await client.serverMode() == .clientDecrypt, !client.hasAccessPassword {
+            guard let accessPassword, !accessPassword.isEmpty else { throw RemoteServerError.accessPasswordRequired }
+            try await client.login(accessPassword: accessPassword)
+            rememberAccessPassword(accessPassword, server: server, save: saveAccessPassword)
+        }
         _ = try await client.listVaults()
         serverClients[server] = client
         var saved = AppSettings.shared.stringArray(forKey: Self.serversKey) ?? []
@@ -1346,6 +1360,12 @@ extension AppState {
         var items: [SidebarItem] = []
         for server in AppSettings.shared.stringArray(forKey: Self.serversKey) ?? [] {
             guard let client = serverClients[server] else { continue }
+            // A client-decrypt server lists vaults only after login; use an
+            // access password this session already holds, without prompting.
+            if !client.hasAccessPassword, let access = vaultPasswords[Self.accessPasswordKey(server)],
+               (try? await client.serverMode()) == .clientDecrypt {
+                try? await client.login(accessPassword: access)
+            }
             // An unreachable server still gets a row, so it can be removed.
             let vaults = (try? await client.listVaults()) ?? []
             let children = vaults.map { vault -> SidebarItem in
@@ -1362,8 +1382,9 @@ extension AppState {
     private func navigateToRemoteSidebarItem(_ item: SidebarItem) {
         guard let location = RemoteLocation.parse(item.url) else { return }
         guard let vaultID = location.vaultID else {
-            // A server row with no vaults may have been offline; look again.
-            if item.children.isEmpty { Task { await buildServerSidebar() } }
+            // A server row with no vaults may have been offline, or be a
+            // client-decrypt server this session has not logged in to yet.
+            if item.children.isEmpty { Task { await loginToServerIfNeeded(location.server) } }
             return
         }
         let path = item.vaultPath ?? ""
@@ -1459,10 +1480,74 @@ extension AppState {
             isLoading = false
             errorMessage = RemoteServerError.wrongPassword.localizedDescription
             promptForRemoteVault(key: key, subpath: subpath ?? "")
+        } catch RemoteServerError.accessPasswordRequired, RemoteServerError.wrongAccessPassword {
+            // A client-decrypt server this session has not logged in to.
+            isLoading = false
+            vaultPasswords[key] = password
+            await loginToServerIfNeeded(server)
         } catch {
             errorMessage = error.localizedDescription
             isLoading = false
         }
+    }
+
+    /// Key a server's access password is remembered under, beside vault
+    /// passwords; the server URL without a vault cannot collide with them.
+    private static func accessPasswordKey(_ server: String) -> String {
+        RemoteLocation.url(server: server).absoluteString
+    }
+
+    private func rememberAccessPassword(_ password: String, server: String, save: Bool) {
+        let key = Self.accessPasswordKey(server)
+        vaultPasswords[key] = password
+        guard save else { return }
+        if PasswordStore.encryptionDisabled {
+            try? PasswordStore.shared.save(password: password, forVault: key, masterKey: nil)
+        } else if let masterKey = try? getOrCreateMasterKey() {
+            try? PasswordStore.shared.save(password: password, forVault: key, masterKey: masterKey)
+        }
+    }
+
+    /// For a client-decrypt server not yet logged in to: logs in with the
+    /// session's or a saved access password, else asks for it.
+    private func loginToServerIfNeeded(_ server: String) async {
+        guard let client = serverClients[server] else { return }
+        guard (try? await client.serverMode()) == .clientDecrypt, !client.hasAccessPassword else {
+            await buildServerSidebar()
+            return
+        }
+        let key = Self.accessPasswordKey(server)
+        var password = vaultPasswords[key]
+        if password == nil, PasswordStore.shared.hasPasswords {
+            password = await savedPassword(forKey: key)
+        }
+        if let password {
+            await loginToServer(server, accessPassword: password, save: false)
+        } else {
+            promptForServerLogin(server)
+        }
+    }
+
+    private func loginToServer(_ server: String, accessPassword: String, save: Bool) async {
+        guard let client = serverClients[server] else { return }
+        do {
+            try await client.login(accessPassword: accessPassword)
+            rememberAccessPassword(accessPassword, server: server, save: save)
+            await buildServerSidebar()
+        } catch RemoteServerError.wrongAccessPassword {
+            vaultPasswords[Self.accessPasswordKey(server)] = nil
+            errorMessage = RemoteServerError.wrongAccessPassword.localizedDescription
+            promptForServerLogin(server)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func promptForServerLogin(_ server: String) {
+        pendingVaultURL = RemoteLocation.url(server: server)
+        pendingVaultSubpath = nil
+        pendingVaultDisplayName = "Access password for \(Self.serverDisplayName(server))"
+        showVaultUnlock = true
     }
 
     private func expandRemoteSidebarItem(_ item: SidebarItem, client: RemoteServerClient, vaultID: String) {
