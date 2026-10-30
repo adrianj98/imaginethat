@@ -131,26 +131,6 @@ func GocryptfsCopyVaultIn(jobID C.int, destSession C.int, destPath *C.char, srcS
 	return copyCode(err)
 }
 
-// GocryptfsCopyServerIn copies a file from a vault on a server-decrypt server
-// (a GocryptfsServerNew handle, unlocked) into destSession at destPath.
-// Blocks until done.
-//
-//export GocryptfsCopyServerIn
-func GocryptfsCopyServerIn(jobID C.int, destSession C.int, destPath *C.char, server C.int, vaultID, srcPath *C.char) C.int {
-	j, dst := getJob(jobID), getSession(destSession)
-	c, ok := servers.get(server)
-	if j == nil || dst == nil || !ok {
-		return rcNoConfig
-	}
-	p := C.GoString(destPath)
-	opts := j.options()
-	opts.Permanent = append(append(opts.Permanent, remote.PermanentErrors...), remote.ErrForbidden)
-	_, err := dst.s.CopyIn(j.ctx, p, c.Opener(C.GoString(vaultID), C.GoString(srcPath)), opts)
-	dst.dropFile(p)
-	dst.invalidateThumb(p)
-	return copyCode(err)
-}
-
 // GocryptfsOpenRemoteCached is GocryptfsOpenRemote with a file cache in
 // cacheDir: files passed to GocryptfsCacheFile are kept there as ciphertext
 // and read from disk afterwards. accessPassword and the return codes are as

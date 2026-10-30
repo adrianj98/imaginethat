@@ -115,9 +115,6 @@ extern void GocryptfsJobFree(int jobID);
 extern int GocryptfsCopyFileIn(int jobID, int destSession, char* destPath, char* srcFilePath);
 // Copy a file from one open vault (local, Drive or remote) into another.
 extern int GocryptfsCopyVaultIn(int jobID, int destSession, char* destPath, int srcSession, char* srcPath);
-// Copy a file from a vault on a server-decrypt server (GocryptfsServerNew
-// handle, vault unlocked) into another vault.
-extern int GocryptfsCopyServerIn(int jobID, int destSession, char* destPath, int server, char* vaultID, char* srcPath);
 // GocryptfsOpenRemote with a ciphertext file cache in cacheDir.
 extern int GocryptfsOpenRemoteCached(char* baseURL, char* vaultID, char* password, char* pinnedSHA256, char* accessPassword, char* cacheDir);
 // Keep a file available locally: a cached remote session stores its ciphertext
@@ -192,27 +189,12 @@ extern void GocryptfsServerFree(int server);
 // 0 server-decrypt, 1 client-decrypt, or a negative code.
 extern int GocryptfsServerGetMode(int server);
 extern int GocryptfsServerLogin(int server, char* accessPassword);
-// JSON [{id,name,unlocked}].
+// JSON [{id,name}].
 extern DecryptResult GocryptfsServerVaults(int server);
-extern int GocryptfsServerUnlock(int server, char* vaultID, char* password);
-extern int GocryptfsServerLock(int server, char* vaultID);
 extern int GocryptfsServerLogout(int server);
-// Server-decrypt API. List returns JSON [{name,isDir,size,mediaType}].
-extern DecryptResult GocryptfsServerList(int server, char* vaultID, char* dir);
-extern int64_t GocryptfsServerFileSize(int server, char* vaultID, char* path);
-// Bytes read into outBuf, fewer at the end of the file, or a negative code.
-extern int32_t GocryptfsServerReadRange(int server, char* vaultID, char* path, int64_t offset, int32_t length, void* outBuf);
-// JPEG preview; size 0 when the server has none.
-extern DecryptResult GocryptfsServerThumbnail(int server, char* vaultID, char* path, int size);
-// Stream an upload: returns a writer ID for GocryptfsWriterWrite/Close/Abort.
-// size is the byte count or -1.
-extern int GocryptfsServerUploadBegin(int server, char* vaultID, char* dir, char* name, int64_t size);
-extern int GocryptfsServerMkdir(int server, char* vaultID, char* path);
-extern int GocryptfsServerMove(int server, char* vaultID, char* from, char* to);
-extern int GocryptfsServerDelete(int server, char* vaultID, char* path);
-// Open a vault over the server's ciphertext endpoints with this connection
-// (after ServerLogin on a client-decrypt server), decrypting here. cacheDir ""
-// for none. Returns a read-only session.
+// Open a vault over the server's ciphertext endpoints with this connection,
+// after ServerLogin, decrypting here: the server never sees the vault
+// password or plaintext. cacheDir "" for none. Returns a read-only session.
 extern int GocryptfsServerOpenVault(int server, char* vaultID, char* password, char* cacheDir);
 
 #endif

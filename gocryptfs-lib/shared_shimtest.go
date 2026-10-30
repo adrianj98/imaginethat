@@ -104,59 +104,20 @@ func tServerNew(base string) int {
 
 func tServerVaults(h int) ([]byte, error) { return tResult(GocryptfsServerVaults(C.int(h))) }
 
-func tServerUnlock(h int, id, password string) int {
-	i, p := cstr(id), cstr(password)
-	defer C.free(unsafe.Pointer(i))
-	defer C.free(unsafe.Pointer(p))
-	return int(GocryptfsServerUnlock(C.int(h), i, p))
+func tServerGetMode(h int) int { return int(GocryptfsServerGetMode(C.int(h))) }
+
+func tServerLogin(h int, access string) int {
+	a := cstr(access)
+	defer C.free(unsafe.Pointer(a))
+	return int(GocryptfsServerLogin(C.int(h), a))
 }
 
-func tServerList(h int, id, dir string) ([]byte, error) {
-	i, d := cstr(id), cstr(dir)
+func tServerOpenVault(h int, id, password, cacheDir string) int {
+	i, p, d := cstr(id), cstr(password), cstr(cacheDir)
 	defer C.free(unsafe.Pointer(i))
+	defer C.free(unsafe.Pointer(p))
 	defer C.free(unsafe.Pointer(d))
-	return tResult(GocryptfsServerList(C.int(h), i, d))
+	return int(GocryptfsServerOpenVault(C.int(h), i, p, d))
 }
 
-func tServerFileSize(h int, id, path string) int64 {
-	i, p := cstr(id), cstr(path)
-	defer C.free(unsafe.Pointer(i))
-	defer C.free(unsafe.Pointer(p))
-	return int64(GocryptfsServerFileSize(C.int(h), i, p))
-}
-
-func tServerReadRange(h int, id, path string, off int64, n int32) ([]byte, int32) {
-	i, p := cstr(id), cstr(path)
-	defer C.free(unsafe.Pointer(i))
-	defer C.free(unsafe.Pointer(p))
-	buf := make([]byte, n)
-	got := GocryptfsServerReadRange(C.int(h), i, p, C.int64_t(off), C.int32_t(n), unsafe.Pointer(&buf[0]))
-	if got < 0 {
-		return nil, int32(got)
-	}
-	return buf[:got], int32(got)
-}
-
-func tServerUploadBegin(h int, id, dir, name string, size int64) int {
-	i, d, n := cstr(id), cstr(dir), cstr(name)
-	defer C.free(unsafe.Pointer(i))
-	defer C.free(unsafe.Pointer(d))
-	defer C.free(unsafe.Pointer(n))
-	return int(GocryptfsServerUploadBegin(C.int(h), i, d, n, C.int64_t(size)))
-}
-
-func tServerMove(h int, id, from, to string) int {
-	i, f, t := cstr(id), cstr(from), cstr(to)
-	defer C.free(unsafe.Pointer(i))
-	defer C.free(unsafe.Pointer(f))
-	defer C.free(unsafe.Pointer(t))
-	return int(GocryptfsServerMove(C.int(h), i, f, t))
-}
-
-func tServerDelete(h int, id, path string) int {
-	i, p := cstr(id), cstr(path)
-	defer C.free(unsafe.Pointer(i))
-	defer C.free(unsafe.Pointer(p))
-	return int(GocryptfsServerDelete(C.int(h), i, p))
-}
 func tServerFree(h int) { GocryptfsServerFree(C.int(h)) }

@@ -6,7 +6,6 @@ import (
 	"image"
 	"image/color"
 	"image/png"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -166,20 +165,21 @@ func TestCopyFileAndThumbnailDiskCache(t *testing.T) {
 	}
 }
 
-// Server.Upload streams through the pipe to the server's upload endpoint.
-func TestServerUploadStreams(t *testing.T) {
-	var got bytes.Buffer
+// Server talks to a client-decrypt server and never sends a vault password
+// before logging in.
+func TestServerClientDecryptOnly(t *testing.T) {
+	var unlocks int
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/list"):
-			w.Write([]byte(`{"entries":[]}`))
-		case strings.HasSuffix(r.URL.Path, "/upload"):
-			if r.URL.Query().Get("name") != "v.mp4" {
-				http.Error(w, `{"error":"bad"}`, 400)
-				return
-			}
-			io.Copy(&got, r.Body)
+		case r.URL.Path == "/api/info":
+			w.Write([]byte(`{"mode":"client-decrypt"}`))
+		case r.URL.Path == "/api/login":
 			w.Write([]byte(`{"ok":true}`))
+		case r.URL.Path == "/api/vaults":
+			w.Write([]byte(`{"vaults":[{"id":"v1","name":"Photos"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/unlock"):
+			unlocks++
+			http.Error(w, "{}", http.StatusNotFound)
 		default:
 			http.NotFound(w, r)
 		}
@@ -189,19 +189,19 @@ func TestServerUploadStreams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := s.Upload("v1", "dir", "v.mp4", 6)
-	if err != nil {
+	if m, err := s.Mode(); err != nil || m != "client-decrypt" {
+		t.Fatalf("Mode = %q, %v", m, err)
+	}
+	if _, err := s.OpenVault("v1", "secret", ""); err == nil {
+		t.Fatal("opened before login")
+	}
+	if unlocks != 0 {
+		t.Fatal("the vault password was sent to the server")
+	}
+	if err := s.Login("access"); err != nil {
 		t.Fatal(err)
 	}
-	w.Write([]byte("abc"))
-	w.Write([]byte("def"))
-	if err := w.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if got.String() != "abcdef" {
-		t.Fatalf("server got %q", got.String())
-	}
-	if _, err := s.Size("v1", "missing"); err == nil || !strings.HasPrefix(err.Error(), "not_found:") {
-		t.Fatalf("missing file: %v", err)
+	if js, err := s.Vaults(); err != nil || !strings.Contains(js, `"Photos"`) {
+		t.Fatalf("Vaults = %s, %v", js, err)
 	}
 }

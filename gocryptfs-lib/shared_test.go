@@ -128,8 +128,9 @@ func TestDriveThroughShim(t *testing.T) {
 	}
 }
 
-// The server-decrypt API through the C API, against the real server.
-func TestServerAPIThroughShim(t *testing.T) {
+// A client-decrypt server through a server handle: log in, list vaults,
+// open one here. Without a login the vault password is never sent.
+func TestServerHandleClientDecrypt(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(fixtureDir, "gocryptfs.conf")); err != nil {
 		t.Skip("fixture vault missing")
 	}
@@ -137,7 +138,12 @@ func TestServerAPIThroughShim(t *testing.T) {
 	if err := os.CopyFS(filepath.Join(root, "v"), os.DirFS(fixtureDir)); err != nil {
 		t.Fatal(err)
 	}
-	srv, err := server.New(server.Config{Root: root, Logger: log.New(io.Discard, "", 0)})
+	hash, err := server.HashAccessPassword("access")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := server.New(server.Config{Root: root, Mode: server.ModeClientDecrypt, AccessPasswordHash: hash,
+		Logger: log.New(io.Discard, "", 0)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,47 +156,40 @@ func TestServerAPIThroughShim(t *testing.T) {
 		t.Fatalf("ServerNew = %d", h)
 	}
 	defer tServerFree(h)
+	if m := tServerGetMode(h); m != 1 {
+		t.Fatalf("mode = %d", m)
+	}
+	if _, err := tServerVaults(h); err == nil || !strings.HasPrefix(err.Error(), "locked:") {
+		t.Fatalf("vaults before login: %v", err)
+	}
+	if rc := tServerLogin(h, "wrong"); rc != rcCancelled {
+		t.Fatalf("wrong access password = %d", rc)
+	}
+	if rc := tServerLogin(h, "access"); rc != 0 {
+		t.Fatalf("Login = %d", rc)
+	}
 	js, err := tServerVaults(h)
 	var vaults []struct{ ID string }
 	if err != nil || json.Unmarshal(js, &vaults) != nil || len(vaults) != 1 {
 		t.Fatalf("Vaults = %s, %v", js, err)
 	}
-	id := vaults[0].ID
-	if _, err := tServerList(h, id, ""); err == nil || !strings.HasPrefix(err.Error(), "locked:") {
-		t.Fatalf("list while locked: %v", err)
+	id := tServerOpenVault(h, vaults[0].ID, fixturePassword, t.TempDir())
+	if id <= 0 {
+		t.Fatalf("ServerOpenVault = %d", id)
 	}
-	if rc := tServerUnlock(h, id, "wrong"); rc != rcWrongPassword {
-		t.Fatalf("wrong password = %d", rc)
-	}
-	if rc := tServerUnlock(h, id, fixturePassword); rc != 0 {
-		t.Fatalf("Unlock = %d", rc)
-	}
-	if js, err := tServerList(h, id, ""); err != nil || !strings.Contains(string(js), "photo.jpg") {
-		t.Fatalf("List = %s, %v", js, err)
+	defer tClose(id)
+	lid := tOpen(filepath.Join(root, "v"), fixturePassword)
+	defer tClose(lid)
+	a, err1 := tDecryptFile(id, "photo.jpg")
+	b, err2 := tDecryptFile(lid, "photo.jpg")
+	if err1 != nil || err2 != nil || !bytes.Equal(a, b) {
+		t.Fatalf("photo.jpg differs: %v %v", err1, err2)
 	}
 
-	data := pattern(3, 200_000)
-	w := tServerUploadBegin(h, id, "", "up.bin", int64(len(data)))
-	tWrite(w, data[:50_000])
-	tWrite(w, data[50_000:])
-	if rc := tWriterClose(w); rc != 0 {
-		t.Fatalf("upload = %d", rc)
+	h2 := tServerNew(ts.URL)
+	defer tServerFree(h2)
+	if id := tServerOpenVault(h2, vaults[0].ID, fixturePassword, ""); id > 0 {
+		tClose(id)
+		t.Fatal("opened without logging in")
 	}
-	if n := tServerFileSize(h, id, "up.bin"); n != int64(len(data)) {
-		t.Fatalf("size = %d", n)
-	}
-	if b, n := tServerReadRange(h, id, "up.bin", 70_000, 4096); n != 4096 || !bytes.Equal(b, data[70_000:74_096]) {
-		t.Fatalf("ReadRange = %d", n)
-	}
-	if rc := tServerMove(h, id, "up.bin", "moved.bin"); rc != 0 {
-		t.Fatalf("Move = %d", rc)
-	}
-	if n := tServerFileSize(h, id, "up.bin"); n != rcNoConfig {
-		t.Fatalf("old name size = %d", n)
-	}
-	if rc := tServerDelete(h, id, "moved.bin"); rc != 0 {
-		t.Fatalf("Delete = %d", rc)
-	}
-	// The upload's plaintext is nowhere in the vault directory.
-	assertNoPlaintext(t, filepath.Join(root, "v"), data[:4096])
 }

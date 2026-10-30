@@ -9,7 +9,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"sync"
 	"time"
 	"unsafe"
@@ -18,7 +17,6 @@ import (
 	"github.com/adrianm/imagethat/core/drive"
 	"github.com/adrianm/imagethat/core/errcode"
 	"github.com/adrianm/imagethat/core/remote"
-	"github.com/adrianm/imagethat/core/vault"
 )
 
 // --- Google Drive and imagethat-web servers -------------------------------------
@@ -514,7 +512,7 @@ func GocryptfsServerLogin(h C.int, accessPassword *C.char) C.int {
 	return codeRC(c.Login(ctx, C.GoString(accessPassword)))
 }
 
-// GocryptfsServerVaults returns the server's vaults as JSON {id, name, unlocked}.
+// GocryptfsServerVaults returns the server's vaults as JSON {id, name}.
 //
 //export GocryptfsServerVaults
 func GocryptfsServerVaults(h C.int) C.DecryptResult {
@@ -529,24 +527,6 @@ func GocryptfsServerVaults(h C.int) C.DecryptResult {
 	return jsonResult(vs, err)
 }
 
-//export GocryptfsServerUnlock
-func GocryptfsServerUnlock(h C.int, vaultID, password *C.char) C.int {
-	c, ctx, ok := serverHandle(h)
-	if !ok {
-		return rcNoConfig
-	}
-	return codeRC(c.Unlock(ctx, C.GoString(vaultID), C.GoString(password)))
-}
-
-//export GocryptfsServerLock
-func GocryptfsServerLock(h C.int, vaultID *C.char) C.int {
-	c, ctx, ok := serverHandle(h)
-	if !ok {
-		return rcNoConfig
-	}
-	return codeRC(c.Lock(ctx, C.GoString(vaultID)))
-}
-
 //export GocryptfsServerLogout
 func GocryptfsServerLogout(h C.int) C.int {
 	c, ctx, ok := serverHandle(h)
@@ -556,124 +536,10 @@ func GocryptfsServerLogout(h C.int) C.int {
 	return codeRC(c.Logout(ctx))
 }
 
-// GocryptfsServerList returns a decrypted directory as JSON
-// {name, isDir, size, mediaType} entries.
-//
-//export GocryptfsServerList
-func GocryptfsServerList(h C.int, vaultID, dir *C.char) C.DecryptResult {
-	c, ctx, ok := serverHandle(h)
-	if !ok {
-		return errResult(errBadHandle)
-	}
-	entries, err := c.List(ctx, C.GoString(vaultID), C.GoString(dir))
-	if entries == nil {
-		entries = []vault.Entry{}
-	}
-	return jsonResult(entries, err)
-}
-
-// GocryptfsServerFileSize is a file's decrypted size, or a negative code.
-//
-//export GocryptfsServerFileSize
-func GocryptfsServerFileSize(h C.int, vaultID, path *C.char) C.int64_t {
-	c, ctx, ok := serverHandle(h)
-	if !ok {
-		return rcNoConfig
-	}
-	n, err := c.FileSize(ctx, C.GoString(vaultID), C.GoString(path))
-	if err != nil {
-		return C.int64_t(codeRC(err))
-	}
-	return C.int64_t(n)
-}
-
-// GocryptfsServerReadRange reads up to length decrypted bytes at offset into
-// outBuf and returns how many, or a negative code.
-//
-//export GocryptfsServerReadRange
-func GocryptfsServerReadRange(h C.int, vaultID, path *C.char, offset C.int64_t, length C.int32_t, outBuf unsafe.Pointer) C.int32_t {
-	c, ctx, ok := serverHandle(h)
-	if !ok || length < 0 || offset < 0 {
-		return rcNoConfig
-	}
-	if length == 0 {
-		return 0
-	}
-	rc, _, err := c.Open(ctx, C.GoString(vaultID), C.GoString(path), int64(offset), int64(length))
-	if err != nil {
-		return C.int32_t(codeRC(err))
-	}
-	defer rc.Close()
-	buf := unsafe.Slice((*byte)(outBuf), int(length))
-	n, err := io.ReadFull(rc, buf)
-	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-		return rcBackend
-	}
-	return C.int32_t(n)
-}
-
-// GocryptfsServerThumbnail is the server's JPEG preview; size 0 when it has
-// none.
-//
-//export GocryptfsServerThumbnail
-func GocryptfsServerThumbnail(h C.int, vaultID, path *C.char, size C.int) C.DecryptResult {
-	c, ctx, ok := serverHandle(h)
-	if !ok {
-		return errResult(errBadHandle)
-	}
-	b, err := c.Thumbnail(ctx, C.GoString(vaultID), C.GoString(path), int(size))
-	if err != nil {
-		return errResult(err)
-	}
-	return toCResult(b)
-}
-
-// GocryptfsServerUploadBegin starts streaming dir/name to the server and
-// returns a writer ID for GocryptfsWriterWrite/Close/Abort. size is the byte
-// count or -1.
-//
-//export GocryptfsServerUploadBegin
-func GocryptfsServerUploadBegin(h C.int, vaultID, dir, name *C.char, size C.int64_t) C.int {
-	c, ctx, ok := serverHandle(h)
-	if !ok {
-		return rcNoConfig
-	}
-	id, d, n := C.GoString(vaultID), C.GoString(dir), C.GoString(name)
-	return newWriter(func(r io.Reader) error {
-		return c.Upload(ctx, id, d, n, r, int64(size))
-	}, nil)
-}
-
-//export GocryptfsServerMkdir
-func GocryptfsServerMkdir(h C.int, vaultID, path *C.char) C.int {
-	c, ctx, ok := serverHandle(h)
-	if !ok {
-		return rcNoConfig
-	}
-	return codeRC(c.Mkdir(ctx, C.GoString(vaultID), C.GoString(path)))
-}
-
-//export GocryptfsServerMove
-func GocryptfsServerMove(h C.int, vaultID, from, to *C.char) C.int {
-	c, ctx, ok := serverHandle(h)
-	if !ok {
-		return rcNoConfig
-	}
-	return codeRC(c.Move(ctx, C.GoString(vaultID), C.GoString(from), C.GoString(to)))
-}
-
-//export GocryptfsServerDelete
-func GocryptfsServerDelete(h C.int, vaultID, path *C.char) C.int {
-	c, ctx, ok := serverHandle(h)
-	if !ok {
-		return rcNoConfig
-	}
-	return codeRC(c.Delete(ctx, C.GoString(vaultID), C.GoString(path)))
-}
-
 // GocryptfsServerOpenVault opens a vault over the server's ciphertext
-// endpoints with this connection (after GocryptfsServerLogin on a
-// client-decrypt server) and decrypts here. cacheDir, when not "", keeps
+// endpoints with this connection, after GocryptfsServerLogin, and decrypts
+// here; the vault password never leaves this process. Without a login it
+// fails (-5) rather than unlocking on the server. cacheDir, when not "", keeps
 // files passed to GocryptfsCacheFile. Returns a read-only session ID.
 //
 //export GocryptfsServerOpenVault
@@ -681,6 +547,10 @@ func GocryptfsServerOpenVault(h C.int, vaultID, password, cacheDir *C.char) C.in
 	c, ctx, ok := serverHandle(h)
 	if !ok {
 		return rcNoConfig
+	}
+	if !c.LoggedIn() {
+		// Never fall back to unlocking on the server: that sends it the password.
+		return codeRC(remote.ErrNotClientDecrypt)
 	}
 	id, pw, dir := C.GoString(vaultID), C.GoString(password), C.GoString(cacheDir)
 	if dir != "" {

@@ -47,7 +47,7 @@ func Code(err error) string {
 		return NoConfig
 	case errors.Is(err, vault.ErrNotFound), errors.Is(err, remote.ErrNotFound), errors.Is(err, fs.ErrNotExist):
 		return NotFound
-	case errors.Is(err, vault.ErrExists), errors.Is(err, remote.ErrExists), errors.Is(err, fs.ErrExist):
+	case errors.Is(err, vault.ErrExists), errors.Is(err, fs.ErrExist):
 		return Exists
 	case errors.Is(err, vault.ErrInvalidPath):
 		return InvalidPath
@@ -57,7 +57,7 @@ func Code(err error) string {
 		return Locked
 	case errors.Is(err, vault.ErrReadOnlyBackend):
 		return ReadOnly
-	case errors.Is(err, remote.ErrForbidden), errors.Is(err, vault.ErrPermission), errors.Is(err, fs.ErrPermission):
+	case errors.Is(err, vault.ErrPermission), errors.Is(err, fs.ErrPermission):
 		return Forbidden
 	case errors.Is(err, context.Canceled), errors.Is(err, drive.ErrCancelled):
 		return Cancelled
