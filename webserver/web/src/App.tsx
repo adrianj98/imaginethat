@@ -3,6 +3,9 @@ import * as api from './api'
 import type { Vault } from './api'
 import VaultList from './components/VaultList'
 import Browser from './components/Browser'
+import Sidebar from './components/Sidebar'
+import UnlockCard from './components/UnlockCard'
+import Icon from './components/Icon'
 import { clearVideoThumbs } from './videoThumbs'
 
 // The URL hash is the single source of truth for where the user is:
@@ -30,10 +33,25 @@ function hashFor(vaultId: string | null, path: string): string {
   return `#/v/${vaultId}${suffix}`
 }
 
+const SIDEBAR_KEY = 'imagethat.sidebar'
+
+function initialSidebar(): boolean {
+  try {
+    const saved = localStorage.getItem(SIDEBAR_KEY)
+    if (saved !== null) return saved === '1'
+  } catch {
+    // Storage blocked (private window): fall through to the default.
+  }
+  return window.matchMedia('(min-width: 801px)').matches
+}
+
 export default function App() {
   const [vaults, setVaults] = useState<Vault[] | null>(null)
   const [route, setRoute] = useState<Route>(parseHash)
   const [error, setError] = useState<string | null>(null)
+  const [sidebar, setSidebar] = useState(initialSidebar)
+  // The vault whose unlock card is showing.
+  const [unlocking, setUnlocking] = useState<Vault | null>(null)
 
   useEffect(() => {
     const onHashChange = () => setRoute(parseHash())
@@ -63,66 +81,101 @@ export default function App() {
     void refresh()
   }, [refresh])
 
+  const toggleSidebar = useCallback(() => {
+    setSidebar((open) => {
+      try {
+        localStorage.setItem(SIDEBAR_KEY, open ? '0' : '1')
+      } catch {
+        // Not remembered; harmless.
+      }
+      return !open
+    })
+  }, [])
+
   const handleLock = useCallback(
     async (id: string) => {
       await api.lockVault(id)
       // Captured video frames derive from vault content; drop them with the
       // vault, mirroring the server's per-vault thumbnail LRU dying on lock.
       clearVideoThumbs()
-      navigate(null)
+      if (route.vaultId === id) navigate(null)
       await refresh()
     },
-    [navigate, refresh],
+    [navigate, refresh, route.vaultId],
+  )
+
+  const select = useCallback(
+    (v: Vault) => {
+      if (v.unlocked) navigate(v.id)
+      else setUnlocking(v)
+    },
+    [navigate],
   )
 
   // The route may name a vault that is locked or gone (deep link, expired
   // session): show the vault list then, and keep the hash so unlocking the
   // vault drops the user right back where the link pointed.
   const active = vaults?.find((v) => v.id === route.vaultId && v.unlocked) ?? null
+  const linkedLocked = vaults?.find((v) => v.id === route.vaultId && !v.unlocked) ?? null
+
+  // A deep link to a locked vault asks for its password straight away.
+  const linkedLockedId = linkedLocked?.id
+  useEffect(() => {
+    const v = vaults?.find((x) => x.id === linkedLockedId)
+    if (v) setUnlocking(v)
+    // Only when the link starts pointing at a different locked vault, so
+    // Cancel is not undone by the next vault-list refresh.
+  }, [linkedLockedId]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="app">
-      <header className="topbar">
-        <button
-          className="brand"
-          onClick={() => navigate(null)}
-          title="Back to vaults"
-          type="button"
-        >
-          ImageThat
-        </button>
-        {active && (
-          <>
-            <span className="topbar-vault">{active.name}</span>
-            <button className="btn" type="button" onClick={() => void handleLock(active.id)}>
-              Lock
-            </button>
-          </>
-        )}
-      </header>
+      {error && (
+        <div className="banner glass toast">
+          <Icon name="warning" />
+          {error}
+        </div>
+      )}
 
-      {error && <div className="banner error">{error}</div>}
+      {active && vaults ? (
+        <>
+          {sidebar && (
+            <Sidebar
+              vaults={vaults}
+              activeId={active.id}
+              onSelect={select}
+              onHome={() => navigate(null)}
+              onLock={(id) => void handleLock(id)}
+            />
+          )}
+          <div className={`content${sidebar ? ' with-sidebar' : ''}`}>
+            <Browser
+              vault={active}
+              path={route.path}
+              sidebarOpen={sidebar}
+              onToggleSidebar={toggleSidebar}
+              onNavigate={(path) => navigate(active.id, path)}
+              onLeaveVault={() => navigate(null)}
+              onLock={() => void handleLock(active.id)}
+              onSessionLost={() => void refresh()}
+            />
+          </div>
+        </>
+      ) : (
+        <VaultList vaults={vaults} onSelect={select} onLock={(id) => void handleLock(id)} />
+      )}
 
-      <main>
-        {active ? (
-          <Browser
-            vault={active}
-            path={route.path}
-            onNavigate={(path) => navigate(active.id, path)}
-            onSessionLost={() => void refresh()}
-          />
-        ) : (
-          <VaultList
-            vaults={vaults}
-            onOpened={(id) => {
-              // Unlocking the vault a deep link points at keeps its path.
-              navigate(id, route.vaultId === id ? route.path : '')
-              void refresh()
-            }}
-            onRefresh={refresh}
-          />
-        )}
-      </main>
+      {unlocking && (
+        <UnlockCard
+          vault={unlocking}
+          onCancel={() => setUnlocking(null)}
+          onUnlocked={(id) => {
+            setUnlocking(null)
+            // Unlocking the vault a deep link points at keeps its path.
+            navigate(id, route.vaultId === id ? route.path : '')
+            void refresh()
+          }}
+        />
+      )}
     </div>
   )
 }

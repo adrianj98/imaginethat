@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import * as api from '../api'
 import type { Entry } from '../api'
 import { videoThumb } from '../videoThumbs'
+import Icon from './Icon'
 
 interface Props {
   vaultId: string
@@ -76,9 +77,12 @@ export default function Thumbnail({ vaultId, dir, entry }: Props) {
   return (
     <div className="thumb" ref={ref}>
       {entry.isDir ? (
-        <span className="thumb-glyph" aria-hidden="true">
-          📁
-        </span>
+        <>
+          <span className="folder-glyph">
+            <Icon name="folder" size={44} />
+          </span>
+          <span className="folder-name">{entry.name}</span>
+        </>
       ) : showImage ? (
         <img
           src={api.thumbUrl(vaultId, path)}
@@ -95,9 +99,10 @@ export default function Thumbnail({ vaultId, dir, entry }: Props) {
       ) : videoSrc ? (
         <img src={videoSrc} alt="" decoding="async" />
       ) : (
-        <span className="thumb-glyph" aria-hidden="true">
-          {entry.mediaType === 'video' ? '🎞️' : entry.mediaType === 'image' ? '🖼️' : '📄'}
-        </span>
+        <Icon
+          name={entry.mediaType === 'video' ? 'film' : entry.mediaType === 'image' ? 'photo' : 'doc'}
+          size={32}
+        />
       )}
     </div>
   )
