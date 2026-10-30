@@ -8,6 +8,7 @@ import ai.alertd.imagethat.local.LocalError
 import ai.alertd.imagethat.remote.RemoteError
 import ai.alertd.imagethat.remote.RemoteVault
 import ai.alertd.imagethat.remote.ServerMode
+import ai.alertd.imagethat.remote.probeCertificate
 import ai.alertd.imagethat.ui.components.AppIcons
 import ai.alertd.imagethat.ui.components.Chevron
 import ai.alertd.imagethat.ui.components.ErrorText
@@ -82,9 +83,10 @@ private sealed interface Load {
  * The server's vaults with their lock state. Tap unlocks with the saved password when there is
  * one (no prompt), otherwise asks once and saves it; long-press offers to forget it.
  *
- * A client-decrypt server first wants its access password (saved like a vault password). Its
- * vaults are then opened on the phone by the Go engine ([LocalVaults.openRemote]) and browsed as
- * a [LocalSource]: the vault password never goes to the server, and they are read-only.
+ * A client-decrypt server is spoken to through the Go engine ([RemoteServer.client]) and first
+ * wants its access password (saved like a vault password). Its vaults are then opened on the phone
+ * ([LocalVaults.openRemote]) and browsed as a [LocalSource]: the vault password never goes to the
+ * server, they are read-only, and single files can be kept on the phone (Keep on phone).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -110,16 +112,16 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
      */
     suspend fun clientVaults(server: RemoteServer): List<RemoteVault> {
         val vaults = try {
-            server.api.vaults()
+            server.client.vaults()
         } catch (e: RemoteError.Locked) {
             val access = server.accessCopy() ?: session.savedPassword(accessId) ?: throw e
             try {
-                server.api.login(access)
+                server.client.login(access)
                 server.setAccess(access)
             } finally {
                 access.fill('\u0000')
             }
-            server.api.vaults()
+            server.client.vaults()
         }
         return vaults.map { it.copy(unlocked = session.source(remoteSourceId(serverKey, it.id)) != null) }
     }
@@ -171,7 +173,7 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
         error = null
         scope.launch(Dispatchers.Main) {
             try {
-                server!!.api.login(pw)
+                server!!.client.login(pw)
                 server.setAccess(pw)
                 withContext(Dispatchers.IO) { runCatching { session.savePassword(accessId, pw) } }
                 loggingIn = false
@@ -193,15 +195,25 @@ fun RemoteVaultsScreen(session: Session, serverKey: String, onBack: () -> Unit, 
         }
     }
 
-    /** Client-decrypt: opens the vault on this phone and registers it as a [LocalSource]. */
+    /**
+     * Client-decrypt: opens the vault on this phone over the logged-in Go client and registers it as
+     * a [LocalSource] that can keep files on the phone.
+     */
     suspend fun unlockHere(server: RemoteServer, v: RemoteVault, pw: CharArray) {
-        val access = server.accessCopy() ?: throw LocalError.WrongAccessPassword("not logged in")
+        server.accessCopy()?.fill('\u0000') ?: throw LocalError.WrongAccessPassword("not logged in")
         val vault = try {
-            withContext(Dispatchers.IO) { session.local.openRemote(server.url, v.id, server.api.pin, pw.copyOf(), access) }
+            withContext(Dispatchers.IO) { session.local.openRemote(server.client.server, v.id, pw.copyOf(), "${server.url}#${v.id}") }
         } catch (e: LocalError.WrongPassword) {
             throw RemoteError.WrongPassword
+        } catch (e: LocalError.WrongAccessPassword) {
+            throw e
+        } catch (e: LocalError.CertMismatch) {
+            throw RemoteError.CertMismatch(server.url.toHttpUrlOrNull()?.let { probeCertificate(it) }.orEmpty())
+        } catch (e: LocalError.Locked) {
+            // The server forgot the session and logging in again failed: log in, then tap again.
+            throw LocalError.WrongAccessPassword(e.message ?: "not logged in", e)
         }
-        session.registerSource(remoteSourceId(serverKey, v.id), v.name, LocalSource(MobileVaultApi(vault))) {
+        session.registerSource(remoteSourceId(serverKey, v.id), v.name, LocalSource(MobileVaultApi(vault), cachesFiles = true)) {
             session.local.close(vault)
         }
     }

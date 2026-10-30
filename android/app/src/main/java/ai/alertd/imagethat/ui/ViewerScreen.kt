@@ -2,6 +2,7 @@ package ai.alertd.imagethat.ui
 
 import ai.alertd.imagethat.R
 import ai.alertd.imagethat.data.Item
+import ai.alertd.imagethat.data.LocalSource
 import ai.alertd.imagethat.data.MediaKind
 import ai.alertd.imagethat.data.RemoteSource
 import ai.alertd.imagethat.data.SourceError
@@ -33,6 +34,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -54,6 +56,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,6 +72,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -92,7 +97,9 @@ import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.IOException
@@ -181,7 +188,7 @@ fun ViewerScreen(
             }
         }
         if (chrome && cur != null) {
-            ViewerPanel(cur, dims[cur.path], actions, onInfo = { info = cur })
+            ViewerPanel(cur, dims[cur.path], actions, onInfo = { info = cur }, keep = (source as? LocalSource)?.takeIf { it.cachesFiles })
         }
     }
 
@@ -189,7 +196,7 @@ fun ViewerScreen(
 }
 
 @Composable
-private fun ViewerPanel(item: Item, size: IntSize?, actions: ViewerActions?, onInfo: () -> Unit) {
+private fun ViewerPanel(item: Item, size: IntSize?, actions: ViewerActions?, onInfo: () -> Unit, keep: LocalSource?) {
     Column(
         Modifier.fillMaxWidth().background(Palette.Background).navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -207,6 +214,7 @@ private fun ViewerPanel(item: Item, size: IntSize?, actions: ViewerActions?, onI
             if (actions?.canSaveOffline == true) {
                 ActionTile("Save offline", AppIcons.SaveOffline, { actions.onSaveOffline(item) }, Modifier.testTag("viewer-save-offline"), height = 60.dp, background = tile)
             }
+            if (keep != null) KeepOnPhoneTile(keep, item, tile)
             if (actions != null) ActionTile("Move", AppIcons.MoveTo, { actions.onMove(item) }, Modifier.testTag("viewer-move"), height = 60.dp, background = tile)
             ActionTile("Info", AppIcons.Info, onInfo, Modifier.testTag("viewer-info"), height = 60.dp, background = tile)
             if (actions != null) {
@@ -214,6 +222,76 @@ private fun ViewerPanel(item: Item, size: IntSize?, actions: ViewerActions?, onI
             }
         }
     }
+}
+
+private sealed interface Keep {
+    object Checking : Keep
+    object Remote : Keep
+    /** Being fetched; [fraction] is null until the size is known. */
+    class Fetching(val fraction: Float?) : Keep
+    object OnPhone : Keep
+}
+
+/**
+ * Keeps the file of a vault that lives elsewhere (client-decrypt server, Google Drive) on the
+ * phone, as ciphertext the engine reads without the network. Tapping again cancels a fetch in
+ * progress, or drops the phone's copy. A fetch stops when the viewer closes.
+ */
+@Composable
+private fun RowScope.KeepOnPhoneTile(source: LocalSource, item: Item, background: Color) {
+    val scope = rememberCoroutineScope()
+    var state by remember(item.path) { mutableStateOf<Keep>(Keep.Checking) }
+    var fetch by remember(item.path) { mutableStateOf<Job?>(null) }
+    var error by remember(item.path) { mutableStateOf<String?>(null) }
+    LaunchedEffect(item.path) {
+        state = if (runCatching { source.isCached(item.path) }.getOrDefault(false)) Keep.OnPhone else Keep.Remote
+    }
+    fun onClick() {
+        error = null
+        when (state) {
+            Keep.Checking -> Unit
+            is Keep.Fetching -> fetch?.cancel()
+            Keep.Remote -> {
+                state = Keep.Fetching(null)
+                fetch = scope.launch {
+                    state = try {
+                        source.cacheFile(item.path) { done, total ->
+                            state = Keep.Fetching(if (total > 0) (done.toFloat() / total).coerceIn(0f, 1f) else null)
+                        }
+                        Keep.OnPhone
+                    } catch (e: CancellationException) {
+                        state = Keep.Remote
+                        throw e
+                    } catch (e: Exception) {
+                        error = e.message ?: "Could not keep the file"
+                        Keep.Remote
+                    }
+                }
+            }
+            Keep.OnPhone -> scope.launch {
+                state = try {
+                    source.uncache(item.path)
+                    Keep.Remote
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    error = e.message ?: "Could not remove the copy"
+                    Keep.OnPhone
+                }
+            }
+        }
+    }
+    val label = when (val st = state) {
+        Keep.Checking, Keep.Remote -> if (error != null) "Retry keep" else "Keep on phone"
+        is Keep.Fetching -> st.fraction?.let { "Cancel ${(it * 100).toInt()}%" } ?: "Cancel"
+        Keep.OnPhone -> "On phone"
+    }
+    ActionTile(
+        label, if (state == Keep.OnPhone) AppIcons.Check else AppIcons.SaveOffline, { onClick() },
+        Modifier.testTag("viewer-keep").semantics { error?.let { stateDescription = it } },
+        tone = if (state == Keep.OnPhone) ActionTone.Accent else ActionTone.Default,
+        enabled = state != Keep.Checking, height = 60.dp, background = background,
+    )
 }
 
 /** "4032 × 3024 · 3.8 MB", leaving out what is not known yet. */

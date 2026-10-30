@@ -1,5 +1,6 @@
 package ai.alertd.imagethat.data
 
+import ai.alertd.imagethat.local.LocalError
 import ai.alertd.imagethat.remote.ApiClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -9,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
@@ -59,6 +61,58 @@ class FakeLocalVault : LocalVaultApi {
     }
     override fun move(from: String, to: String) { files[to] = files.remove(from)!! }
     override fun remove(path: String) { files.remove(path) }
+
+    // ---- the engine's copies, caches and previews ----
+
+    /** Copies out of this vault fail with these (as the Go binding's coded exceptions would). */
+    var copyFailures = emptyMap<String, Exception>()
+    /** Copies out of this vault block until their job is cancelled. */
+    var blockCopies = false
+    val copied = ArrayList<String>()
+    val cached = HashSet<String>()
+    /** Previews the engine has (decoded or stored); others come back empty. */
+    val engineThumbs = HashMap<String, ByteArray>()
+    val stored = ArrayList<String>()
+
+    override val origin: CopyOrigin = FakeOrigin(this)
+    override fun newJob(): CopyJob = FakeJob()
+    override fun copyIn(job: CopyJob, dest: String, from: CopyOrigin, srcPath: String) {
+        val src = (from as FakeOrigin).vault
+        val j = job as FakeJob
+        if (src.blockCopies) {
+            while (!j.cancelled) Thread.sleep(5)
+            throw Exception("cancelled: context canceled")
+        }
+        src.copyFailures[srcPath]?.let { throw it }
+        val data = src.files[srcPath] ?: throw IllegalStateException("not_found: $srcPath")
+        if (files.containsKey(dest)) throw IllegalStateException("exists: $dest")
+        j.total = data.size.toLong()
+        j.done = data.size.toLong()
+        files[dest] = data.copyOf()
+        src.copied += srcPath
+    }
+    override fun thumbnail(path: String, px: Int): ByteArray = engineThumbs[path] ?: ByteArray(0)
+    override fun storeThumbnail(path: String, px: Int, jpeg: ByteArray) {
+        engineThumbs[path] = jpeg
+        stored += path
+    }
+    override fun cacheFile(job: CopyJob, path: String) {
+        size(path)
+        cached += path
+    }
+    override fun isCached(path: String) = path in cached
+    override fun uncache(path: String) { cached -= path }
+}
+
+class FakeOrigin(val vault: FakeLocalVault) : CopyOrigin
+
+class FakeJob : CopyJob {
+    @Volatile var done = 0L
+    @Volatile var total = 0L
+    @Volatile var cancelled = false
+    override fun done() = done
+    override fun total() = total
+    override fun cancel() { cancelled = true }
 }
 
 class FakeSource(private val tree: Map<String, List<Item>>, private val data: Map<String, ByteArray>) : VaultSource {
@@ -444,5 +498,109 @@ class SourcesTest {
         assertEquals(1, vault.aborted)
         assertTrue(vault.files.isEmpty())
         assertTrue("copy ran on after cancel: ${input.reads}", input.reads <= 3)
+    }
+
+    // ---- the Go engine's copies (Save offline from a vault decrypted on the phone) ----
+
+    private fun goSource(vararg files: Pair<String, ByteArray>) = FakeLocalVault().also { v -> files.forEach { v.files[it.first] = it.second } }
+
+    @Test fun saveOfflineFromAGoVaultUsesTheEngineCopy() = runTest {
+        val src = goSource("/Trip/a.jpg" to ByteArray(300) { 1 }, "/b.mp4" to byteArrayOf(2, 2))
+        val tree = mapOf("/Trip" to listOf(item("/Trip/a.jpg", size = 300)))
+        val from = object : VaultSource by LocalSource(src) {
+            override suspend fun list(path: String) = tree[path] ?: emptyList()
+            override suspend fun open(path: String, range: LongRange?): InputStream = throw AssertionError("streamed $path")
+        }
+        val dest = FakeLocalVault()
+        val report = saveOffline(from, listOf(item("/Trip", true), item("/b.mp4", size = 2)), LocalSource(dest), "s/v")
+        assertTrue(report.failed.toString(), report.failed.isEmpty())
+        assertEquals(listOf("s/v/Trip/a.jpg", "s/v/b.mp4"), report.saved)
+        assertEquals(listOf("/Trip/a.jpg", "/b.mp4"), src.copied)
+        assertArrayEquals(ByteArray(300) { 1 }, dest.files["/s/v/Trip/a.jpg"])
+        assertArrayEquals(byteArrayOf(2, 2), dest.files["/s/v/b.mp4"])
+    }
+
+    @Test fun engineCopyFailureFailsOnlyThatFileAndSkipsWhatIsThere() = runTest {
+        val src = goSource("/a" to byteArrayOf(1), "/b" to byteArrayOf(2), "/c" to byteArrayOf(3))
+        src.copyFailures = mapOf("/b" to Exception("remote: read: connection reset by peer"))
+        val dest = FakeLocalVault().also { it.files["/s/v/a"] = byteArrayOf(1) }
+        val report = saveOffline(LocalSource(src), listOf(item("/a", size = 1), item("/b", size = 1), item("/c", size = 1)), LocalSource(dest), "s/v")
+        assertEquals(listOf("s/v/a"), report.skipped)
+        assertEquals(listOf("s/v/c"), report.saved)
+        assertEquals(setOf("s/v/b"), report.failed.keys)
+        assertTrue(report.failed.getValue("s/v/b").contains("connection reset"))
+        assertFalse(dest.files.containsKey("/s/v/b"))
+    }
+
+    @Test fun engineCopyOfALockedSourceInterruptsTheSave() = runTest {
+        val src = goSource("/a" to byteArrayOf(1), "/b" to byteArrayOf(2))
+        src.copyFailures = mapOf("/b" to Exception("closed: vault: session is closed"))
+        try {
+            saveOffline(LocalSource(src), listOf(item("/a", size = 1), item("/b", size = 1)), LocalSource(FakeLocalVault()), "s/v")
+            fail()
+        } catch (e: SaveInterrupted) {
+            assertEquals(SourceError.Locked, e.reason)
+            assertEquals(listOf("s/v/a"), e.partial.saved)
+        }
+        assertTrue(LocalError.from(Exception("locked: remote: vault is locked")) is LocalError.Locked)
+    }
+
+    @Test fun engineCopyReportsProgress() = runBlocking {
+        val src = goSource("/a" to ByteArray(10))
+        val seen = ArrayList<SaveProgress>()
+        saveOffline(LocalSource(src), listOf(item("/a", size = 10)), LocalSource(FakeLocalVault()), "s/v") { synchronized(seen) { seen += it } }
+        assertEquals(SaveProgress("a", 0, 10), seen.first())
+        assertTrue(seen.all { it.name == "a" })
+    }
+
+    @Test fun cancellingAnEngineCopyCancelsItsJob() = runBlocking {
+        val src = goSource("/a" to ByteArray(10)).also { it.blockCopies = true }
+        val dest = FakeLocalVault()
+        var job: FakeJob? = null
+        val counting = object : LocalVaultApi by dest {
+            override fun newJob(): CopyJob = FakeJob().also { job = it }
+        }
+        val run = launch(Dispatchers.Default) { LocalSource(counting).copyFrom(src.origin, "/a", "/a") }
+        while (job == null) kotlinx.coroutines.delay(5)
+        run.cancel()
+        withTimeout(5_000) { run.join() }
+        assertTrue(job!!.cancelled)
+        assertTrue(dest.files.isEmpty())
+    }
+
+    // ---- previews through the engine ----
+
+    @Test fun engineThumbnailIsUsedWithoutDecodingOnThePhone() = runTest {
+        val vault = FakeLocalVault().also { it.files["/a.jpg"] = ByteArray(10); it.engineThumbs["/a.jpg"] = byteArrayOf(9) }
+        val src = LocalSource(vault, { _, _ -> throw AssertionError("decoded on the phone") })
+        assertArrayEquals(byteArrayOf(9), src.thumbnail("/a.jpg", 64))
+    }
+
+    @Test fun imageTheEngineCannotDecodeIsDecodedHereAndStored() = runTest {
+        val vault = FakeLocalVault().also { it.files["/a.heic"] = ByteArray(10) }
+        val src = LocalSource(vault, { _, _ -> byteArrayOf(7) })
+        assertArrayEquals(byteArrayOf(7), src.thumbnail("/a.heic", 64))
+        assertEquals(listOf("/a.heic"), vault.stored)
+        // Next time the engine's cache answers.
+        assertArrayEquals(byteArrayOf(7), LocalSource(vault, { _, _ -> throw AssertionError("decoded twice") }).thumbnail("/a.heic", 64))
+    }
+
+    @Test fun videoAndOtherFilesAreNotDecodedHere() = runTest {
+        val vault = FakeLocalVault().also { it.files["/v.mp4"] = ByteArray(10); it.files["/n.txt"] = ByteArray(1) }
+        val src = LocalSource(vault, { _, _ -> throw AssertionError("decoded on the phone") })
+        assertEquals(0, src.thumbnail("/v.mp4", 64).size)
+        assertEquals(0, src.thumbnail("/n.txt", 64).size)
+        assertTrue(vault.stored.isEmpty())
+    }
+
+    @Test fun keepOnPhoneRoundTrip() = runTest {
+        val vault = FakeLocalVault().also { it.files["/a.jpg"] = ByteArray(3) }
+        val src = LocalSource(vault, cachesFiles = true)
+        assertFalse(src.isCached("/a.jpg"))
+        src.cacheFile("/a.jpg")
+        assertTrue(src.isCached("/a.jpg"))
+        src.uncache("/a.jpg")
+        assertFalse(src.isCached("/a.jpg"))
+        try { src.cacheFile("/missing"); fail() } catch (e: SourceError) { assertEquals(SourceError.NotFound, e) }
     }
 }

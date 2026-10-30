@@ -105,8 +105,11 @@ private const val THUMB_PX = 256
 /** Where saved-offline copies go: "<server>/<vault>" (a phone folder files under "This phone"). */
 private fun savePrefix(session: Session, sourceId: String): String {
     val vault = session.label(sourceId) ?: sourceId
-    val server = if (sourceId.startsWith("folder-")) "This phone"
-    else session.server(sourceId.substringBefore(':'))?.label ?: "Server"
+    val server = when {
+        sourceId.startsWith("folder-") -> "This phone"
+        sourceId.startsWith(Session.DRIVE_SOURCE_PREFIX) -> DRIVE_PLACE
+        else -> session.server(sourceId.substringBefore(':'))?.label ?: "Server"
+    }
     return offlinePrefix(server, vault)
 }
 
@@ -294,7 +297,13 @@ private fun GalleryLayout(
                     CircularProgressIndicator(Modifier.size(14.dp), color = Palette.Accent, strokeWidth = 2.dp)
                     Text("$label…", color = Palette.TextSecondary, style = MaterialTheme.typography.bodySmall)
                 }
-                LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(CircleShape), color = Palette.Accent, trackColor = Palette.Raised)
+                val bar = Modifier.fillMaxWidth().padding(horizontal = 16.dp).clip(CircleShape)
+                val fraction = state.progress
+                if (fraction != null) {
+                    LinearProgressIndicator({ fraction }, bar.testTag("busy-progress"), color = Palette.Accent, trackColor = Palette.Raised)
+                } else {
+                    LinearProgressIndicator(bar, color = Palette.Accent, trackColor = Palette.Raised)
+                }
             }
             state.error?.let {
                 Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 8.dp, top = 4.dp), verticalAlignment = Alignment.CenterVertically) {

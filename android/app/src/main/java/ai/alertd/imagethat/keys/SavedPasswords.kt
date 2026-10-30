@@ -21,6 +21,14 @@ object PasswordIds {
     fun serverPrefix(serverKey: String) = "server:$serverKey:"
     /** A client-decrypt server's access password; under [serverPrefix] so removing the server forgets it. */
     fun serverAccess(serverKey: String) = "server:$serverKey:#access"
+    /** A vault in Google Drive, by its root folder id. */
+    fun drive(rootId: String) = "drive:$rootId"
+    /** Everything Drive keeps here: the account's secrets and its vaults' passwords. */
+    const val DRIVE_PREFIX = "drive:"
+    /** The Google OAuth client secret the user entered. */
+    const val DRIVE_SECRET = "drive:#secret"
+    /** The Google refresh token from signing in. */
+    const val DRIVE_TOKEN = "drive:#token"
 }
 
 /**

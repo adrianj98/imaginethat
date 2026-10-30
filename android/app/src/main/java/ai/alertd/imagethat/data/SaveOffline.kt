@@ -21,13 +21,25 @@ class SaveInterrupted(val reason: SourceError, val partial: SaveReport) : Except
 fun offlinePrefix(serverLabel: String, vaultName: String) =
     "${sanitizeSegment(serverLabel)}/${sanitizeSegment(vaultName)}"
 
+/** Where a save is: the file being copied and its bytes done of total (0 until known). */
+data class SaveProgress(val name: String, val done: Long, val total: Long)
+
 /**
- * Copies [items] (folders recursively) from [from] into [into] under [prefix],
- * streaming each file in [CHUNK]-byte pieces. A file that fails part-way is
- * aborted by [LocalSource.upload] so no truncated ciphertext remains; other
- * files carry on.
+ * Copies [items] (folders recursively) from [from] into [into] under [prefix]. A source the Go
+ * engine decrypts ([VaultSource.copyOrigin]: local, folder, client-decrypt server, Drive) is copied
+ * with the engine's fault-tolerant copy, one job per file: reads that fail part-way are retried and
+ * resumed. A server-decrypt vault is streamed in [CHUNK]-byte pieces. Either way a file that fails
+ * leaves no truncated ciphertext behind, and the other files carry on. [onProgress] follows the
+ * file being copied.
  */
-suspend fun saveOffline(from: VaultSource, items: List<Item>, into: LocalSource, prefix: String): SaveReport {
+suspend fun saveOffline(
+    from: VaultSource,
+    items: List<Item>,
+    into: LocalSource,
+    prefix: String,
+    onProgress: ((SaveProgress) -> Unit)? = null,
+): SaveReport {
+    val origin = from.copyOrigin
     val saved = ArrayList<String>()
     val failed = LinkedHashMap<String, String>()
     val skipped = ArrayList<String>()
@@ -65,7 +77,12 @@ suspend fun saveOffline(from: VaultSource, items: List<Item>, into: LocalSource,
             } else if (existingSize(into, dest) == item.size) {
                 skipped += key
             } else {
-                from.open(item.path).use { into.upload(destDir, seg, it, item.size) }
+                onProgress?.invoke(SaveProgress(seg, 0, item.size))
+                if (origin != null) {
+                    into.copyFrom(origin, item.path, dest, onProgress?.let { report -> { done: Long, total: Long -> report(SaveProgress(seg, done, total)) } })
+                } else {
+                    from.open(item.path).use { into.upload(destDir, seg, it, item.size) }
+                }
                 saved += key
             }
         } catch (e: CancellationException) {

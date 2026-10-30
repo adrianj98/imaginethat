@@ -82,4 +82,57 @@ class ClientDecryptServerTest {
             vault.close()
         }
     }
+
+    /** The app's path: [ClientDecryptServer] logs in, LocalVaults opens over the same Go client with a file cache. */
+    @Test fun appPathLogsInOpensAndKeepsAFileOnThePhone() {
+        val server = args.getString("server")
+        assumeTrue("no server argument: skipped", server != null)
+        val access = args.getString("accessPassword")!!
+        val vaultId = args.getString("vaultId")!!
+        val password = args.getString("vaultPassword") ?: "test-password-123"
+        val file = args.getString("file") ?: "photo.jpg"
+        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val dir = java.io.File(ctx.cacheDir, "cd-test-${System.nanoTime()}")
+        val local = ai.alertd.imagethat.local.LocalVaults(
+            ctx, ai.alertd.imagethat.keys.StateStore(java.io.File(dir, "state.bin"), NoCipher),
+            offlineDir = java.io.File(dir, "offline"), thumbDir = java.io.File(dir, "thumbs"),
+            fileCacheDir = java.io.File(dir, "files"), driveCacheDir = java.io.File(dir, "drive"),
+        )
+        val client = ClientDecryptServer(server!!, null)
+        try {
+            runBlocking {
+                try {
+                    client.vaults()
+                    fail("listed vaults before logging in")
+                } catch (e: RemoteError.Locked) {
+                }
+                try {
+                    client.login("wrong".toCharArray())
+                    fail("wrong access password accepted")
+                } catch (e: RemoteError.WrongAccessPassword) {
+                }
+                client.login(access.toCharArray())
+                assertTrue(client.vaults().any { it.id == vaultId })
+            }
+            val vault = local.openRemote(client.server, vaultId, password.toCharArray(), "$server#$vaultId")
+            val source = LocalSource(MobileVaultApi(vault), cachesFiles = true)
+            runBlocking {
+                assertTrue(!source.isCached("/$file"))
+                source.cacheFile("/$file")
+                assertTrue(source.isCached("/$file"))
+                assertTrue(mobile.Mobile.fileCacheSize(local.fileCacheDir.absolutePath) > 0)
+                source.uncache("/$file")
+                assertTrue(!source.isCached("/$file"))
+            }
+            runBlocking { client.logout() }
+        } finally {
+            local.closeAll()
+            dir.deleteRecursively()
+        }
+    }
+
+    private object NoCipher : ai.alertd.imagethat.keys.SecretCipher {
+        override fun encrypt(plain: ByteArray) = plain
+        override fun decrypt(blob: ByteArray) = blob
+    }
 }

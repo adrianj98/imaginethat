@@ -9,13 +9,18 @@ import android.graphics.BitmapFactory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.job
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import mobile.Mobile
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody
 import okio.BufferedSink
@@ -50,7 +55,42 @@ interface VaultSource {
     suspend fun mkdir(path: String)
     suspend fun move(from: String, to: String)
     suspend fun delete(path: String)
+
+    /**
+     * Where the Go engine reads this source's files for a fault-tolerant copy (Save offline); null
+     * for a server-decrypt vault, whose files are streamed through [open] instead.
+     */
+    val copyOrigin: CopyOrigin? get() = null
 }
+
+/**
+ * A Go engine copy or cache fetch in progress (`mobile.Job`, see [GoJob]): poll [done] and
+ * [total] and [cancel] from any thread while the blocking call runs on another.
+ */
+interface CopyJob {
+    /** Bytes of the current file copied so far. */
+    fun done(): Long
+    /** The current file's size, 0 until known. */
+    fun total(): Long
+    /** Makes the running call fail with "cancelled:" and leave nothing behind. */
+    fun cancel()
+}
+
+class GoJob(val job: mobile.Job = Mobile.newJob()) : CopyJob {
+    override fun done(): Long = job.done()
+    override fun total(): Long = job.total()
+    override fun cancel() = job.cancel()
+}
+
+/**
+ * Where a Go copy reads from ([GoVaultOrigin] in the app). The engine retries a read that fails
+ * part-way (dropped connection, Drive or server 5xx), resumes where it stopped, and commits the
+ * copy only when it arrived whole.
+ */
+interface CopyOrigin
+
+/** Files of a vault the engine decrypts on the phone: local, SAF folder, client-decrypt server or Drive. */
+class GoVaultOrigin(val vault: mobile.Vault) : CopyOrigin
 
 internal const val CHUNK = 256 * 1024
 
@@ -161,6 +201,22 @@ interface LocalVaultApi {
     fun mkdir(path: String)
     fun move(from: String, to: String)
     fun remove(path: String)
+
+    /** Where copies out of this vault read from. */
+    val origin: CopyOrigin
+    fun newJob(): CopyJob
+    /** Copies [srcPath] of [from] to [dest]. Blocks; the file appears at [dest] only when whole. */
+    fun copyIn(job: CopyJob, dest: String, from: CopyOrigin, srcPath: String)
+
+    /** The engine's cached or decoded JPEG preview; empty when it cannot decode the file (HEIC, video). */
+    fun thumbnail(path: String, px: Int): ByteArray = ByteArray(0)
+    /** Hands the engine's caches a preview rendered on the phone. */
+    fun storeThumbnail(path: String, px: Int, jpeg: ByteArray) = Unit
+
+    /** Keeps the file readable without the network (a server vault opened with a cache, or Drive). Blocks. */
+    fun cacheFile(job: CopyJob, path: String)
+    fun isCached(path: String): Boolean
+    fun uncache(path: String)
 }
 
 interface LocalWriter {
@@ -185,6 +241,50 @@ class MobileVaultApi(private val v: mobile.Vault) : LocalVaultApi {
     override fun mkdir(path: String) = v.mkdir(path)
     override fun move(from: String, to: String) = v.move(from, to)
     override fun remove(path: String) = v.remove(path)
+
+    override val origin: CopyOrigin = GoVaultOrigin(v)
+    override fun newJob(): CopyJob = GoJob()
+    override fun copyIn(job: CopyJob, dest: String, from: CopyOrigin, srcPath: String) {
+        val j = (job as GoJob).job
+        val src = (from as? GoVaultOrigin)?.vault ?: throw IllegalArgumentException("cannot copy from $from")
+        v.copyFrom(j, dest, src, srcPath)
+    }
+
+    override fun thumbnail(path: String, px: Int): ByteArray = v.thumbnail(path, px.toLong())
+    override fun storeThumbnail(path: String, px: Int, jpeg: ByteArray) = v.storeThumbnail(path, px.toLong(), jpeg)
+
+    override fun cacheFile(job: CopyJob, path: String) = v.cacheFile((job as GoJob).job, path)
+    override fun isCached(path: String): Boolean = v.isCached(path)
+    override fun uncache(path: String) = v.uncache(path)
+}
+
+/** How often a running copy or cache fetch reports its progress. */
+private const val PROGRESS_INTERVAL_MS = 250L
+
+/**
+ * Runs the blocking engine [call] for [job] on IO, reporting its progress to [onProgress] (bytes
+ * done, total) while it runs. A blocking Go call cannot be interrupted, so cancelling the calling
+ * coroutine cancels [job], which makes the engine stop and leave nothing behind.
+ */
+internal suspend fun runJob(job: CopyJob, onProgress: ((Long, Long) -> Unit)?, call: () -> Unit) = coroutineScope {
+    val poll = onProgress?.let { report ->
+        launch {
+            while (true) {
+                report(job.done(), job.total())
+                delay(PROGRESS_INTERVAL_MS)
+            }
+        }
+    }
+    // The result is caught inside so a failure after cancellation cannot replace the cancellation.
+    val running = async(Dispatchers.IO) { runCatching { local(call) } }
+    try {
+        running.await().getOrThrow()
+    } catch (e: CancellationException) {
+        job.cancel()
+        throw e
+    } finally {
+        poll?.cancel()
+    }
 }
 
 /** Decodes and downsizes in memory only. Injectable so JVM tests need no Android runtime. */
@@ -215,8 +315,13 @@ object BitmapThumbnailer : Thumbnailer {
 class LocalSource(
     private val vault: LocalVaultApi,
     private val thumbnailer: Thumbnailer = BitmapThumbnailer,
-    /** Bounds concurrent thumbnail work (whole-file read + decode); shared app-wide by default. */
+    /** Bounds concurrent thumbnail work on the phone (whole-file read + decode); shared app-wide by default. */
     private val thumbLimit: Semaphore = THUMB_LIMIT,
+    /**
+     * The vault lives elsewhere (a client-decrypt server or Google Drive) and the engine can keep
+     * chosen files on the phone ([cacheFile]) as ciphertext, readable without the network.
+     */
+    val cachesFiles: Boolean = false,
 ) : VaultSource {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -237,20 +342,29 @@ class LocalSource(
     override suspend fun size(path: String): Long = io { vault.size(path) }
 
     /**
-     * Reads the whole image into memory and decodes it, so at most [thumbLimit] permits run at once
-     * (a grid fling queues dozens; the engine calls block and cannot be cancelled once started).
-     * A request cancelled while queued or before the read never starts it.
+     * The engine's preview (its encrypted memory and sealed disk caches, or decoded by Go). For
+     * images Go cannot decode (HEIC, ...) the phone decodes it with [thumbnailer] and hands the
+     * result back to the engine's caches. That fallback reads the whole image into memory, so at
+     * most [thumbLimit] permits run at once (a grid fling queues dozens; the engine calls block and
+     * cannot be cancelled once started). A request cancelled while queued or before the read never
+     * starts it.
      */
     override suspend fun thumbnail(path: String, px: Int): ByteArray {
         val name = path.substringAfterLast('/')
-        if (mediaKindOf(name, false, "") != MediaKind.IMAGE) return ByteArray(0)
+        val kind = mediaKindOf(name, false, "")
+        if (kind == MediaKind.OTHER) return ByteArray(0)
+        val cached = io { vault.thumbnail(path, px) }
+        if (cached.isNotEmpty() || kind != MediaKind.IMAGE) return cached
         return thumbLimit.withPermit {
             withContext(Dispatchers.IO) {
                 ensureActive()
                 val total = local { vault.size(path) }
                 if (total > MAX_THUMB_SOURCE) return@withContext ByteArray(0)
                 ensureActive()
-                local { thumbnailer.thumbnail(vault.readRange(path, 0, total), px) }
+                val jpeg = local { thumbnailer.thumbnail(vault.readRange(path, 0, total), px) }
+                // A cache that cannot store it only costs a decode next time.
+                if (jpeg.isNotEmpty()) runCatching { vault.storeThumbnail(path, px, jpeg) }
+                jpeg
             }
         }
     }
@@ -284,6 +398,29 @@ class LocalSource(
     override suspend fun move(from: String, to: String) = io { vault.move(from, to) }
     override suspend fun delete(path: String) = io { vault.remove(path) }
 
+    override val copyOrigin: CopyOrigin get() = vault.origin
+
+    /**
+     * Copies [srcPath] from [from] into this vault at [dest] with the engine's fault-tolerant copy:
+     * a read that fails part-way is retried and resumed, and [dest] appears only when the file
+     * arrived whole. [onProgress] gets (bytes done, total) while it runs. Cancelling stops the copy.
+     */
+    suspend fun copyFrom(from: CopyOrigin, srcPath: String, dest: String, onProgress: ((Long, Long) -> Unit)? = null) {
+        val job = local { vault.newJob() }
+        runJob(job, onProgress) { vault.copyIn(job, dest, from, srcPath) }
+    }
+
+    /** Keeps [path] readable without the network (see [cachesFiles]); cancelling stops the fetch. */
+    suspend fun cacheFile(path: String, onProgress: ((Long, Long) -> Unit)? = null) {
+        val job = local { vault.newJob() }
+        runJob(job, onProgress) { vault.cacheFile(job, path) }
+    }
+
+    suspend fun isCached(path: String): Boolean = io { vault.isCached(path) }
+
+    /** Drops the phone's copy of [path]; the file itself stays where it is. */
+    suspend fun uncache(path: String) = io { vault.uncache(path) }
+
     internal companion object {
         /** Larger images get no thumbnail: a SAF read holds several copies of the file at once. */
         const val MAX_THUMB_SOURCE = 24L * 1024 * 1024
@@ -309,8 +446,9 @@ private fun <T> local(block: () -> T): T = try {
         is LocalError.WrongPassword -> SourceError.WrongPassword
         is LocalError.NotFound -> SourceError.NotFound
         is LocalError.Exists -> SourceError.Exists
-        // The Go vault was closed under us (lockAll): to the UI that is "locked", not a failure.
-        is LocalError.Closed -> SourceError.Locked
+        // The Go vault was closed under us (lockAll), or its server forgot the session and could not
+        // be logged in again: to the UI that is "locked", not a failure.
+        is LocalError.Closed, is LocalError.Locked -> SourceError.Locked
         else -> SourceError.Other(le.message ?: "local error", le)
     }
 }

@@ -208,13 +208,18 @@ internal fun ForgetPasswordDialog(label: String, onForget: () -> Unit, onDismiss
 /** Where local vaults live, shown above their name on the unlock screen. */
 internal const val LOCAL_PLACE = "On this phone"
 
-/** A vault the local unlock flow can open: the built-in one or a picked folder. */
+/** A vault the local unlock flow can open: the built-in one, a picked folder, or a vault in Google Drive. */
 class LocalTarget(
     /** Session id of the opened source. */
     val sourceId: String,
     /** Key of its saved password (see PasswordIds). */
     val passwordId: String,
     val label: String,
+    /** Where it lives, shown on the unlock screen. */
+    val place: String = LOCAL_PLACE,
+    /** The vault lives elsewhere and files can be kept on the phone (see LocalSource.cachesFiles). */
+    val cachesFiles: Boolean = false,
+    /** Opens the vault; blocks, possibly on the network. */
     val open: (CharArray) -> Vault,
 )
 
@@ -254,7 +259,9 @@ fun LocalUnlock(
                 // does not know about.
                 withContext(NonCancellable) {
                     val vault = withContext(Dispatchers.Default) { target.open(password) }
-                    session.registerSource(target.sourceId, target.label, LocalSource(MobileVaultApi(vault))) { session.local.close(vault) }
+                    session.registerSource(target.sourceId, target.label, LocalSource(MobileVaultApi(vault), cachesFiles = target.cachesFiles)) {
+                        session.local.close(vault)
+                    }
                     // A failed save only means the password is asked for again next time.
                     if (toSave != null) withContext(Dispatchers.IO) { runCatching { session.savePassword(target.passwordId, toSave) } }
                 }
@@ -274,6 +281,8 @@ fun LocalUnlock(
                         error = "This folder is not accessible any more. Pick it again to restore access."
                     }
                     is LocalError.NoConfig -> error = "No vault was found in this folder."
+                    is LocalError.Auth, is LocalError.NotConnected ->
+                        error = "Google Drive refused access. Sign in to Google Drive again."
                     else -> error = le.message ?: "Could not open the vault"
                 }
                 stage = Stage.Password
@@ -291,7 +300,7 @@ fun LocalUnlock(
             if (saved == null) stage = Stage.Password else attempt(saved, fromSaved = true)
         }
         UnlockDialog(
-            vaultName = target.label, place = LOCAL_PLACE, idleMinutes = session.idleTimeoutMinutes,
+            vaultName = target.label, place = target.place, idleMinutes = session.idleTimeoutMinutes,
             onSubmit = {}, onDismiss = {}, opening = true,
         )
         return
@@ -299,7 +308,7 @@ fun LocalUnlock(
 
     UnlockDialog(
         vaultName = target.label,
-        place = LOCAL_PLACE,
+        place = target.place,
         idleMinutes = session.idleTimeoutMinutes,
         notice = notice,
         error = error,

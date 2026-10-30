@@ -3,9 +3,11 @@ package ai.alertd.imagethat.ui
 import ai.alertd.imagethat.data.VaultSource
 import ai.alertd.imagethat.keys.AppUnlock
 import ai.alertd.imagethat.keys.KeyVault
+import ai.alertd.imagethat.keys.PasswordIds
 import ai.alertd.imagethat.keys.SavedPasswords
 import ai.alertd.imagethat.local.LocalVaults
 import ai.alertd.imagethat.remote.ApiClient
+import ai.alertd.imagethat.remote.ClientDecryptServer
 import ai.alertd.imagethat.remote.ServerMode
 import android.os.SystemClock
 import androidx.fragment.app.FragmentActivity
@@ -19,6 +21,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import mobile.Drive
+import mobile.Mobile
 
 /** Wakes the app after a delay even when its process is frozen (AlarmManager in the app). */
 interface LockAlarm {
@@ -39,10 +43,12 @@ sealed interface SessionEvent {
 
 /**
  * A connected remote server; [key] is the saved server's id, or a random one for an unsaved server.
- * For a client-decrypt server [mode] is set once known, and the access password is held here in
- * memory to log in again after the server's idle timeout; [forgetAccess] zeroes it.
+ * [api] speaks the server-decrypt API; a client-decrypt server is spoken to through the Go engine
+ * ([client]). For a client-decrypt server [mode] is set once known, and the access password is held
+ * here in memory to log in again after the server's idle timeout; [forgetAccess] zeroes it.
  */
 class RemoteServer(val key: String, val label: String, val url: String, val api: ApiClient) {
+    val client = ClientDecryptServer(url, api.pin)
     @Volatile var mode: ServerMode? = null
     private var access: CharArray? = null
 
@@ -117,6 +123,8 @@ class Session(
     val events: SharedFlow<SessionEvent> = _events.asSharedFlow()
 
     private var passwords: SavedPasswords? = null
+    /** The Google Drive account for this unlocked session, built from the saved client and token. */
+    private var driveAccount: Drive? = null
     private val _appLocked = MutableStateFlow(true)
     private val _notice = MutableStateFlow<String?>(null)
 
@@ -160,6 +168,58 @@ class Session(
     @Synchronized fun forgetPassword(id: String) { passwords?.remove(id) }
 
     @Synchronized fun forgetPasswords(match: (String) -> Boolean) { passwords?.removeIf(match) }
+
+    /**
+     * The signed-in Google Drive account, or null when Drive is not set up (no client ID in the
+     * state file, or no saved client secret or refresh token). Reads the state file: call it off the
+     * main thread.
+     */
+    @Synchronized
+    fun drive(): Drive? {
+        driveAccount?.let { return it }
+        val clientId = keys.state().driveClientId ?: return null
+        val secret = passwords?.get(PasswordIds.DRIVE_SECRET) ?: return null
+        val token = passwords?.get(PasswordIds.DRIVE_TOKEN)
+        try {
+            if (token == null) return null
+            return Mobile.newDrive(clientId, String(secret), String(token)).also { driveAccount = it }
+        } finally {
+            secret.fill('\u0000')
+            token?.fill('\u0000')
+        }
+    }
+
+    /**
+     * Keeps a freshly signed-in account: its client ID in the state file, the client secret and the
+     * refresh token among the saved passwords (encrypted), and [d] for this session.
+     */
+    fun saveDrive(d: Drive, clientId: String, clientSecret: CharArray) {
+        val token = d.refreshToken().toCharArray()
+        try {
+            keys.store().update { it.copy(driveClientId = clientId) }
+            synchronized(this) {
+                passwords?.put(PasswordIds.DRIVE_SECRET, clientSecret)
+                passwords?.put(PasswordIds.DRIVE_TOKEN, token)
+                driveAccount = d
+            }
+        } finally {
+            token.fill('\u0000')
+        }
+    }
+
+    /**
+     * Signs out of Google Drive: locks the open Drive vaults, forgets the token and the client
+     * secret, and the Drive vaults' saved passwords. The remembered Drive vaults stay listed.
+     */
+    fun forgetDrive() {
+        closeRemoved({ it.startsWith(DRIVE_SOURCE_PREFIX) })
+        synchronized(this) {
+            driveAccount?.signOut()
+            driveAccount = null
+            passwords?.removeIf { it.startsWith(PasswordIds.DRIVE_PREFIX) }
+        }
+        keys.store().update { it.copy(driveClientId = null) }
+    }
 
     @Synchronized
     fun registerSource(id: String, label: String, source: VaultSource, close: () -> Unit = {}) {
@@ -285,6 +345,11 @@ class Session(
             servers.values.toList().also { servers.clear() }
         }
         local.closeAll()
+        // The Drive client holds an access token in memory; the next session builds a new one.
+        synchronized(this) {
+            driveAccount?.signOut()
+            driveAccount = null
+        }
         closing.forEach(::logoutAndClose)
         clearImageCache()
         _events.tryEmit(SessionEvent.AllLocked)
@@ -294,7 +359,9 @@ class Session(
         s.forgetAccess()
         scope.launch {
             try {
-                withTimeout(LOGOUT_TIMEOUT_MS) { s.api.logout() }
+                withTimeout(LOGOUT_TIMEOUT_MS) {
+                    if (s.mode == ServerMode.CLIENT_DECRYPT) s.client.logout() else s.api.logout()
+                }
             } catch (_: Exception) {
                 // best effort: the cookie is dropped by close() either way
             } finally {
@@ -308,6 +375,8 @@ class Session(
         /** Choices offered for the idle timeout, in minutes. */
         val IDLE_TIMEOUT_CHOICES = listOf(1, 2, 5, 10, 15, 30)
         const val BACKGROUND_TIMEOUT_MS = 60_000L
+        /** Session ids of Drive vaults start with this. */
+        const val DRIVE_SOURCE_PREFIX = "drive-"
         private const val LOGOUT_TIMEOUT_MS = 3_000L
         const val PASSWORDS_CLEARED =
             "Your fingerprints or screen lock changed, so saved passwords were cleared. Enter each password once again."
