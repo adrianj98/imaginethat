@@ -12,7 +12,8 @@ var errAborted = errors.New("mobile: write aborted")
 
 // FileWriter streams plaintext into a new vault file. Session.Create runs in
 // a goroutine fed through a pipe, so memory use is bounded regardless of file
-// size. Call Close to commit or Abort to discard.
+// size. Call Close to commit or Abort to discard. Server.Upload returns one
+// too, streaming to the server instead.
 type FileWriter struct {
 	pw   *io.PipeWriter
 	done chan struct{}
@@ -20,11 +21,22 @@ type FileWriter struct {
 	err  error // result of Create, valid after done is closed
 }
 
-func newFileWriter(s *vault.Session, path string) *FileWriter {
+func newFileWriter(s *vault.Session, path string, committed func()) *FileWriter {
+	return newPipeWriter(func(r io.Reader) error {
+		_, err := s.Create(path, r)
+		if err == nil && committed != nil {
+			committed()
+		}
+		return err
+	})
+}
+
+// newPipeWriter runs commit in a goroutine, fed by the writer's pipe.
+func newPipeWriter(commit func(io.Reader) error) *FileWriter {
 	pr, pw := io.Pipe()
 	w := &FileWriter{pw: pw, done: make(chan struct{})}
 	go func() {
-		_, err := s.Create(path, pr)
+		err := commit(pr)
 		w.err = err
 		// Unblock a writer still pushing data if Create bailed out early.
 		if err == nil {

@@ -51,6 +51,33 @@ func NewThumbDisk(root string, budget int64) *ThumbDisk {
 	return &ThumbDisk{root: root, budget: budget, total: -1}
 }
 
+var (
+	thumbDisksMu sync.Mutex
+	thumbDisks   = make(map[string]*ThumbDisk)
+)
+
+// SharedThumbDisk returns the one store for root, so every session previewing
+// into the same directory shares its budget accounting. budget <= 0 means
+// 1 GiB for a new store and leaves an existing store's budget alone.
+func SharedThumbDisk(root string, budget int64) *ThumbDisk {
+	thumbDisksMu.Lock()
+	defer thumbDisksMu.Unlock()
+	if d, ok := thumbDisks[root]; ok {
+		if budget > 0 {
+			d.mu.Lock()
+			d.budget = budget
+			d.mu.Unlock()
+		}
+		return d
+	}
+	if budget <= 0 {
+		budget = 1 << 30
+	}
+	d := NewThumbDisk(root, budget)
+	thumbDisks[root] = d
+	return d
+}
+
 // Root is the directory the store writes under.
 func (d *ThumbDisk) Root() string { return d.root }
 
