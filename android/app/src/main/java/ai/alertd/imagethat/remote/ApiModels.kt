@@ -2,9 +2,12 @@ package ai.alertd.imagethat.remote
 
 import kotlinx.serialization.Serializable
 
-/** Mirrors `server.Vault` (webserver/server/server.go). */
+/**
+ * Mirrors `server.Vault` (webserver/server/server.go). [unlocked] comes only from a server-decrypt
+ * server; the Go engine's client-decrypt list (`remote.VaultInfo`) has no such field.
+ */
 @Serializable
-data class RemoteVault(val id: String, val name: String, val unlocked: Boolean)
+data class RemoteVault(val id: String, val name: String, val unlocked: Boolean = false)
 
 /** Mirrors `vault.Entry` (core/vault/read.go). [mediaType] is "image", "video" or "". */
 @Serializable

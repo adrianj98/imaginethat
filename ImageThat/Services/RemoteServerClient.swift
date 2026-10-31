@@ -183,8 +183,10 @@ public final class RemoteServerClient: @unchecked Sendable {
             lock.withLock { loggedIn = false }
             throw RemoteServerError.accessPasswordRequired
         }
-        let vaults = try decode([RemoteVault].self, data)
-        // The server holds nothing open here; this client does.
+        // The engine reports id and name only; the server holds nothing open
+        // here, this client does.
+        struct Listed: Decodable { let id: String; let name: String }
+        let vaults = try decode([Listed].self, data)
         let open = lock.withLock { Set(bridges.keys) }
         return vaults.map { RemoteVault(id: $0.id, name: $0.name, unlocked: open.contains($0.id)) }
     }
