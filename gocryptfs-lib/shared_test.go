@@ -105,7 +105,7 @@ func TestDriveThroughShim(t *testing.T) {
 	if fr, err := tCachedRanges(id, "clip.mov"); err != nil || string(fr) != "[[0,1]]" {
 		t.Fatalf("CachedRanges = %s, %v", fr, err)
 	}
-	if tDriveCacheSize(cacheDir) == 0 {
+	if tNetworkCacheSize(cacheDir) == 0 {
 		t.Fatal("Drive cache empty")
 	}
 	// Nothing in plaintext on Drive or in the cache.

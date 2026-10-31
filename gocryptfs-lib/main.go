@@ -30,6 +30,7 @@ import (
 
 	"github.com/adrianm/imagethat/core/cache"
 	"github.com/adrianm/imagethat/core/drive"
+	"github.com/adrianm/imagethat/core/localfs"
 	"github.com/adrianm/imagethat/core/remote"
 	"github.com/adrianm/imagethat/core/thumb"
 	"github.com/adrianm/imagethat/core/vault"
@@ -192,6 +193,23 @@ func (v *callbackFS) ReadFile(p string) ([]byte, error) {
 //export GocryptfsOpen
 func GocryptfsOpen(vaultPath *C.char, password *C.char) C.int {
 	s, err := vault.OpenLocal(C.GoString(vaultPath), C.GoString(password))
+	if err != nil {
+		return openCode(err)
+	}
+	return register(s)
+}
+
+// GocryptfsOpenCached is GocryptfsOpen for a folder that may be on a network
+// mount (SMB, NFS, AFP): there, reads go through the network cache in cacheDir
+// like any network transport's. On a local disk it is GocryptfsOpen.
+//
+//export GocryptfsOpenCached
+func GocryptfsOpenCached(vaultPath, password, cacheDir *C.char) C.int {
+	ranges, err := networkRanges(C.GoString(cacheDir))
+	if err != nil {
+		return rcBackend
+	}
+	s, err := localfs.Open(C.GoString(vaultPath), C.GoString(password), ranges)
 	if err != nil {
 		return openCode(err)
 	}

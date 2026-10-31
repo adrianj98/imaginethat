@@ -1,10 +1,12 @@
 package drive
 
+import "github.com/adrianm/imagethat/core/cache"
+
 // SetReadSizes changes the read window sizes and returns a func restoring them.
 func SetReadSizes(whole, window int64) func() {
-	w, p := wholeFileMax, prefetchWindow
-	wholeFileMax, prefetchWindow = whole, window
-	return func() { wholeFileMax, prefetchWindow = w, p }
+	w, p := cache.WholeFileMax, cache.Window
+	cache.WholeFileMax, cache.Window = whole, window
+	return func() { cache.WholeFileMax, cache.Window = w, p }
 }
 
 // SetUploadChunk changes the resumable chunk size and returns a restore func.

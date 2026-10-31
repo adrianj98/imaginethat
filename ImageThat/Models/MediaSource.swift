@@ -41,15 +41,30 @@ public protocol MediaSource: Sendable {
     /// Default chunk size for streaming reads (256 KB)
     static var defaultChunkSize: Int { get }
 
-    /// Parts of the file held in a persistent local cache, as fractions of
-    /// its length (0...1). Empty when the source has no such cache.
+    /// Parts of the file held in the network cache, as fractions of its
+    /// length (0...1). Empty when the source keeps none.
     func cachedRanges(for item: MediaItem) async -> [ClosedRange<Double>]
+
+    /// Read the start and end of the file into the network cache ahead of
+    /// opening it (how the viewer prebuffers the next video). Blocks until
+    /// done; does nothing where the file is already on disk.
+    func prefetch(_ item: MediaItem) async
 }
 
 public extension MediaSource {
     static var defaultChunkSize: Int { 262_144 }
 
     func cachedRanges(for item: MediaItem) async -> [ClosedRange<Double>] { [] }
+
+    func prefetch(_ item: MediaItem) async {}
+}
+
+/// How much of a video `prefetch` reads: enough of the start to play for a
+/// while on a typical link, and the end, where many containers keep the index
+/// a player needs before it can start.
+public enum PrefetchSize {
+    public static let head: Int64 = 24 << 20
+    public static let tail: Int64 = 2 << 20
 }
 
 /// A source whose files can be kept on this Mac on request, so they open and

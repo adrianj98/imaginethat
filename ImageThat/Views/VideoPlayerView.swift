@@ -105,8 +105,7 @@ public struct VideoPlayerView: View {
         guard let source = appState.mediaSource else { return }
 
         do {
-            let avPlayer = try appState.takePreparedPlayer(for: item)
-                ?? AVPlayer(playerItem: source.createPlayerItem(for: item))
+            let avPlayer = try AVPlayer(playerItem: source.createPlayerItem(for: item))
             setupTimeObserver(for: avPlayer)
             self.player = avPlayer
             avPlayer.play()
@@ -153,14 +152,14 @@ public struct VideoPlayerView: View {
     }
 
     /// Prebuffer the next item. A next image is small, so it starts at once;
-    /// a next video waits until this one has a comfortable lead (or is fully
+    /// a next video waits until this one is 15 s ahead (or is fully
     /// loaded) so the two don't fight over the network.
     private func prefetchNextIfReady() {
         guard !prefetchedNext, let next = appState.nextItem else { return }
         if next.mediaType == .video {
             guard let ahead = bufferedAhead else { return }
             let loadedToEnd = duration > 0 && currentTime + ahead >= duration - 0.5
-            guard ahead >= 30 || loadedToEnd else { return }
+            guard ahead >= 15 || loadedToEnd else { return }
         }
         prefetchedNext = true
         appState.prefetch(next)

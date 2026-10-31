@@ -2,6 +2,7 @@ package vault
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -122,4 +123,69 @@ func (s *Session) Uncache(plainPath string) error {
 		return err
 	}
 	return c.Uncache(cipherPath)
+}
+
+// CacheReporter is an optional capability of a Cacher backend whose disk
+// cache holds parts of files (every network transport's read-through cache).
+type CacheReporter interface {
+	CachedFractions(cipherPath string) [][2]float64
+}
+
+// CachedFractions reports which parts of a file the backend's disk cache
+// holds, as [start, end) fractions of its length; nil when it keeps none.
+func (s *Session) CachedFractions(plainPath string) [][2]float64 {
+	c, ok := s.fs.(CacheReporter)
+	if !ok {
+		return nil
+	}
+	cipherPath, err := s.CipherPath(plainPath)
+	if err != nil || cipherPath == "" {
+		return nil
+	}
+	return c.CachedFractions(cipherPath)
+}
+
+// prefetchChunk is the read size Prefetch walks a file with. The read-through
+// cache fetches whole windows around a miss, so most chunks come off disk.
+const prefetchChunk = 1 << 20
+
+// Prefetch reads the first head and the last tail bytes of a file's
+// ciphertext through the backend, so a backend with a read-through cache has
+// them on disk before the file is opened: the start of a video, and the index
+// many containers keep at the end. It is how a viewer prebuffers the next
+// item, the same way on every network transport. Backends without a cache
+// (local disk) are already local, so it does nothing there.
+func (s *Session) Prefetch(ctx context.Context, plainPath string, head, tail int64) error {
+	if _, ok := s.fs.(Cacher); !ok {
+		return nil
+	}
+	cipherPath, err := s.CipherPath(plainPath)
+	if err != nil {
+		return err
+	}
+	if cipherPath == "" {
+		return fmt.Errorf("%w: is a directory", ErrInvalidPath)
+	}
+	size, err := s.fs.FileSize(cipherPath)
+	if err != nil {
+		return err
+	}
+	read := func(from, to int64) error {
+		buf := make([]byte, prefetchChunk)
+		for off := from; off < to; off += prefetchChunk {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			n := min(int64(prefetchChunk), to-off)
+			if _, err := s.fs.ReadAt(cipherPath, off, buf[:n]); err != nil && !errors.Is(err, io.EOF) {
+				return err
+			}
+		}
+		return nil
+	}
+	headEnd := min(head, size)
+	if err := read(0, headEnd); err != nil {
+		return err
+	}
+	return read(max(headEnd, size-tail), size)
 }

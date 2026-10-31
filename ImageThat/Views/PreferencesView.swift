@@ -14,10 +14,6 @@ public struct PreferencesView: View {
                 .tabItem {
                     Label("Security", systemImage: "lock.shield")
                 }
-            GoogleDriveTab()
-                .tabItem {
-                    Label("Google Drive", systemImage: "externaldrive.badge.icloud")
-                }
         }
         .frame(width: 600, height: 500)
         .background(Glass.lightCanvas)
@@ -163,17 +159,7 @@ public struct SecurityTab: View {
                     }
                 }
 
-                SettingsGroup(title: "Cached server files") {
-                    SettingsRow(title: Self.sizeLabel(remoteCacheBytes, empty: "No cached files"),
-                                subtitle: "Kept encrypted, exactly as the server stores them") {
-                        Button("Clear") {
-                            try? GocryptfsTransfer.clearFileCache(at: AppPaths.remoteFilesCache)
-                            updateCacheSize()
-                        }
-                        .buttonStyle(PillButtonStyle(height: 28))
-                        .font(.system(size: 12))
-                    }
-                }
+                NetworkCacheGroup()
 
                 SettingsGroup {
                     SettingsRow(title: "Store passwords unencrypted",
@@ -219,22 +205,17 @@ public struct SecurityTab: View {
         return "\(formatter.string(fromByteCount: bytes)) on disk"
     }
 
-    private static func sizeLabel(_ bytes: Int64, empty: String) -> String {
-        bytes == 0 ? empty : "\(ByteCountFormatter().string(fromByteCount: bytes)) on disk"
-    }
-
     @State private var cacheBytes: Int64 = 0
-    @State private var remoteCacheBytes: Int64 = 0
 
     private func updateCacheSize() {
         cacheBytes = GocryptfsThumbnails.cacheSize(at: AppPaths.thumbnailCache)
-        remoteCacheBytes = GocryptfsTransfer.fileCacheSize(at: AppPaths.remoteFilesCache)
     }
 }
 
-// MARK: - Google Drive Tab
+// MARK: - Network cache
 
-public struct GoogleDriveTab: View {
+/// Size limit and usage of the one cache every network transport shares.
+struct NetworkCacheGroup: View {
     private let limitOptions: [(label: String, bytes: Int64)] = [
         ("1 GB", 1_073_741_824),
         ("10 GB", 10_737_418_240),
@@ -243,15 +224,13 @@ public struct GoogleDriveTab: View {
         ("Unlimited", 0),
     ]
 
-    @State private var selectedLimit: Int64 = GocryptfsDriveCache.maxBytes
+    @State private var selectedLimit: Int64 = GocryptfsNetworkCache.maxBytes
     @State private var cacheBytes: Int64 = 0
 
-    public init() {}
-
-    public var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            SettingsGroup(title: "Drive cache") {
-                SettingsRow(title: cacheLabel, subtitle: "Vault contents stay encrypted in the cache") {
+    var body: some View {
+        SettingsGroup(title: "Network cache") {
+                SettingsRow(title: cacheLabel,
+                            subtitle: "What Google Drive, servers and network folders have sent. Stays encrypted.") {
                     Picker("Maximum", selection: $selectedLimit) {
                         ForEach(limitOptions, id: \.bytes) { option in
                             Text(option.label).tag(option.bytes)
@@ -260,23 +239,19 @@ public struct GoogleDriveTab: View {
                     .font(.system(size: 12))
                     .fixedSize()
                     .onChange(of: selectedLimit) { _, newValue in
-                        GocryptfsDriveCache.maxBytes = newValue
+                        GocryptfsNetworkCache.maxBytes = newValue
                     }
                     Button("Clear") {
-                        try? GocryptfsDriveCache.clear()
-                        cacheBytes = GocryptfsDriveCache.size()
+                        try? GocryptfsNetworkCache.clear()
+                        cacheBytes = GocryptfsNetworkCache.size()
                     }
                     .buttonStyle(PillButtonStyle(height: 28))
                     .font(.system(size: 12))
                 }
-            }
-
-            Spacer()
         }
-        .padding(24)
         .onAppear {
-            selectedLimit = GocryptfsDriveCache.maxBytes
-            cacheBytes = GocryptfsDriveCache.size()
+            selectedLimit = GocryptfsNetworkCache.maxBytes
+            cacheBytes = GocryptfsNetworkCache.size()
         }
     }
 

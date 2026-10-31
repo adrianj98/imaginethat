@@ -10,8 +10,7 @@
 //
 // The Reader only reads. Callers write the bytes to a temp file and rename it
 // into place once the Reader reports io.EOF, so a failed copy never leaves a
-// partial file at the destination (vault.Session.Create and cache.Files both
-// work that way).
+// partial file at the destination (vault.Session.Create works that way).
 package xfer
 
 import (

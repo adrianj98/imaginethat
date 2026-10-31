@@ -373,8 +373,8 @@ public final class GoogleDriveService: @unchecked Sendable {
     /// ciphertext it downloads in the shared Drive cache. Blocks on the
     /// network and scrypt, off the caller's thread.
     public func openVault(folderId: String, password: String) async throws -> GocryptfsBridge {
-        GocryptfsDriveCache.applyLimit()
-        let cacheDir = GocryptfsDriveCache.directory.path
+        GocryptfsNetworkCache.applyLimit()
+        let cacheDir = GocryptfsNetworkCache.directory.path
         let id = try await withAccount { handle in
             folderId.withCString { f in
                 password.withCString { p in

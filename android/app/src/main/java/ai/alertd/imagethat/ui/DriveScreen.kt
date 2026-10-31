@@ -250,7 +250,7 @@ private fun DriveBrowser(
     var pendingVault by remember { mutableStateOf<SavedDriveVault?>(null) }
     var cacheBytes by remember { mutableLongStateOf(-1L) }
     var signingOut by remember { mutableStateOf(false) }
-    val cacheDir = session.local.driveCacheDir
+    val cacheDir = session.local.networkCacheDir
 
     fun up() { if (stack.size > 1) stack = stack.dropLast(1) else onBack() }
     BackHandler(enabled = stack.size > 1) { up() }
@@ -269,7 +269,7 @@ private fun DriveBrowser(
             }
         }
     }
-    LaunchedEffect(reload) { cacheBytes = withContext(Dispatchers.IO) { Mobile.driveCacheSize(cacheDir.absolutePath) } }
+    LaunchedEffect(reload) { cacheBytes = withContext(Dispatchers.IO) { Mobile.networkCacheSize(cacheDir.absolutePath) } }
 
     fun openVault() {
         val known = session.keys.state().driveVaults.firstOrNull { it.rootId == folder.id }
@@ -351,7 +351,7 @@ private fun DriveBrowser(
                 trailing = {
                     OutlinePill("Clear", {
                         scope.launch {
-                            withContext(Dispatchers.IO) { runCatching { Mobile.clearDriveCache(cacheDir.absolutePath) } }
+                            withContext(Dispatchers.IO) { runCatching { Mobile.clearNetworkCache(cacheDir.absolutePath) } }
                             reload++
                         }
                     }, Modifier.testTag("drive-cache-clear"), enabled = cacheBytes > 0)

@@ -107,6 +107,14 @@ public final class VaultSource: WritableMediaSource, @unchecked Sendable {
         }
     }
 
+    public func cachedRanges(for item: MediaItem) async -> [ClosedRange<Double>] {
+        bridge.cachedRanges(path: item.url.path)
+    }
+
+    public func prefetch(_ item: MediaItem) async {
+        bridge.prefetch(path: item.url.path, head: PrefetchSize.head, tail: PrefetchSize.tail)
+    }
+
     public func createPlayerItem(for item: MediaItem) throws -> AVPlayerItem {
         let resourceLoader = EncryptedResourceLoader(bridge: bridge, relativePath: item.url.path)
         var components = URLComponents()

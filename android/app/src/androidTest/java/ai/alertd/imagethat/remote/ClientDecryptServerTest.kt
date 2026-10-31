@@ -96,7 +96,7 @@ class ClientDecryptServerTest {
         val local = ai.alertd.imagethat.local.LocalVaults(
             ctx, ai.alertd.imagethat.keys.StateStore(java.io.File(dir, "state.bin"), NoCipher),
             offlineDir = java.io.File(dir, "offline"), thumbDir = java.io.File(dir, "thumbs"),
-            fileCacheDir = java.io.File(dir, "files"), driveCacheDir = java.io.File(dir, "drive"),
+            networkCacheDir = java.io.File(dir, "network"),
         )
         val client = ClientDecryptServer(server!!, null)
         try {
@@ -120,7 +120,7 @@ class ClientDecryptServerTest {
                 assertTrue(!source.isCached("/$file"))
                 source.cacheFile("/$file")
                 assertTrue(source.isCached("/$file"))
-                assertTrue(mobile.Mobile.fileCacheSize(local.fileCacheDir.absolutePath) > 0)
+                assertTrue(mobile.Mobile.networkCacheSize(local.networkCacheDir.absolutePath) > 0)
                 source.uncache("/$file")
                 assertTrue(!source.isCached("/$file"))
             }

@@ -255,6 +255,18 @@ func (r *Ranges) Intervals(key, version string) []Interval {
 	return append([]Interval(nil), e.Intervals...)
 }
 
+// Stored returns the version and total size the entry for key was written
+// with, so a caller that cannot reach the remote can still use what is held.
+func (r *Ranges) Stored(key string) (version string, total int64, ok bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.index[key]
+	if !ok {
+		return "", 0, false
+	}
+	return e.Version, e.Total, true
+}
+
 // Complete reports whether the whole file is held.
 func (r *Ranges) Complete(key, version string) bool {
 	r.mu.Lock()

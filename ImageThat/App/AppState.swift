@@ -1,5 +1,4 @@
 import SwiftUI
-import AVFoundation
 import CryptoKit
 import UniformTypeIdentifiers
 import Foundation
@@ -61,9 +60,8 @@ public class AppState: ObservableObject {
 
     /// Preloaded full images for instant navigation (next item only, evicted on navigation)
     private var imagePreloadCache: [MediaItem.ID: NSImage] = [:]
-    /// The next video, attached to a paused player that is buffering it.
-    private var preparedVideo: (id: MediaItem.ID, player: AVPlayer)?
-    private var preparedVideoStatus: NSKeyValueObservation?
+    /// The engine prefetch of the next video into the network cache.
+    private var videoPrefetch: (id: MediaItem.ID, task: Task<Void, Never>)?
     /// Bumped whenever prefetched media is dropped, so a load that finishes
     /// afterwards is discarded instead of cached.
     private var prefetchGeneration = 0
@@ -109,6 +107,9 @@ public class AppState: ObservableObject {
     private var fileTransferTask: Task<Void, Never>? = nil
 
     public init() {
+        // The engine does not remember the limit; hand it over before any
+        // vault opens.
+        GocryptfsNetworkCache.applyLimit()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleExternalFileOpen(_:)),
@@ -230,13 +231,13 @@ public class AppState: ObservableObject {
     }
 
     /// Start loading the item the viewer will most likely show next: a full
-    /// image, or a video buffered in a paused player.
+    /// image into memory, or the start of a video into the network cache.
     public func prefetch(_ item: MediaItem) {
         switch item.mediaType {
         case .image:
             Task(priority: .background) { await preloadImage(for: item) }
         case .video:
-            prepareVideo(for: item)
+            prefetchVideo(item)
         }
     }
 
@@ -254,44 +255,23 @@ public class AppState: ObservableObject {
         imagePreloadCache.removeValue(forKey: item.id)
     }
 
-    /// Attach the video to a paused player and preroll it, so playback can
-    /// start from data that is already buffered.
-    public func prepareVideo(for item: MediaItem) {
-        guard item.mediaType == .video, preparedVideo?.id != item.id,
-              let source = mediaSource,
-              let playerItem = try? source.createPlayerItem(for: item) else { return }
-        dropPreparedVideo()
-        let player = AVPlayer(playerItem: playerItem)
-        preparedVideo = (item.id, player)
-        preparedVideoStatus = playerItem.observe(\.status, options: [.initial, .new]) { [weak player] item, _ in
-            guard item.status == .readyToPlay else { return }
-            DispatchQueue.main.async {
-                guard let player, player.rate == 0, player.status == .readyToPlay else { return }
-                player.preroll(atRate: 1)
-            }
-        }
-    }
-
-    /// The prepared player for this item, if there is a usable one.
-    public func takePreparedPlayer(for item: MediaItem) -> AVPlayer? {
-        guard let prepared = preparedVideo, prepared.id == item.id else { return nil }
-        preparedVideoStatus = nil
-        preparedVideo = nil
-        guard prepared.player.currentItem?.status != .failed else { return nil }
-        return prepared.player
-    }
-
-    private func dropPreparedVideo() {
-        preparedVideoStatus = nil
-        preparedVideo?.player.cancelPendingPrerolls()
-        preparedVideo?.player.replaceCurrentItem(with: nil)
-        preparedVideo = nil
+    /// Has the engine read the video's start and end into the network cache,
+    /// so it opens and starts playing from disk. The same for every network
+    /// transport; local vaults are already on disk and skip it. Kept on disk,
+    /// it also survives going back and forth.
+    private func prefetchVideo(_ item: MediaItem) {
+        guard videoPrefetch?.id != item.id, let source = mediaSource else { return }
+        videoPrefetch?.task.cancel()
+        videoPrefetch = (item.id, Task.detached(priority: .utility) {
+            await source.prefetch(item)
+        })
     }
 
     private func dropPrefetched() {
         prefetchGeneration += 1
         imagePreloadCache.removeAll()
-        dropPreparedVideo()
+        videoPrefetch?.task.cancel()
+        videoPrefetch = nil
     }
 
     public var currentItemLabel: String {
@@ -1005,7 +985,6 @@ public class AppState: ObservableObject {
         // for many seconds at app launch, leaving the Drive section stuck on
         // "Connect Google Drive" even when a refresh token was saved.
         Task.detached { [weak self] in
-            AppPaths.removeLegacyDriveCaches()
             GoogleDriveService.shared.loadSavedCredentials()
             guard GoogleDriveService.shared.isConnected else { return }
             guard let self else { return }
@@ -1789,7 +1768,7 @@ extension AppState {
         guard remoteCaches[key] == nil, let client = serverClients[server] else { return }
         Task.detached(priority: .utility) { [weak self] in
             guard let bridge = try? await client.openVault(vaultID: vaultID, password: password,
-                                                           cacheDir: AppPaths.remoteFilesCache) else { return }
+                                                           cacheDir: GocryptfsNetworkCache.directory) else { return }
             await self?.adoptRemoteCache(bridge, server: server, vaultID: vaultID, key: key)
         }
     }

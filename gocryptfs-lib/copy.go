@@ -10,7 +10,6 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/adrianm/imagethat/core/cache"
 	"github.com/adrianm/imagethat/core/remote"
 	"github.com/adrianm/imagethat/core/xfer"
 )
@@ -131,10 +130,10 @@ func GocryptfsCopyVaultIn(jobID C.int, destSession C.int, destPath *C.char, srcS
 	return copyCode(err)
 }
 
-// GocryptfsOpenRemoteCached is GocryptfsOpenRemote with a file cache in
-// cacheDir: files passed to GocryptfsCacheFile are kept there as ciphertext
-// and read from disk afterwards. accessPassword and the return codes are as
-// for GocryptfsOpenRemote.
+// GocryptfsOpenRemoteCached is GocryptfsOpenRemote with its reads kept in the
+// network cache in cacheDir (the one Drive vaults use), as ciphertext: read
+// again, or pinned with GocryptfsCacheFile, a file comes off disk.
+// accessPassword and the return codes are as for GocryptfsOpenRemote.
 //
 //export GocryptfsOpenRemoteCached
 func GocryptfsOpenRemoteCached(baseURL, vaultID, password, pinnedSHA256, accessPassword, cacheDir *C.char) C.int {
@@ -148,7 +147,11 @@ func GocryptfsOpenRemoteCached(baseURL, vaultID, password, pinnedSHA256, accessP
 			return remoteRC(err)
 		}
 	}
-	s, err := client.OpenVaultCached(ctx, C.GoString(vaultID), C.GoString(password), C.GoString(cacheDir))
+	ranges, err := networkRanges(C.GoString(cacheDir))
+	if err != nil {
+		return rcBackend
+	}
+	s, err := client.OpenVaultCached(ctx, C.GoString(vaultID), C.GoString(password), ranges)
 	if err != nil {
 		return remoteRC(err)
 	}
@@ -193,17 +196,4 @@ func GocryptfsUncache(sessionID C.int, relativePath *C.char) C.int {
 	p := C.GoString(relativePath)
 	sess.dropFile(p)
 	return writeCode(sess.s.Uncache(p))
-}
-
-//export GocryptfsFileCacheClear
-func GocryptfsFileCacheClear(dir *C.char) C.int {
-	if err := cache.ClearFiles(C.GoString(dir)); err != nil {
-		return rcBackend
-	}
-	return rcOK
-}
-
-//export GocryptfsFileCacheSize
-func GocryptfsFileCacheSize(dir *C.char) C.int64_t {
-	return C.int64_t(cache.FilesSize(C.GoString(dir)))
 }

@@ -96,7 +96,7 @@ public enum GocryptfsTransfer {
         }, onProgress: onProgress)
     }
 
-    /// Whether a cached remote session, or the Drive cache, holds the file on disk.
+    /// Whether the network cache holds the whole file.
     public static func isCached(session: Int32, path: String) -> Bool {
         path.withCString { p in GocryptfsIsCached(session, UnsafeMutablePointer(mutating: p)) == 1 }
     }
@@ -104,26 +104,17 @@ public enum GocryptfsTransfer {
     public static func uncache(session: Int32, path: String) {
         _ = path.withCString { p in GocryptfsUncache(session, UnsafeMutablePointer(mutating: p)) }
     }
-
-    /// Delete every cached remote file under `dir`.
-    public static func clearFileCache(at dir: URL) throws {
-        let rc = dir.path.withCString { GocryptfsFileCacheClear(UnsafeMutablePointer(mutating: $0)) }
-        guard rc == 0 else { throw GocryptfsError.deleteFailed("file cache: " + GocryptfsBridge.describeWriteCode(rc)) }
-    }
-
-    public static func fileCacheSize(at dir: URL) -> Int64 {
-        dir.path.withCString { GocryptfsFileCacheSize(UnsafeMutablePointer(mutating: $0)) }
-    }
 }
 
-/// The engine's Drive cache: ciphertext ranges downloaded from every Drive
-/// vault, in one directory with one size limit. Files pinned with
+/// The engine's network cache: the ciphertext every network transport (Google
+/// Drive, imagethat-web servers, vaults on SMB/NFS mounts) has read, in one
+/// directory with one size limit. Files pinned with
 /// `GocryptfsTransfer.cacheFile` are never evicted.
-public enum GocryptfsDriveCache {
-    public static let directory = AppPaths.driveCache
+public enum GocryptfsNetworkCache {
+    public static let directory = AppPaths.networkCache
 
     private static let defaultMaxBytes: Int64 = 10 * 1_073_741_824  // 10 GB
-    private static let maxBytesKey = "googleDriveCacheMaxBytes"
+    private static let maxBytesKey = "networkCacheMaxBytes"
 
     /// The limit chosen in Settings; 0 means unlimited.
     public static var maxBytes: Int64 {
@@ -135,18 +126,18 @@ public enum GocryptfsDriveCache {
     }
 
     /// Hands the limit to the engine, which evicts down to it. Call it before
-    /// the first Drive vault opens; the engine does not remember it.
+    /// the first vault opens; the engine does not remember it.
     public static func applyLimit() {
         let limit = maxBytes > 0 ? maxBytes : Int64.max
-        _ = directory.path.withCString { GocryptfsDriveCacheLimit(UnsafeMutablePointer(mutating: $0), limit) }
+        _ = directory.path.withCString { GocryptfsNetworkCacheLimit(UnsafeMutablePointer(mutating: $0), limit) }
     }
 
     public static func size() -> Int64 {
-        directory.path.withCString { GocryptfsDriveCacheSize(UnsafeMutablePointer(mutating: $0)) }
+        directory.path.withCString { GocryptfsNetworkCacheSize(UnsafeMutablePointer(mutating: $0)) }
     }
 
     public static func clear() throws {
-        let rc = directory.path.withCString { GocryptfsDriveCacheClear(UnsafeMutablePointer(mutating: $0)) }
-        guard rc == 0 else { throw GocryptfsError.deleteFailed("Drive cache: " + GocryptfsBridge.describeWriteCode(rc)) }
+        let rc = directory.path.withCString { GocryptfsNetworkCacheClear(UnsafeMutablePointer(mutating: $0)) }
+        guard rc == 0 else { throw GocryptfsError.deleteFailed("network cache: " + GocryptfsBridge.describeWriteCode(rc)) }
     }
 }

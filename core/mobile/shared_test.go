@@ -75,7 +75,7 @@ func TestDriveVault(t *testing.T) {
 	if err := v.CacheFile(job, "Pics/a.png"); err != nil {
 		t.Fatal(err)
 	}
-	if !v.IsCached("Pics/a.png") || DriveCacheSize(cacheDir) == 0 {
+	if !v.IsCached("Pics/a.png") || NetworkCacheSize(cacheDir) == 0 {
 		t.Fatal("not cached")
 	}
 	var fr [][2]float64
@@ -87,7 +87,7 @@ func TestDriveVault(t *testing.T) {
 	// Copy into a local vault through a flaky Drive.
 	local, _ := newVault(t)
 	v.Uncache("Pics/a.png")
-	ClearDriveCache(cacheDir)
+	ClearNetworkCache(cacheDir)
 	srv.FailMedia(1)
 	copyJob := NewJob()
 	if err := local.CopyFrom(copyJob, "a.png", v, "Pics/a.png"); err != nil {

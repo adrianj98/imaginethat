@@ -211,7 +211,8 @@ public final class RemoteServerClient: @unchecked Sendable {
     private func unlockLocally(vaultID: String, password: String) async throws {
         guard hasAccessPassword else { throw RemoteServerError.accessPasswordRequired }
         do {
-            let bridge = try await openVault(vaultID: vaultID, password: password, cacheDir: nil)
+            let bridge = try await openVault(vaultID: vaultID, password: password,
+                                             cacheDir: GocryptfsNetworkCache.directory)
             lock.withLock { bridges[vaultID] = bridge }
         } catch RemoteServerError.wrongAccessPassword, RemoteServerError.vaultLocked {
             // The server's session expired and logging in again failed.
@@ -222,8 +223,8 @@ public final class RemoteServerClient: @unchecked Sendable {
 
     /// Opens the vault over the server's ciphertext endpoints with the engine
     /// connection and decrypts it here; the session is read-only. With a
-    /// `cacheDir`, files passed to `GocryptfsTransfer.cacheFile` are kept
-    /// there as ciphertext. A client-decrypt server needs `login` first; a
+    /// `cacheDir` (the network cache), what it reads is kept there as
+    /// ciphertext. A client-decrypt server needs `login` first; a
     /// server-decrypt one is asked to unlock the vault for the connection.
     /// Blocks on the network and scrypt, off the caller's thread.
     public func openVault(vaultID: String, password: String, cacheDir: URL?) async throws -> GocryptfsBridge {

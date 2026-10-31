@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"path"
@@ -25,22 +24,20 @@ import (
 // walks the tree, and updated by its own writes. Changes made elsewhere while
 // the vault is open show up after Refresh or the next open.
 //
-// Reads go through a cache.Ranges on disk when one is given: a small file is
-// fetched whole on first read, a large one in 8 MiB windows, because the
-// engine reads one 4 KiB block at a time and a round trip per block would make
-// a video unwatchable. Cache entries are tied to Drive's modifiedTime, so a
-// file changed elsewhere is fetched again.
+// Reads go through the shared read-through cache (cache.Through) when a
+// cache.Ranges is given, the same layer every network transport uses. Cache
+// entries are keyed by file ID and tied to Drive's modifiedTime, so a file
+// changed elsewhere is fetched again.
 type VaultFS struct {
 	c      *Client
 	rootID string
-	ranges *cache.Ranges // nil: no disk cache
+	cache  *cache.Through
 
 	mu       sync.Mutex
 	folders  map[string]string // cipher dir -> folder ID
 	files    map[string]File   // cipher file -> metadata
 	listed   map[string]bool   // dirs whose children are in the index
 	inflight map[string]chan struct{}
-	windows  map[string]chan struct{} // fetches in progress, by file ID + window
 }
 
 var (
@@ -48,24 +45,16 @@ var (
 	_ vault.Cacher   = (*VaultFS)(nil)
 )
 
-// Read sizes. Files up to wholeFileMax are downloaded in one request on first
-// read; larger ones in prefetchWindow pieces.
-var (
-	wholeFileMax   int64 = 50 << 20
-	prefetchWindow int64 = 8 << 20
-)
-
 // NewVaultFS opens the vault folder rootID. ranges may be nil.
 func NewVaultFS(c *Client, rootID string, ranges *cache.Ranges) *VaultFS {
 	return &VaultFS{
 		c:        c,
 		rootID:   rootID,
-		ranges:   ranges,
+		cache:    cache.NewThrough(ranges),
 		folders:  map[string]string{"": rootID},
 		files:    make(map[string]File),
 		listed:   make(map[string]bool),
 		inflight: make(map[string]chan struct{}),
-		windows:  make(map[string]chan struct{}),
 	}
 }
 
@@ -236,79 +225,14 @@ func (v *VaultFS) ReadAt(p string, off int64, buf []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if off >= f.Size {
-		return 0, io.EOF
-	}
-	want := int64(len(buf))
-	if off+want > f.Size {
-		want = f.Size - off
-	}
-	if v.ranges == nil {
-		data, err := v.c.ReadRange(context.Background(), f.ID, off, want)
-		if err != nil {
-			return 0, err
-		}
-		return v.served(copy(buf, data), len(buf))
-	}
-	for {
-		if n, ok := v.ranges.ReadAt(f.ID, f.ModifiedTime, off, buf[:want]); ok {
-			return v.served(n, len(buf))
-		}
-		start, end := v.window(f, off, want)
-		key := fmt.Sprintf("%s@%d", f.ID, start)
-		v.mu.Lock()
-		if ch, busy := v.windows[key]; busy {
-			v.mu.Unlock()
-			<-ch // another reader is fetching this window; then try the cache again
-			continue
-		}
-		ch := make(chan struct{})
-		v.windows[key] = ch
-		v.mu.Unlock()
-
-		data, err := v.c.ReadRange(context.Background(), f.ID, start, end-start)
-		if err == nil && len(data) > 0 {
-			err = v.ranges.Write(f.ID, f.ModifiedTime, f.Size, start, data)
-		}
-
-		v.mu.Lock()
-		delete(v.windows, key)
-		close(ch)
-		v.mu.Unlock()
-
-		if err != nil && len(data) == 0 {
-			return 0, err
-		}
-		if int64(len(data)) < off-start+1 {
-			return 0, io.EOF
-		}
-		// Serve from what was fetched even if the cache write failed (disk full).
-		n := copy(buf[:want], data[off-start:])
-		return v.served(n, len(buf))
-	}
+	return v.cache.ReadAt(meta(f), off, buf, func(ctx context.Context, off, n int64) ([]byte, error) {
+		return v.c.ReadRange(ctx, f.ID, off, n)
+	})
 }
 
-func (v *VaultFS) served(n, asked int) (int, error) {
-	if n < asked {
-		return n, io.EOF
-	}
-	return n, nil
-}
-
-// window is the byte range to fetch for a read of want bytes at off.
-func (v *VaultFS) window(f File, off, want int64) (int64, int64) {
-	if f.Size <= wholeFileMax {
-		return 0, f.Size
-	}
-	start := off / prefetchWindow * prefetchWindow
-	end := start + prefetchWindow
-	if end < off+want {
-		end = off + want
-	}
-	if end > f.Size {
-		end = f.Size
-	}
-	return start, end
+// meta is the cache identity of a Drive file version.
+func meta(f File) cache.Meta {
+	return cache.Meta{Key: f.ID, Version: f.ModifiedTime, Size: f.Size}
 }
 
 // --- Writes -------------------------------------------------------------------
@@ -554,11 +478,7 @@ func (t *tempUpload) Close() error {
 	return nil
 }
 
-func (v *VaultFS) dropCache(fileID string) {
-	if v.ranges != nil {
-		v.ranges.Remove(fileID)
-	}
-}
+func (v *VaultFS) dropCache(fileID string) { v.cache.Drop(fileID) }
 
 // Refresh forgets the listing of dir so the next access fetches it again,
 // picking up changes made on other devices.
@@ -583,38 +503,25 @@ func (v *VaultFS) Refresh(dir string) {
 // Cache reads the whole file through into the disk cache and pins it, so it
 // opens without the network and is not evicted.
 func (v *VaultFS) Cache(ctx context.Context, cipherPath string, opts xfer.Options) error {
-	if v.ranges == nil {
+	if v.cache.Ranges == nil {
 		return errors.New("drive: no file cache configured")
 	}
 	f, err := v.file(cipherPath)
 	if err != nil {
 		return err
 	}
-	// Pin first, so the windows already fetched are not evicted while the
-	// rest arrives.
-	v.ranges.Pin(f.ID, true)
-	if !v.ranges.Complete(f.ID, f.ModifiedTime) {
+	return v.cache.Pin(meta(f), func() error {
 		r := xfer.NewReader(ctx, vault.RawOpener(v, cipherPath), opts)
-		_, err = io.Copy(io.Discard, r)
-		r.Close()
-		if err != nil {
-			v.ranges.Pin(f.ID, false)
-			return err
-		}
-	}
-	if !v.ranges.Complete(f.ID, f.ModifiedTime) {
-		return errors.New("drive: file did not fit in the cache")
-	}
-	return nil
+		defer r.Close()
+		_, err := io.Copy(io.Discard, r)
+		return err
+	})
 }
 
 // IsCached reports whether the whole file is held on disk.
 func (v *VaultFS) IsCached(cipherPath string) bool {
-	if v.ranges == nil {
-		return false
-	}
 	f, err := v.file(cipherPath)
-	return err == nil && v.ranges.Complete(f.ID, f.ModifiedTime)
+	return err == nil && v.cache.Complete(meta(f))
 }
 
 // Uncache drops the file from the disk cache.
@@ -632,16 +539,9 @@ func (v *VaultFS) Uncache(cipherPath string) error {
 // scrubber. Ciphertext and plaintext offsets differ only by gocryptfs' fixed
 // per-block overhead, so the fractions carry over.
 func (v *VaultFS) CachedFractions(cipherPath string) [][2]float64 {
-	if v.ranges == nil {
-		return nil
-	}
 	f, err := v.file(cipherPath)
-	if err != nil || f.Size <= 0 {
+	if err != nil {
 		return nil
 	}
-	var out [][2]float64
-	for _, iv := range v.ranges.Intervals(f.ID, f.ModifiedTime) {
-		out = append(out, [2]float64{float64(iv.Start) / float64(f.Size), float64(iv.End) / float64(f.Size)})
-	}
-	return out
+	return v.cache.Fractions(meta(f))
 }

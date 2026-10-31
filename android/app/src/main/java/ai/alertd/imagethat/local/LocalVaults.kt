@@ -73,16 +73,15 @@ sealed class LocalError(message: String, cause: Throwable? = null) : Exception(m
  * zeroed after the engine call (the String copy that gomobile needs is unavoidable).
  *
  * Every opened vault gets the engine's thumbnail caches (memory, and a disk tier in [thumbDir]
- * sealed with the vault's own key, so no decrypted preview is stored). [fileCacheDir] keeps the
- * ciphertext of server files the user keeps on the phone; [driveCacheDir] is the Drive cache.
+ * sealed with the vault's own key, so no decrypted preview is stored). [networkCacheDir] is the one
+ * cache every network transport (servers, Google Drive) keeps the ciphertext it reads in.
  */
 class LocalVaults(
     private val context: Context,
     private val state: StateStore,
     private val offlineDir: File = File(context.noBackupFilesDir, "offline-vault"),
     val thumbDir: File = File(context.cacheDir, "thumbs"),
-    val fileCacheDir: File = File(context.noBackupFilesDir, "server-files"),
-    val driveCacheDir: File = File(context.noBackupFilesDir, "drive-cache"),
+    val networkCacheDir: File = File(context.noBackupFilesDir, "network-cache"),
 ) {
     private val open = ArrayList<Vault>()
 
@@ -106,19 +105,19 @@ class LocalVaults(
     /**
      * Opens a vault on a client-decrypt imagethat-web server through [server], which must already
      * be logged in with the server's access password: the engine fetches only ciphertext and
-     * unlocks the vault here, so [password] never leaves the phone. Files the user keeps on the
-     * phone are held (as ciphertext) in [fileCacheDir]. Read-only. Blocks on the network; zeroes
+     * unlocks the vault here, so [password] never leaves the phone. What it reads is kept (as
+     * ciphertext) in [networkCacheDir]. Read-only. Blocks on the network; zeroes
      * [password]. [thumbKey] identifies the vault across launches (server address and vault id).
      */
     fun openRemote(server: Server, vaultId: String, password: CharArray, thumbKey: String): Vault =
-        track(withPassword(password) { server.openVault(vaultId, it, fileCacheDir.absolutePath) }, "server:$thumbKey")
+        track(withPassword(password) { server.openVault(vaultId, it, networkCacheDir.absolutePath) }, "server:$thumbKey")
 
     /**
      * Unlocks the vault in the Google Drive folder [rootId]. Downloaded ciphertext is cached in
-     * [driveCacheDir]. Writable. Blocks on the network; zeroes [password].
+     * [networkCacheDir]. Writable. Blocks on the network; zeroes [password].
      */
     fun openDrive(drive: Drive, rootId: String, password: CharArray): Vault =
-        track(withPassword(password) { Mobile.openDrive(drive, rootId, it, driveCacheDir.absolutePath) }, "drive:$rootId")
+        track(withPassword(password) { Mobile.openDrive(drive, rootId, it, networkCacheDir.absolutePath) }, "drive:$rootId")
 
     fun openFolder(folder: SavedFolder, password: CharArray): Vault {
         try {
