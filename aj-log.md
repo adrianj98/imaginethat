@@ -632,3 +632,12 @@ After the push to main, webserver CI failed: `TestRawModeMatchesLocalDecryption`
 ## 2026-10-31 — Design: pluggable encryption (gocryptfs as one vault format)
 User request: "we should even be able to replace the gocrypto with another plugable encryption". Design only, no code yet.
 - **docs/superpowers/specs/2026-10-31-pluggable-encryption-design.md:** inventory of every place gocryptfs is wired in (almost all in `core/vault`; plus the remote cache version tag, `gocryptfs.conf` checks in Swift/Kotlin/Go, the browser's TypeScript decryptor, and the ciphertext-path exports). Finding: gocryptfs, Cryptomator, rclone crypt and age all use header + fixed AEAD blocks, so `Session` keeps the random-access/read-ahead/cache machinery and a plug-in supplies `Format` (detect/init/unlock), `Names` (owns the whole namespace, because Cryptomator flattens the tree) and `Content` (header + block cipher). Plan in 5 steps, each green on its own; step 1 moves gocryptfs behind the interface with no behaviour change. C API names stay. Open question: which second format.
+
+## 2026-10-31 — Loose ends: flaky blob test, old Android caches, checks before v0.5.1
+User request: "do all the other stuff" (the follow-up list after the cache work).
+- **core/vault/exports_test.go:** `TestSealOpenBlobRoundTrip` was flaky by construction. It checked that the plaintext prefix is not in the ciphertext even for a 1-byte plaintext, and one byte is somewhere in 51 random sealed bytes about 18% of the time (the CI failures on main). Now the check applies to plaintexts of 16 bytes or more. 200 runs, 0 failures.
+- **android ImageThatApp.kt:** on start, deletes `server-files` and `drive-cache` in `noBackupFilesDir` on an IO coroutine. Since the single network cache landed, nothing reads them.
+- **go vet failure:** not in tracked code. `gocryptfs-lib/internal/` is a stale, git-ignored copy from Oct 28 that nothing imports. Vet of the shim's real packages passes. It needs deleting by hand: `rm -rf gocryptfs-lib/internal`.
+- **Flaky Mac logic test (one 72/1 run earlier):** not reproduced. Three more runs of `make test-logic`: 74/74 each time. The failing check's name was not kept, so the cause is unknown.
+- **Checked:** Android `assembleDebug`, 129 unit tests, 0 failures. `make android-aar` rebuilt against current core. Instrumented tests on the `pixel6b` emulator (booted headless for this, then shut down): 95 passed, 0 failed, 2 skipped (opt-in server tests).
+- **Not checked:** a real SMB/NFS share (none available).

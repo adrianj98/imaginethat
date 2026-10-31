@@ -25,7 +25,10 @@ func TestSealOpenBlobRoundTrip(t *testing.T) {
 		if size == 0 && len(sealed) != 0 {
 			t.Errorf("SealBlob(empty) = %d bytes, want 0 (gocryptfs stores an empty file as empty)", len(sealed))
 		}
-		if size > 0 && bytes.Contains(sealed, want[:min(size, 64)]) {
+		// Only a prefix long enough not to turn up in random ciphertext by
+		// chance: a 1-byte plaintext is somewhere in its 51 sealed bytes
+		// about one run in five.
+		if size >= 16 && bytes.Contains(sealed, want[:min(size, 64)]) {
 			t.Errorf("SealBlob(%d): ciphertext contains plaintext prefix", size)
 		}
 		got, err := s.OpenBlob(sealed)

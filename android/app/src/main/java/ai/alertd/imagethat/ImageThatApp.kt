@@ -19,6 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.io.File
 import mobile.Mobile
 
 /** The one KeyVault/StateStore and Session shared app-wide. */
@@ -46,6 +47,10 @@ class ImageThatApp : Application(), SingletonImageLoader.Factory {
         // The saved idle timeout; until it loads the 5 minute default applies (nothing is unlocked yet).
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             runCatching { container.session.loadIdleTimeout() }
+        }
+        // Ciphertext caches from before the one network cache; nothing reads them any more.
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            OLD_CACHE_DIRS.forEach { File(noBackupFilesDir, it).deleteRecursively() }
         }
     }
 
@@ -93,5 +98,6 @@ class ImageThatApp : Application(), SingletonImageLoader.Factory {
 
     private companion object {
         const val TICK_MS = 5_000L
+        val OLD_CACHE_DIRS = listOf("server-files", "drive-cache")
     }
 }
