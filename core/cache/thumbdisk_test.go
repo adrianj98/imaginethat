@@ -69,7 +69,9 @@ func TestThumbDiskRoundTripAndSealing(t *testing.T) {
 	if !bytes.HasPrefix(raw, thumbMagic) {
 		t.Error("entry lacks the magic header")
 	}
-	if bytes.Contains(raw, jpeg[:64]) || bytes.Contains(raw[len(thumbMagic):], []byte{0xFF, 0xD8}) {
+	// The marker is checked at the start only: two given bytes turn up
+	// somewhere in 3000 random ones about one run in twenty.
+	if bytes.Contains(raw, jpeg[:64]) || bytes.HasPrefix(raw[len(thumbMagic):], []byte{0xFF, 0xD8}) {
 		t.Error("entry holds the preview in the clear")
 	}
 	if filepath.Base(filepath.Dir(files[0])) == "vault-1" || bytes.Contains([]byte(files[0]), []byte("a.jpg")) {
