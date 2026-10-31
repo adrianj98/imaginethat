@@ -4,6 +4,15 @@
 BIN_DIR = $(shell swift build --show-bin-path)
 APP_BUNDLE = build/ImageThat.app
 
+# Code-signing identity for the .app. The keychain ties "Always Allow" to the
+# app's signature: an ad-hoc signature ("-") changes with every build, so the
+# login-keychain password prompt comes back after each rebuild. A stable
+# identity keeps the same designated requirement across builds. Uses a
+# self-signed "ImageThat Local" code-signing certificate when the keychain has
+# one (see README, "Stop the keychain prompt"), else signs ad hoc.
+# Override with: make app SIGN_IDENTITY="Apple Development: ..."
+SIGN_IDENTITY ?= $(if $(shell security find-identity -v -p codesigning 2>/dev/null | grep '"ImageThat Local"'),ImageThat Local,-)
+
 # Build everything
 build: golib
 	swift build
@@ -24,12 +33,13 @@ app: build
 	cp $(BIN_DIR)/ImageThat $(APP_BUNDLE)/Contents/MacOS/
 	cp build/libgocryptfs.dylib $(APP_BUNDLE)/Contents/Frameworks/
 	install_name_tool -change libgocryptfs.dylib @executable_path/../Frameworks/libgocryptfs.dylib $(APP_BUNDLE)/Contents/MacOS/ImageThat
-	codesign --force --sign - $(APP_BUNDLE)/Contents/Frameworks/libgocryptfs.dylib
-	codesign --force --sign - $(APP_BUNDLE)/Contents/MacOS/ImageThat
+	@if [ "$(SIGN_IDENTITY)" = "-" ]; then echo "note: signing ad hoc; the keychain will ask for your login password again after each rebuild (see SIGN_IDENTITY in the Makefile)"; fi
+	codesign --force --sign "$(SIGN_IDENTITY)" $(APP_BUNDLE)/Contents/Frameworks/libgocryptfs.dylib
+	codesign --force --sign "$(SIGN_IDENTITY)" $(APP_BUNDLE)/Contents/MacOS/ImageThat
 	mkdir -p $(APP_BUNDLE)/Contents/Resources
 	cp ImageThat/Resources/AppIcon.icns $(APP_BUNDLE)/Contents/Resources/
 	cp ImageThat/Resources/Info.plist $(APP_BUNDLE)/Contents/Info.plist
-	codesign --force --sign - $(APP_BUNDLE)
+	codesign --force --sign "$(SIGN_IDENTITY)" $(APP_BUNDLE)
 
 # Build the app and install it to /Applications (see Scripts/install-mac.sh
 # for --user / --to / --open). Usage: make install [INSTALL_ARGS=--user]

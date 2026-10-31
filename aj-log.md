@@ -583,3 +583,8 @@ Added `webserver/internal/gocryptfs/` to `.gitignore`. It is a generated copy of
 - Prefetched media is dropped when `mediaSource` changes (folder change, lock, cache swap) and when leaving the viewer. A generation counter discards image loads that finish after a drop. The image cache now keeps only the latest prefetch.
 
 **Why:** user asked for prebuffering of the next item. Fixed along the way: the image preload cache was never cleared, so skipped preloads and images preloaded before a lock stayed in memory as decrypted data.
+
+## 2026-10-31 — Stable code signing, so the keychain stops asking after Touch ID
+**Cause:** after Touch ID, `KeychainManager.getMasterKey` reads the master key from the login keychain. The item's access list trusts the app's designated requirement, and `make app` signed ad hoc, which makes that requirement the build's cdhash. Every rebuild or install looked like a new app, so macOS asked for the login-keychain password again and "Always Allow" never stuck.
+**Fix:** the Makefile signs with `SIGN_IDENTITY`. It uses a self-signed "ImageThat Local" code-signing certificate when one exists, else ad hoc, with a note. With a real identity the requirement is the bundle ID plus the certificate, which stays the same across builds. The README has the one-time steps to create the certificate in Keychain Access. Keychain + LAContext is unchanged, per CLAUDE.md.
+**Mistake along the way:** the first version picked the first valid code-signing identity. On this Mac that was "Kunj Dev", whose key is in a separate `kunj-dev` keychain, so codesign asked the user for a password they don't have. The build was stopped, and the Makefile now only uses a certificate named "ImageThat Local".
