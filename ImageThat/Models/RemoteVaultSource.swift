@@ -40,9 +40,10 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
     public let vaultID: String
     public let vaultName: String
     public private(set) var currentPath: String
-    /// A ciphertext-mode session on the same vault with a file cache. Cached
-    /// files are read and decrypted through it, from disk; everything else
-    /// comes from the server's decrypted API as before.
+    /// An engine session on the same vault, reading the server's ciphertext
+    /// through the network cache and decrypting here. Once it is open every
+    /// file is read through it, so what was read once comes off disk; until
+    /// then reads use the server's API.
     public let cache: GocryptfsBridge?
 
     public var rootDisplayName: String { vaultName }
@@ -64,11 +65,6 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
         RemoteVaultSource(client: client, vaultID: vaultID, vaultName: vaultName, currentPath: currentPath, cache: cache)
     }
 
-    /// The cache session when it holds this file.
-    private func cached(_ item: MediaItem) -> GocryptfsBridge? {
-        guard let cache, GocryptfsTransfer.isCached(session: cache.sessionID, path: item.url.path) else { return nil }
-        return cache
-    }
 
     private func dropCached(_ path: String) {
         if let cache { GocryptfsTransfer.uncache(session: cache.sessionID, path: path) }
@@ -96,8 +92,8 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
 
     public func loadImage(for item: MediaItem) async throws -> NSImage {
         let data: Data
-        if let local = cached(item) {
-            data = try local.decryptFile(path: item.url.path)
+        if let cache {
+            data = try cache.decryptFile(path: item.url.path)
         } else {
             data = try await client.fileData(vaultID: vaultID, path: item.url.path)
         }
@@ -117,7 +113,12 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
         if item.mediaType == .video {
             return try await loadVideoThumbnail(for: item, size: size)
         }
-        let data = try await client.fileData(vaultID: vaultID, path: item.url.path)
+        let data: Data
+        if let cache {
+            data = try cache.decryptFile(path: item.url.path)
+        } else {
+            data = try await client.fileData(vaultID: vaultID, path: item.url.path)
+        }
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
               let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                   kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -130,13 +131,13 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
     }
 
     public func fileSize(for item: MediaItem) async throws -> Int64 {
-        if let local = cached(item) { return try local.fileSize(path: item.url.path) }
+        if let cache { return try cache.fileSize(path: item.url.path) }
         return try await client.fileSize(vaultID: vaultID, path: item.url.path)
     }
 
     public func readChunks(for item: MediaItem, chunkSize: Int) -> AsyncThrowingStream<Data, Error> {
         let client = self.client, vaultID = self.vaultID, path = item.url.path
-        let local = cached(item)
+        let local = cache
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -164,7 +165,7 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
     }
 
     public func createPlayerItem(for item: MediaItem) throws -> AVPlayerItem {
-        let reader: any EncryptedRangeReading = cached(item) ?? RemoteRangeReader(client: client, vaultID: vaultID)
+        let reader: any EncryptedRangeReading = cache ?? RemoteRangeReader(client: client, vaultID: vaultID)
         let loader = EncryptedResourceLoader(bridge: reader, relativePath: item.url.path)
         let asset = try makeAsset(for: item, loader: loader, queueLabel: "com.imagethat.remoteloader")
         let playerItem = AVPlayerItem(asset: asset)
@@ -232,8 +233,8 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
     // MARK: - Private
 
     private func loadVideoThumbnail(for item: MediaItem, size: CGSize) async throws -> NSImage {
-        let loader = EncryptedResourceLoader(bridge: RemoteRangeReader(client: client, vaultID: vaultID),
-                                             relativePath: item.url.path)
+        let reader: any EncryptedRangeReading = cache ?? RemoteRangeReader(client: client, vaultID: vaultID)
+        let loader = EncryptedResourceLoader(bridge: reader, relativePath: item.url.path)
         let asset = try makeAsset(for: item, loader: loader, queueLabel: "com.imagethat.remotethumb")
         let generator = AVAssetImageGenerator(asset: asset)
         generator.maximumSize = CGSize(width: size.width * 2, height: size.height * 2)
@@ -273,7 +274,9 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
 extension RemoteVaultSource: OfflineCaching {
     public var canCache: Bool { cache != nil }
 
-    public func isCached(_ item: MediaItem) async -> Bool { cached(item) != nil }
+    public func isCached(_ item: MediaItem) async -> Bool {
+        cache.map { GocryptfsTransfer.isCached(session: $0.sessionID, path: item.url.path) } ?? false
+    }
 
     public func cache(_ item: MediaItem, onProgress: @escaping @Sendable (Int64, Int64) -> Void) async throws {
         guard let cache else { throw MediaError.failedToLoadImage(item.name) }
@@ -283,6 +286,10 @@ extension RemoteVaultSource: OfflineCaching {
     public func uncache(_ item: MediaItem) async { dropCached(item.url.path) }
 
     public func cachedRanges(for item: MediaItem) async -> [ClosedRange<Double>] {
-        cached(item) == nil ? [] : [0...1]
+        cache?.cachedRanges(path: item.url.path) ?? []
+    }
+
+    public func prefetch(_ item: MediaItem) async {
+        cache?.prefetch(path: item.url.path, head: PrefetchSize.head, tail: PrefetchSize.tail)
     }
 }

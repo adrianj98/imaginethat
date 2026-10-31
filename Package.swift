@@ -15,7 +15,7 @@ let package = Package(
             name: "ImageThatCore",
             dependencies: ["CLibGocryptfs"],
             path: "ImageThat",
-            exclude: ["BridgingHeader.h", "App/ImageThatApp.swift"],
+            exclude: ["BridgingHeader.h", "App/ImageThatApp.swift", "Resources/AppIcon.icns"],
             resources: [
                 .process("Resources/Assets.xcassets")
             ],

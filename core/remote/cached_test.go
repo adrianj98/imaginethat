@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adrianm/imagethat/core/cache"
 	"github.com/adrianm/imagethat/core/vault"
 	"github.com/adrianm/imagethat/core/xfer"
 )
@@ -70,8 +71,9 @@ func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// setup makes a vault with one file, serves it, and opens it remotely with a
-// cache. local is a session on the server's copy, for changing it.
+// setup makes a vault with one file, serves it, and opens it remotely through
+// a read-through cache in cacheDir. local is a session on the server's copy,
+// for changing it.
 func setup(t *testing.T, content []byte) (remote, local *vault.Session, fake *fakeServer, cacheDir string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -97,7 +99,11 @@ func setup(t *testing.T, content []byte) (remote, local *vault.Session, fake *fa
 		t.Fatal(err)
 	}
 	cacheDir = t.TempDir()
-	remote, err = c.OpenVaultCached(context.Background(), "v1", testPassword, cacheDir)
+	ranges, err := cache.NewRanges(cacheDir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote, err = c.OpenVaultCached(context.Background(), "v1", testPassword, ranges)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,8 +192,44 @@ func TestStaleCacheIsDropped(t *testing.T) {
 	if !bytes.Equal(got, newer) {
 		t.Fatal("read the stale cached copy")
 	}
-	if remote.IsCached("clip.mov") {
-		t.Fatal("stale copy should have been dropped")
+	// Ranges drops an entry, pin included, once the version differs; reading
+	// the new version caches it afresh.
+}
+
+func TestReadsAreCached(t *testing.T) {
+	want := pattern(3, 200_000)
+	remote, _, fake, _ := setup(t, want)
+	if _, err := remote.ReadFile("clip.mov"); err != nil {
+		t.Fatal(err)
+	}
+	// Watching it again reads from disk: only the version check goes out.
+	before := fake.fileReqs.Load()
+	got, err := remote.ReadFile("clip.mov")
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("second read: %v", err)
+	}
+	if n := fake.fileReqs.Load() - before; n > 1 {
+		t.Fatalf("second read made %d file requests, want at most 1", n)
+	}
+	if fr := remote.CachedFractions("clip.mov"); len(fr) != 1 || fr[0] != [2]float64{0, 1} {
+		t.Fatalf("CachedFractions = %v, want [[0 1]]", fr)
+	}
+	if !remote.IsCached("clip.mov") {
+		t.Fatal("a file read whole should report as held")
+	}
+}
+
+func TestPrefetchFillsTheCache(t *testing.T) {
+	restore := cache.WholeFileMax
+	cache.WholeFileMax, cache.Window = 64<<10, 64<<10
+	t.Cleanup(func() { cache.WholeFileMax, cache.Window = restore, 8<<20 })
+	remote, _, _, _ := setup(t, pattern(4, 1_000_000))
+	if err := remote.Prefetch(context.Background(), "clip.mov", 200_000, 50_000); err != nil {
+		t.Fatal(err)
+	}
+	fr := remote.CachedFractions("clip.mov")
+	if len(fr) != 2 || fr[0][0] != 0 || fr[1][1] != 1 {
+		t.Fatalf("CachedFractions after Prefetch = %v, want the head and the tail", fr)
 	}
 }
 
@@ -218,8 +260,8 @@ func TestUncache(t *testing.T) {
 	if remote.IsCached("clip.mov") {
 		t.Fatal("still cached")
 	}
-	entries, _ := os.ReadDir(cacheDir)
-	if len(entries) != 0 {
-		t.Fatalf("%d files left in the cache dir", len(entries))
+	if fr := remote.CachedFractions("clip.mov"); len(fr) != 0 {
+		t.Fatalf("still holds %v after Uncache", fr)
 	}
+	_ = cacheDir
 }

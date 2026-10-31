@@ -21,7 +21,7 @@ func TestOpenNeedsLogin(t *testing.T) {
 	if _, err := c.OpenVault(context.Background(), "v1", testPassword); !errors.Is(err, ErrLoginRequired) || !errors.Is(err, ErrLocked) {
 		t.Errorf("OpenVault without login = %v, want ErrLoginRequired", err)
 	}
-	if _, err := c.OpenVaultCached(context.Background(), "v1", testPassword, t.TempDir()); !errors.Is(err, ErrLoginRequired) {
+	if _, err := c.OpenVaultCached(context.Background(), "v1", testPassword, nil); !errors.Is(err, ErrLoginRequired) {
 		t.Errorf("OpenVaultCached without login = %v, want ErrLoginRequired", err)
 	}
 	if n := fake.allReqs.Load(); n != 0 {

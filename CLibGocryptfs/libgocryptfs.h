@@ -31,6 +31,9 @@ typedef int64_t (*VFSFileSizeFn)(void* ctx, const char* path);
 typedef ListResult (*VFSListDirFn)(void* ctx, const char* path);
 
 extern int GocryptfsOpen(char* vaultPath, char* password);
+// GocryptfsOpen for a folder that may be on a network mount (SMB, NFS, AFP):
+// there, reads go through the network cache in cacheDir.
+extern int GocryptfsOpenCached(char* vaultPath, char* password, char* cacheDir);
 // Open a vault from in-memory config bytes with VFS callbacks (for Drive-backed vaults).
 extern int GocryptfsOpenVFS(char* configData, int configDataLen, char* password,
                              VFSReadAtFn readAtFn, VFSFileSizeFn fileSizeFn, VFSListDirFn listDirFn,
@@ -115,18 +118,14 @@ extern void GocryptfsJobFree(int jobID);
 extern int GocryptfsCopyFileIn(int jobID, int destSession, char* destPath, char* srcFilePath);
 // Copy a file from one open vault (local, Drive or remote) into another.
 extern int GocryptfsCopyVaultIn(int jobID, int destSession, char* destPath, int srcSession, char* srcPath);
-// GocryptfsOpenRemote with a ciphertext file cache in cacheDir.
+// GocryptfsOpenRemote with its reads kept in the network cache in cacheDir.
 extern int GocryptfsOpenRemoteCached(char* baseURL, char* vaultID, char* password, char* pinnedSHA256, char* accessPassword, char* cacheDir);
-// Keep a file available locally: a cached remote session stores its ciphertext
-// in the cache dir; other sessions read it through once to fill the host's
-// caches (Drive).
+// Keep a file available locally: pins its ciphertext in the network cache
+// (Drive and remote sessions); local sessions need nothing.
 extern int GocryptfsCacheFile(int jobID, int sessionID, char* relativePath);
-// 1 when a cached remote session holds the file on disk, else 0.
+// 1 when the network cache holds the whole file, else 0.
 extern int GocryptfsIsCached(int sessionID, char* relativePath);
 extern int GocryptfsUncache(int sessionID, char* relativePath);
-// The file cache directory as a whole, independent of any session.
-extern int GocryptfsFileCacheClear(char* dir);
-extern int64_t GocryptfsFileCacheSize(char* dir);
 
 // Google Drive and imagethat-web servers: the same Go code the Android app
 // binds. A Drive account or a server connection is a handle; vaults opened
@@ -172,13 +171,18 @@ extern int GocryptfsDriveMove(int drive, char* fileID, char* oldParent, char* ne
 extern int GocryptfsOpenDrive(int drive, char* rootID, char* password, char* cacheDir);
 // Create a new empty vault in an empty Drive folder.
 extern int GocryptfsInitDrive(int drive, char* folderID, char* password);
-// The Drive cache as a whole. Files kept with GocryptfsCacheFile are never evicted.
-extern int GocryptfsDriveCacheLimit(char* dir, int64_t limit);
-extern int64_t GocryptfsDriveCacheSize(char* dir);
-extern int GocryptfsDriveCacheClear(char* dir);
-// Parts of a Drive vault file held on disk, JSON [[start,end],...] as
-// fractions of its length ("[]" for other sessions).
+// The network cache as a whole: one read-through store of ciphertext that Drive
+// and imagethat-web sessions share. Files kept with GocryptfsCacheFile are
+// never evicted.
+extern int GocryptfsNetworkCacheLimit(char* dir, int64_t limit);
+extern int64_t GocryptfsNetworkCacheSize(char* dir);
+extern int GocryptfsNetworkCacheClear(char* dir);
+// Parts of a file held in the network cache, JSON [[start,end],...] as
+// fractions of its length ("[]" for local sessions).
 extern DecryptResult GocryptfsCachedRanges(int sessionID, char* relativePath);
+// Read a file's first head and last tail bytes into the network cache, to
+// prebuffer it. A no-op for local sessions. Blocks until done.
+extern int GocryptfsPrefetch(int sessionID, char* relativePath, int64_t head, int64_t tail);
 // Re-fetch a Drive vault directory's listing next time (changes made elsewhere).
 extern int GocryptfsRefreshDir(int sessionID, char* relativePath);
 

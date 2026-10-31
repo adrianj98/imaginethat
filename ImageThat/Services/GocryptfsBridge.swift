@@ -45,15 +45,20 @@ public final class GocryptfsBridge: @unchecked Sendable {
     let sessionID: Int32
     public let vaultPath: URL
 
+    /// Opens the vault in a folder. On a network mount (SMB, NFS, AFP) the
+    /// engine reads it through the network cache like any network transport.
     public init(vaultPath: URL, password: String) throws {
         self.vaultPath = vaultPath
 
         let id = vaultPath.path.withCString { pathPtr in
             password.withCString { passPtr in
-                GocryptfsOpen(
-                    UnsafeMutablePointer(mutating: pathPtr),
-                    UnsafeMutablePointer(mutating: passPtr)
-                )
+                GocryptfsNetworkCache.directory.path.withCString { cachePtr in
+                    GocryptfsOpenCached(
+                        UnsafeMutablePointer(mutating: pathPtr),
+                        UnsafeMutablePointer(mutating: passPtr),
+                        UnsafeMutablePointer(mutating: cachePtr)
+                    )
+                }
             }
         }
 
@@ -279,8 +284,15 @@ public final class GocryptfsBridge: @unchecked Sendable {
         return s
     }
 
-    /// Parts of a Drive vault file held in the engine's Drive cache, as
-    /// fractions of its length. Empty for other sessions.
+    /// Has the engine read a file's first `head` and last `tail` bytes into
+    /// the network cache, so it opens and starts playing from disk. A no-op
+    /// for local vaults. Blocks on the network.
+    public func prefetch(path: String, head: Int64, tail: Int64) {
+        _ = path.withCString { GocryptfsPrefetch(sessionID, UnsafeMutablePointer(mutating: $0), head, tail) }
+    }
+
+    /// Parts of a file held in the network cache, as fractions of its length.
+    /// Empty for local vaults.
     public func cachedRanges(path: String) -> [ClosedRange<Double>] {
         let result: DecryptResult = path.withCString { pathPtr in
             GocryptfsCachedRanges(sessionID, UnsafeMutablePointer(mutating: pathPtr))

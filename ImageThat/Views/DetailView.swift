@@ -448,9 +448,7 @@ public struct DetailView: View {
 
     private func scheduleNextPreload() {
         guard let next = appState.nextItem else { return }
-        Task(priority: .background) {
-            await appState.preloadImage(for: next)
-        }
+        appState.prefetch(next)
     }
 
     private func updateEditedImage() {

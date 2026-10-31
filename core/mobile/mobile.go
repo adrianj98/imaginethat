@@ -14,6 +14,7 @@ import (
 
 	"github.com/adrianm/imagethat/core/drive"
 	"github.com/adrianm/imagethat/core/errcode"
+	"github.com/adrianm/imagethat/core/localfs"
 	"github.com/adrianm/imagethat/core/remote"
 	"github.com/adrianm/imagethat/core/thumb"
 	"github.com/adrianm/imagethat/core/vault"
@@ -55,6 +56,21 @@ type Vault struct {
 // OpenLocal unlocks the vault in dir.
 func OpenLocal(dir, password string) (*Vault, error) {
 	s, err := vault.OpenLocal(dir, password)
+	if err != nil {
+		return nil, wrapErr(err)
+	}
+	return &Vault{s: s}, nil
+}
+
+// OpenLocalCached is OpenLocal for a folder that may be on a network mount
+// (SMB, NFS): there, reads go through the network cache in cacheDir (see
+// networkRanges) like any network transport's.
+func OpenLocalCached(dir, password, cacheDir string) (*Vault, error) {
+	ranges, err := networkRanges(cacheDir)
+	if err != nil {
+		return nil, err
+	}
+	s, err := localfs.Open(dir, password, ranges)
 	if err != nil {
 		return nil, wrapErr(err)
 	}

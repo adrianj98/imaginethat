@@ -19,6 +19,8 @@ public struct VideoPlayerView: View {
     @State private var bufferingTask: Task<Void, Never>?
     /// Seconds loaded past the playhead, or nil before anything is loaded.
     @State private var bufferedAhead: Double?
+    /// Whether the next item has been handed to `AppState.prefetch` yet.
+    @State private var prefetchedNext = false
 
     public init(item: MediaItem) {
         self.item = item
@@ -84,6 +86,7 @@ public struct VideoPlayerView: View {
             cachedRanges = []
             bufferedRanges = []
             bufferedAhead = nil
+            prefetchedNext = false
             updateBuffering(false)
             loadVideo()
         }
@@ -102,12 +105,12 @@ public struct VideoPlayerView: View {
         guard let source = appState.mediaSource else { return }
 
         do {
-            let playerItem = try source.createPlayerItem(for: item)
-            let avPlayer = AVPlayer(playerItem: playerItem)
+            let avPlayer = try AVPlayer(playerItem: source.createPlayerItem(for: item))
             setupTimeObserver(for: avPlayer)
             self.player = avPlayer
             avPlayer.play()
             watchCache(source: source)
+            prefetchNextIfReady()
         } catch {
             self.player = nil
         }
@@ -145,6 +148,21 @@ public struct VideoPlayerView: View {
         } else {
             bufferedAhead = ranges.isEmpty ? nil : 0
         }
+        prefetchNextIfReady()
+    }
+
+    /// Prebuffer the next item. A next image is small, so it starts at once;
+    /// a next video waits until this one is 15 s ahead (or is fully
+    /// loaded) so the two don't fight over the network.
+    private func prefetchNextIfReady() {
+        guard !prefetchedNext, let next = appState.nextItem else { return }
+        if next.mediaType == .video {
+            guard let ahead = bufferedAhead else { return }
+            let loadedToEnd = duration > 0 && currentTime + ahead >= duration - 0.5
+            guard ahead >= 15 || loadedToEnd else { return }
+        }
+        prefetchedNext = true
+        appState.prefetch(next)
     }
 
     private func updateBuffering(_ waiting: Bool) {

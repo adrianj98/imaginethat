@@ -149,7 +149,7 @@ func TestOpenRemoteAgainstRealServer(t *testing.T) {
 		t.Errorf("Mkdir on a remote session = %d, want %d (read-only)", rc, rcNoConfig)
 	}
 
-	// The same vault with a file cache: caching photo.jpg stores its
+	// The same vault through the network cache: caching photo.jpg stores its
 	// ciphertext, and reads still match the local session.
 	cacheDir := t.TempDir()
 	if rc := tOpenRemoteCached(url, id, fixturePassword, "", "", cacheDir); rc != rcLocked {
@@ -168,7 +168,7 @@ func TestOpenRemoteAgainstRealServer(t *testing.T) {
 	if rc := tCacheFile(j, cid, "photo.jpg"); rc != 0 {
 		t.Fatalf("CacheFile = %d", rc)
 	}
-	if !tIsCached(cid, "photo.jpg") || tFileCacheSize(cacheDir) == 0 {
+	if !tIsCached(cid, "photo.jpg") || tNetworkCacheSize(cacheDir) == 0 {
 		t.Fatal("CacheFile stored nothing")
 	}
 	lb, _ := tDecryptFile(lid, "photo.jpg")
@@ -178,6 +178,17 @@ func TestOpenRemoteAgainstRealServer(t *testing.T) {
 	assertNoPlaintext(t, cacheDir, lb[:min(len(lb), 4096)])
 	if rc := tUncache(cid, "photo.jpg"); rc != 0 || tIsCached(cid, "photo.jpg") {
 		t.Fatalf("Uncache = %d", rc)
+	}
+	// Prefetch (how the viewer prebuffers the next item) fills the cache.
+	if rc := tPrefetch(cid, "photo.jpg", 4096, 4096); rc != 0 {
+		t.Fatalf("Prefetch = %d", rc)
+	}
+	if fr, err := tCachedRanges(cid, "photo.jpg"); err != nil || string(fr) == "[]" {
+		t.Fatalf("CachedRanges after Prefetch = %s, %v", fr, err)
+	}
+	// A local session has nothing to prefetch.
+	if rc := tPrefetch(lid, "photo.jpg", 4096, 4096); rc != 0 {
+		t.Fatalf("Prefetch on a local session = %d", rc)
 	}
 }
 

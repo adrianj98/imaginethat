@@ -9,7 +9,7 @@ import AVFoundation
 /// resumable uploads. So reads, writes, video and thumbnails are exactly a
 /// local vault's, and this source hands them to a `VaultSource` on the same
 /// session. Decrypted content stays in memory; downloaded ciphertext is kept
-/// in the engine's Drive cache (`GocryptfsDriveCache`).
+/// in the engine's Drive cache (`GocryptfsNetworkCache`).
 public final class DriveVaultSource: WritableMediaSource, @unchecked Sendable {
     public let bridge: GocryptfsBridge
     public let currentPath: String
@@ -60,6 +60,8 @@ public final class DriveVaultSource: WritableMediaSource, @unchecked Sendable {
     /// The ciphertext ranges of this file held in the Drive cache, as
     /// fractions of the file. Ciphertext and plaintext offsets differ only
     /// by gocryptfs' fixed per-block overhead, so the fractions carry over.
+    public func prefetch(_ item: MediaItem) async { await vault.prefetch(item) }
+
     public func cachedRanges(for item: MediaItem) async -> [ClosedRange<Double>] {
         bridge.cachedRanges(path: item.url.path)
     }

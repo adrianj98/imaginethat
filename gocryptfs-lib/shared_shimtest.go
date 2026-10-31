@@ -89,10 +89,10 @@ func tCachedRanges(id int, path string) ([]byte, error) {
 	return tResult(GocryptfsCachedRanges(C.int(id), p))
 }
 
-func tDriveCacheSize(dir string) int64 {
+func tNetworkCacheSize(dir string) int64 {
 	d := cstr(dir)
 	defer C.free(unsafe.Pointer(d))
-	return int64(GocryptfsDriveCacheSize(d))
+	return int64(GocryptfsNetworkCacheSize(d))
 }
 
 func tServerNew(base string) int {

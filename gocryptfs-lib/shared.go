@@ -355,13 +355,9 @@ func GocryptfsOpenDrive(h C.int, rootID, password, cacheDir *C.char) C.int {
 	if !ok {
 		return rcNoConfig
 	}
-	var ranges *cache.Ranges
-	if dir := C.GoString(cacheDir); dir != "" {
-		r, err := cache.SharedRanges(dir, 0)
-		if err != nil {
-			return rcBackend
-		}
-		ranges = r
+	ranges, err := networkRanges(C.GoString(cacheDir))
+	if err != nil {
+		return rcBackend
 	}
 	s, v, err := drive.OpenVault(d.c, C.GoString(rootID), C.GoString(password), ranges)
 	if err != nil {
@@ -381,11 +377,21 @@ func GocryptfsInitDrive(h C.int, folderID, password *C.char) C.int {
 	return codeRC(drive.InitVault(d.c, C.GoString(folderID), C.GoString(password)))
 }
 
-// GocryptfsDriveCacheLimit sets the Drive cache's size limit. Files kept with
-// GocryptfsCacheFile are never evicted.
+// networkRanges is the network cache in dir: the one read-through cache every
+// network transport (Drive, imagethat-web servers) keeps what it reads in, as
+// ciphertext. "" caches nothing.
+func networkRanges(dir string) (*cache.Ranges, error) {
+	if dir == "" {
+		return nil, nil
+	}
+	return cache.SharedRanges(dir, 0)
+}
+
+// GocryptfsNetworkCacheLimit sets the network cache's size limit. Files kept
+// with GocryptfsCacheFile are never evicted.
 //
-//export GocryptfsDriveCacheLimit
-func GocryptfsDriveCacheLimit(dir *C.char, limit C.int64_t) C.int {
+//export GocryptfsNetworkCacheLimit
+func GocryptfsNetworkCacheLimit(dir *C.char, limit C.int64_t) C.int {
 	r, err := cache.SharedRanges(C.GoString(dir), int64(limit))
 	if err != nil {
 		return rcBackend
@@ -394,8 +400,8 @@ func GocryptfsDriveCacheLimit(dir *C.char, limit C.int64_t) C.int {
 	return rcOK
 }
 
-//export GocryptfsDriveCacheSize
-func GocryptfsDriveCacheSize(dir *C.char) C.int64_t {
+//export GocryptfsNetworkCacheSize
+func GocryptfsNetworkCacheSize(dir *C.char) C.int64_t {
 	r, err := cache.SharedRanges(C.GoString(dir), 0)
 	if err != nil {
 		return 0
@@ -403,8 +409,8 @@ func GocryptfsDriveCacheSize(dir *C.char) C.int64_t {
 	return C.int64_t(r.Size())
 }
 
-//export GocryptfsDriveCacheClear
-func GocryptfsDriveCacheClear(dir *C.char) C.int {
+//export GocryptfsNetworkCacheClear
+func GocryptfsNetworkCacheClear(dir *C.char) C.int {
 	r, err := cache.SharedRanges(C.GoString(dir), 0)
 	if err != nil {
 		return rcBackend
@@ -412,9 +418,9 @@ func GocryptfsDriveCacheClear(dir *C.char) C.int {
 	return codeRC(r.Clear())
 }
 
-// GocryptfsCachedRanges returns, for a file in a Drive vault, the parts held
-// on disk as a JSON array of [start, end) fractions of its length; "[]" for
-// other sessions.
+// GocryptfsCachedRanges returns the parts of a file held in its session's
+// network cache, as a JSON array of [start, end) fractions of its length; "[]"
+// for sessions that keep none (local vaults).
 //
 //export GocryptfsCachedRanges
 func GocryptfsCachedRanges(sessionID C.int, relativePath *C.char) C.DecryptResult {
@@ -422,18 +428,25 @@ func GocryptfsCachedRanges(sessionID C.int, relativePath *C.char) C.DecryptResul
 	if sess == nil {
 		return errResult(errBadHandle)
 	}
-	if sess.drive == nil {
-		return toCResult([]byte("[]"))
-	}
-	cp, err := sess.s.CipherPath(C.GoString(relativePath))
-	if err != nil {
-		return errResult(err)
-	}
-	fr := sess.drive.CachedFractions(cp)
+	fr := sess.s.CachedFractions(C.GoString(relativePath))
 	if fr == nil {
 		fr = [][2]float64{}
 	}
 	return jsonResult(fr, nil)
+}
+
+// GocryptfsPrefetch reads the first head and the last tail bytes of a file
+// into its session's network cache, so it opens and starts playing from disk:
+// how a viewer prebuffers the next item, on every network transport. A no-op
+// for local vaults. Blocks until done.
+//
+//export GocryptfsPrefetch
+func GocryptfsPrefetch(sessionID C.int, relativePath *C.char, head, tail C.int64_t) C.int {
+	sess := getSession(sessionID)
+	if sess == nil {
+		return rcNoConfig
+	}
+	return codeRC(sess.s.Prefetch(context.Background(), C.GoString(relativePath), int64(head), int64(tail)))
 }
 
 // GocryptfsRefreshDir makes the next listing of a Drive vault directory fetch
@@ -539,8 +552,8 @@ func GocryptfsServerLogout(h C.int) C.int {
 // GocryptfsServerOpenVault opens a vault over the server's ciphertext
 // endpoints with this connection, after GocryptfsServerLogin, and decrypts
 // here; the vault password never leaves this process. Without a login it
-// fails (-8) and sends nothing. cacheDir, when not "", keeps
-// files passed to GocryptfsCacheFile. Returns a read-only session ID.
+// fails (-8) and sends nothing. cacheDir, when not "", is the network cache
+// its reads are kept in. Returns a read-only session ID.
 //
 //export GocryptfsServerOpenVault
 func GocryptfsServerOpenVault(h C.int, vaultID, password, cacheDir *C.char) C.int {
@@ -550,7 +563,11 @@ func GocryptfsServerOpenVault(h C.int, vaultID, password, cacheDir *C.char) C.in
 	}
 	id, pw, dir := C.GoString(vaultID), C.GoString(password), C.GoString(cacheDir)
 	if dir != "" {
-		s, err := c.OpenVaultCached(ctx, id, pw, dir)
+		ranges, err := networkRanges(dir)
+		if err != nil {
+			return rcBackend
+		}
+		s, err := c.OpenVaultCached(ctx, id, pw, ranges)
 		if err != nil {
 			return codeRC(err)
 		}

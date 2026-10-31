@@ -281,8 +281,8 @@ func tOpenRemoteCached(base, vaultID, password, pin, access, dir string) int {
 	return int(GocryptfsOpenRemoteCached(b, v, p, n, a, d))
 }
 
-func tFileCacheSize(dir string) int64 {
-	d := cstr(dir)
-	defer C.free(unsafe.Pointer(d))
-	return int64(GocryptfsFileCacheSize(d))
+func tPrefetch(id int, path string, head, tail int64) int {
+	p := cstr(path)
+	defer C.free(unsafe.Pointer(p))
+	return int(GocryptfsPrefetch(C.int(id), p, C.int64_t(head), C.int64_t(tail)))
 }

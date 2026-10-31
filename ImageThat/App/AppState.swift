@@ -14,7 +14,11 @@ public enum ViewMode {
 
 @MainActor
 public class AppState: ObservableObject {
-    @Published public var mediaSource: (any MediaSource)?
+    @Published public var mediaSource: (any MediaSource)? {
+        // Prefetched media belongs to the old source, and after a lock it is
+        // decrypted content that must not outlive the vault.
+        didSet { dropPrefetched() }
+    }
     @Published public var mediaItems: [MediaItem] = []
     @Published public var selectedIndex: Int = 0
     @Published public var viewMode: ViewMode = .grid
@@ -56,6 +60,11 @@ public class AppState: ObservableObject {
 
     /// Preloaded full images for instant navigation (next item only, evicted on navigation)
     private var imagePreloadCache: [MediaItem.ID: NSImage] = [:]
+    /// The engine prefetch of the next video into the network cache.
+    private var videoPrefetch: (id: MediaItem.ID, task: Task<Void, Never>)?
+    /// Bumped whenever prefetched media is dropped, so a load that finishes
+    /// afterwards is discarded instead of cached.
+    private var prefetchGeneration = 0
 
     private static let lastFolderKey = "lastOpenedFolderURL"
 
@@ -98,6 +107,9 @@ public class AppState: ObservableObject {
     private var fileTransferTask: Task<Void, Never>? = nil
 
     public init() {
+        // The engine does not remember the limit; hand it over before any
+        // vault opens.
+        GocryptfsNetworkCache.applyLimit()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleExternalFileOpen(_:)),
@@ -218,15 +230,48 @@ public class AppState: ObservableObject {
         return mediaItems[selectedIndex + 1]
     }
 
+    /// Start loading the item the viewer will most likely show next: a full
+    /// image into memory, or the start of a video into the network cache.
+    public func prefetch(_ item: MediaItem) {
+        switch item.mediaType {
+        case .image:
+            Task(priority: .background) { await preloadImage(for: item) }
+        case .video:
+            prefetchVideo(item)
+        }
+    }
+
     public func preloadImage(for item: MediaItem) async {
         guard imagePreloadCache[item.id] == nil, item.mediaType == .image,
               let source = mediaSource else { return }
-        guard let image = try? await source.loadImage(for: item) else { return }
-        imagePreloadCache[item.id] = image
+        let generation = prefetchGeneration
+        guard let image = try? await source.loadImage(for: item),
+              generation == prefetchGeneration else { return }
+        // Only the latest prefetch is kept, so skipped images don't pile up.
+        imagePreloadCache = [item.id: image]
     }
 
     public func popPreloadedImage(for item: MediaItem) -> NSImage? {
         imagePreloadCache.removeValue(forKey: item.id)
+    }
+
+    /// Has the engine read the video's start and end into the network cache,
+    /// so it opens and starts playing from disk. The same for every network
+    /// transport; local vaults are already on disk and skip it. Kept on disk,
+    /// it also survives going back and forth.
+    private func prefetchVideo(_ item: MediaItem) {
+        guard videoPrefetch?.id != item.id, let source = mediaSource else { return }
+        videoPrefetch?.task.cancel()
+        videoPrefetch = (item.id, Task.detached(priority: .utility) {
+            await source.prefetch(item)
+        })
+    }
+
+    private func dropPrefetched() {
+        prefetchGeneration += 1
+        imagePreloadCache.removeAll()
+        videoPrefetch?.task.cancel()
+        videoPrefetch = nil
     }
 
     public var currentItemLabel: String {
@@ -676,6 +721,7 @@ public class AppState: ObservableObject {
 
     public func exitDetail() {
         viewMode = .grid
+        dropPrefetched()
     }
 
     public var isSourceWritable: Bool {
@@ -939,7 +985,6 @@ public class AppState: ObservableObject {
         // for many seconds at app launch, leaving the Drive section stuck on
         // "Connect Google Drive" even when a refresh token was saved.
         Task.detached { [weak self] in
-            AppPaths.removeLegacyDriveCaches()
             GoogleDriveService.shared.loadSavedCredentials()
             guard GoogleDriveService.shared.isConnected else { return }
             guard let self else { return }
@@ -1723,7 +1768,7 @@ extension AppState {
         guard remoteCaches[key] == nil, let client = serverClients[server] else { return }
         Task.detached(priority: .utility) { [weak self] in
             guard let bridge = try? await client.openVault(vaultID: vaultID, password: password,
-                                                           cacheDir: AppPaths.remoteFilesCache) else { return }
+                                                           cacheDir: GocryptfsNetworkCache.directory) else { return }
             await self?.adoptRemoteCache(bridge, server: server, vaultID: vaultID, key: key)
         }
     }

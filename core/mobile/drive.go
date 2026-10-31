@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/adrianm/imagethat/core/cache"
 	"github.com/adrianm/imagethat/core/drive"
 )
 
@@ -153,16 +152,12 @@ func (d *Drive) Move(fileID, oldParent, newParent, newName string) error {
 }
 
 // OpenDrive unlocks the gocryptfs vault in the Drive folder rootID. Downloaded
-// ciphertext is cached in cacheDir (shared by every Drive vault; see
-// SetDriveCacheLimit); "" caches nothing. The vault is writable.
+// ciphertext is kept in the network cache in cacheDir (see networkRanges);
+// "" caches nothing. The vault is writable.
 func OpenDrive(d *Drive, rootID, password, cacheDir string) (*Vault, error) {
-	var ranges *cache.Ranges
-	if cacheDir != "" {
-		r, err := cache.SharedRanges(cacheDir, 0)
-		if err != nil {
-			return nil, wrapErr(err)
-		}
-		ranges = r
+	ranges, err := networkRanges(cacheDir)
+	if err != nil {
+		return nil, err
 	}
 	s, v, err := drive.OpenVault(d.c, rootID, password, ranges)
 	if err != nil {
@@ -174,35 +169,6 @@ func OpenDrive(d *Drive, rootID, password, cacheDir string) (*Vault, error) {
 // InitDrive creates a new empty vault in the (empty) Drive folder folderID.
 func InitDrive(d *Drive, folderID, password string) error {
 	return wrapErr(drive.InitVault(d.c, folderID, password))
-}
-
-// SetDriveCacheLimit sets the Drive cache's size limit in bytes and evicts
-// down to it. Files kept with CacheFile are never evicted.
-func SetDriveCacheLimit(dir string, bytes int64) error {
-	r, err := cache.SharedRanges(dir, bytes)
-	if err != nil {
-		return wrapErr(err)
-	}
-	r.SetBudget(bytes)
-	return nil
-}
-
-// DriveCacheSize is the bytes held in the Drive cache.
-func DriveCacheSize(dir string) int64 {
-	r, err := cache.SharedRanges(dir, 0)
-	if err != nil {
-		return 0
-	}
-	return r.Size()
-}
-
-// ClearDriveCache empties the Drive cache, kept files included.
-func ClearDriveCache(dir string) error {
-	r, err := cache.SharedRanges(dir, 0)
-	if err != nil {
-		return wrapErr(err)
-	}
-	return wrapErr(r.Clear())
 }
 
 // CachedRanges reports which parts of a Drive vault file are held on the

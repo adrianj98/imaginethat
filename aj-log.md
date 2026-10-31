@@ -553,8 +553,62 @@ User request: "keep testing".
 
 **Why:** user asked for an icon that shows buffering, or the buffering status, in the Mac UI. Remote and Drive videos stream through the encrypted resource loader and can stall with no visible feedback.
 
+## 2026-10-31 — App icons (Mac, Android, web) and a Mac install script
+
+**What:**
+- `Scripts/make-icons.swift` (`make icons`): one SVG design (a photo card over a second card, with a padlock badge, on the accent-blue gradient), rendered with NSImage's built-in SVG support into:
+  - Mac: `AppIcon.appiconset` PNGs (Xcode builds) and `ImageThat/Resources/AppIcon.icns` (via `iconutil`). `make app` copies the .icns into the bundle; `Info.plist` gained `CFBundleIconFile`. `Package.swift` excludes the .icns from the SwiftPM target.
+  - Android: adaptive icon layers in `mipmap-*dpi` plus `mipmap-anydpi-v26/ic_launcher.xml`. The manifest now sets `android:icon` / `android:roundIcon`. minSdk 29, so no legacy icon is needed.
+  - Web: `public/favicon.svg` and `apple-touch-icon.png`, linked from `index.html`.
+- `Scripts/install-mac.sh` (`make install`, `INSTALL_ARGS=--user|--to DIR|--open`): checks for macOS on arm64, swift and go, runs `make app`, then copies the bundle with `ditto` to /Applications (using sudo only when needed) or ~/Applications, and re-registers it with LaunchServices so the icon shows. If the copy being replaced is running, it refuses rather than quitting it.
+
+**Why:** user asked for app icons and a Mac install script. None of the three apps had an icon (the Mac AppIcon set was empty, Android had no launcher icon, the web app had no favicon).
+
+**Note:** the first test run of the script quit an ImageThat that was running on this Mac; that is why it now only refuses, and only for the copy being replaced.
+
 ## 2026-10-31 — Merge main into feature/determined-edison-em3exr
 User request: "can u pull main". Main added the Mac video buffering badge/status chip and a blueprint lockfile tweak. Only `aj-log.md` conflicted (both sides appended entries); kept both.
+
+## 2026-10-31 — Merge feature/determined-edison-em3exr into main
+User request: "also merge in feature/determined-edison-em3exr". The branch (Mac, Android and Drive moved onto the shared Go library; the server-decrypt API dropped from the Go library) had already merged main up to the buffering commit, so only `aj-log.md` conflicted (both sides appended entries; kept both).
+Verified on the merged tree: `make build` ok; `make test-logic` 74 passed (the first run exited 1 without a visible failure, two reruns passed); `make golib-test` 69 checks, 0 failed; core and shim Go tests ok except the pre-existing `gocryptfs-lib/internal/tlog` vet error; web vitest 8 passed; webserver `test-short` ok; Android unit tests BUILD SUCCESSFUL.
+
+## 2026-10-31 — Ignore the stale webserver/internal/gocryptfs copy
+Added `webserver/internal/gocryptfs/` to `.gitignore`. It is a generated copy of gocryptfs v2.6.1's internal packages from when the webserver synced its own; since the Go core (f69ba5a) that copy lives in `core/internal/gocryptfs` and nothing imports the webserver one. The local directory itself can be deleted (`rm -rf webserver/internal`); deleting it was left to the user.
+
+## 2026-10-31 — Mac viewer: prebuffer the next item
+**What:**
+- `AppState.prefetch(_:)` starts loading the item after the current one: a full image into the existing preload cache, or a video via `prepareVideo`, which attaches it to a paused `AVPlayer` and calls `preroll(atRate:)` once the item is ready. `VideoPlayerView` takes that player (`takePreparedPlayer`) instead of creating a new one, so the next video starts from buffered data.
+- `DetailView` prefetches through `prefetch` after an image loads (it used to preload only images). `VideoPlayerView` now prefetches too: a next image straight away, a next video once the current one has 30 s buffered ahead or is fully loaded, so the two don't compete for bandwidth.
+- Prefetched media is dropped when `mediaSource` changes (folder change, lock, cache swap) and when leaving the viewer. A generation counter discards image loads that finish after a drop. The image cache now keeps only the latest prefetch.
+
+**Why:** user asked for prebuffering of the next item. Fixed along the way: the image preload cache was never cleared, so skipped preloads and images preloaded before a lock stayed in memory as decrypted data.
+
+## 2026-10-31 — Stable code signing, so the keychain stops asking after Touch ID
+**Cause:** after Touch ID, `KeychainManager.getMasterKey` reads the master key from the login keychain. The item's access list trusts the app's designated requirement, and `make app` signed ad hoc, which makes that requirement the build's cdhash. Every rebuild or install looked like a new app, so macOS asked for the login-keychain password again and "Always Allow" never stuck.
+**Fix:** the Makefile signs with `SIGN_IDENTITY`. It uses a self-signed "ImageThat Local" code-signing certificate when one exists, else ad hoc, with a note. `Scripts/make-signing-cert.sh` creates that certificate in the login keychain (key via LibreSSL, `security import -T /usr/bin/codesign`, `add-trusted-cert -p codeSign`); the user runs it, since trusting a certificate is a security-settings change. With a real identity the requirement is the bundle ID plus the certificate, which stays the same across builds. The README has the one-time steps to create the certificate in Keychain Access. Keychain + LAContext is unchanged, per CLAUDE.md.
+**Mistake along the way:** the first version picked the first valid code-signing identity. On this Mac that was "Kunj Dev", whose key is in a separate `kunj-dev` keychain, so codesign asked the user for a password they don't have. The build was stopped, and the Makefile now only uses a certificate named "ImageThat Local".
+
+## 2026-10-31 — One cache layer for every transport; engine prefetch; no separate server file cache
+**Why:** user reported going back to a watched video downloads it again, and that the next video was not prebuffered. Investigation:
+- A paused, prerolled `AVPlayer` (the previous prebuffer) loads about 1 s of video and stops (measured over the slow-drive harness: 1.1 s / 31 MB, flat from 2 s to 10 s), so it prepared almost nothing, and whatever it held was thrown away with the player.
+- Server vaults kept nothing they read: only whole files marked with Cache File (`~/.imagethat/cache/remote-files`, empty here). Drive had a read-through range cache, but built into the Drive code. Vaults on SMB/NFS mounts were treated as local disk and cached nothing.
+- User direction: local folder, Google Drive and the web server are only transports; everything above them (cache, prefetch) must be the same, in the shared Go library, with nothing legacy kept.
+
+**What (Go core):**
+- `core/cache/through.go`: `cache.Through`, the read-through layer extracted unchanged in behaviour from Drive's `VaultFS.ReadAt` (whole file up to 50 MiB, else 8 MiB windows, one fetch per window, pin for Cache File, scrubber fractions), keyed by `cache.Meta{Key, Version, Size}`. `Ranges.Stored` reports what is held without the network.
+- `core/cachefs`: the cache layer for any transport that supplies `Stat(path) (version, size)`: FileSize refreshes the version (uses what is held when offline), ReadAt goes through `Through`, Cache/IsCached/Uncache/CachedFractions, and a `WriteFS` that drops entries on writes.
+- Drive (`core/drive/vaultfs.go`) now reads through `cache.Through` (same windows and tests).
+- Server (`core/remote/cached.go`): `RawFS.Stat` = gocryptfs header + size; `OpenVaultCached(ctx, id, pw, ranges)` wraps it in `cachefs`. The whole-file store (`core/cache/files.go`) is deleted; Cache File pins in the shared cache like Drive.
+- `core/localfs`: a folder on a network mount (darwin: no `MNT_LOCAL`; linux: NFS/SMB/CIFS/9P/Ceph/AFS magic) is opened through `cachefs` with mtime+size as the version; local disks are plain `vault.OpenLocal`.
+- `vault.Session.CachedFractions` and `vault.Session.Prefetch(ctx, path, head, tail)`: transport-neutral; Prefetch is a no-op for local disks.
+- One network cache directory shared by every transport: shim `GocryptfsNetworkCache{Limit,Size,Clear}`, `GocryptfsOpenCached` (local, mount-aware), `GocryptfsPrefetch`, generic `GocryptfsCachedRanges`; removed `GocryptfsFileCache{Size,Clear}`. Android binding: `NetworkCache{Limit,Size,Clear}`, `OpenLocalCached`; removed the Drive-/file-cache functions.
+
+**What (apps):**
+- Mac: `AppPaths.networkCache` (`~/.imagethat/cache/network`) replaces `drive` and `remote-files`; `GocryptfsNetworkCache` replaces `GocryptfsDriveCache` (limit key `networkCacheMaxBytes`, applied at launch); local vaults open with `GocryptfsOpenCached`; client-decrypt sessions open with the network cache; `RemoteVaultSource` reads every file through its engine session once it is open (images, thumbnails, video, sizes, chunks). `MediaSource.prefetch` + `PrefetchSize` (24 MiB head, 2 MiB tail); `AppState.prefetch` runs the engine prefetch for a next video instead of a paused player; the next-video gate is 15 s buffered ahead (was 30). Preferences: one "Network cache" group in General; the Google Drive tab (which only held the Drive cache) is gone. Removed `AppPaths.removeLegacyDriveCaches`.
+- Android: `LocalVaults.networkCacheDir` (`network-cache`) replaces `fileCacheDir` and `driveCacheDir` for both servers and Drive.
+
+**Not done / notes:** no real SMB/NFS share was available here, so the network-mount path is covered by tests that force it (`localfs_test.go`), and detection was only seen returning false for local disks. A cancelled next-video prefetch still finishes its current Go call (it reads at most 26 MiB). Old cache folders from before (`~/.imagethat/cache/remote-files`, Android `server-files` and `drive-cache`) are no longer used and are not deleted automatically. The user also asked for pluggable encryption; that is a separate design, not part of this change.
 
 ## 2026-10-31 — Go library: remove the server-decrypt fallback
 User request: "Old server-decrypt fallback remove". The Go library could still send a vault password to a server: opening a remote vault without logging in first called the server's `/unlock`, and a session expiring re-sent the stored vault password. Now it never does.
@@ -563,3 +617,8 @@ User request: "Old server-decrypt fallback remove". The Go library could still s
 - **Tests:** core/remote's fake server answers `/api/login` instead of `/unlock`; new `TestOpenNeedsLogin` (no request reaches the server). The shim's real-server test now runs on a client-decrypt server (it was the only user of the fallback). New `TestOpenRemoteRefusesServerDecrypt`: every open on a server-decrypt server fails and the server sees no `/unlock`.
 - *Not changed:* the apps' own server-decrypt code. The Mac's Swift `RemoteServerClient` and Android's Kotlin API client still talk to server-decrypt servers over HTTP and send them the vault password. Neither app called the Go fallback (both open through a logged-in server handle). So server-decrypt servers keep working in both apps, but without Go features like Cache File, the same as before this change.
 - **Checked:** `make core-test` ok, `make golib-test` 69/0, `make test-logic` 74/0, `make android-aar` + `android-test` 129/0, instrumented on `pixel6b` 94/95 with both `ClientDecryptServerTest` cases passing against a real client-decrypt server. The one failure, `NoPlaintextOnDiskTest` ("timed out waiting for tag browser-screen"), was the first test on a freshly booted emulator while the Mac tests were running; it passed twice on its own and in yesterday's full run, and it uses a local vault, not the remote code.
+
+## 2026-10-31 — Merge main again, then land the branch on main
+User request: "can we merge this into main and close it out". Main had already taken the branch up to the earlier merge, then added app icons, signing, viewer prebuffering and "one cache layer for every transport". That last one rewrote `OpenVaultCached` (it now takes a shared `*cache.Ranges` instead of a cache directory) and still carried the `Unlock` fallback.
+- **Conflicts:** `core/remote/cached.go` kept main's cache-layer version with the login check in place of `Unlock`. The doc comments in `core/mobile/server.go` and `gocryptfs-lib/shared.go` were combined. `TestOpenNeedsLogin` passes `nil` ranges, since the login check fails before they are used. `aj-log.md`: kept both.
+- **Checked on the merged code:** `make core-test` ok, `make golib-test` 69/0, `make test-logic` 74/0, `make android-aar` + `android-test` 129/0, instrumented on `pixel6b` 95/95 (including both client-decrypt server tests). Then pushed to main.

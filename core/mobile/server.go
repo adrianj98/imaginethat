@@ -55,13 +55,18 @@ func (s *Server) Logout() error {
 }
 
 // OpenVault opens a vault over the server's ciphertext endpoints and decrypts
-// it here (client-decrypt servers, after Login; "locked:" before it). cacheDir, when not empty,
-// keeps files passed to CacheFile. Read-only.
+// it here (client-decrypt servers, after Login; "locked:" before it).
+// cacheDir, when not empty, is the network cache its reads are kept in (see
+// networkRanges). Read-only.
 func (s *Server) OpenVault(vaultID, password, cacheDir string) (*Vault, error) {
 	var sess *vault.Session
 	var err error
 	if cacheDir != "" {
-		sess, err = s.c.OpenVaultCached(context.Background(), vaultID, password, cacheDir)
+		ranges, rerr := networkRanges(cacheDir)
+		if rerr != nil {
+			return nil, rerr
+		}
+		sess, err = s.c.OpenVaultCached(context.Background(), vaultID, password, ranges)
 	} else {
 		sess, err = s.c.OpenVault(context.Background(), vaultID, password)
 	}

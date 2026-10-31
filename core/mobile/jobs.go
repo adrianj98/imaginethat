@@ -3,7 +3,6 @@ package mobile
 import (
 	"context"
 
-	"github.com/adrianm/imagethat/core/cache"
 	"github.com/adrianm/imagethat/core/remote"
 	"github.com/adrianm/imagethat/core/xfer"
 )
@@ -61,9 +60,9 @@ func (v *Vault) CopyFile(job *Job, destPath, filePath string) error {
 	return wrapErr(err)
 }
 
-// OpenRemoteCached is OpenRemote with a file cache in cacheDir: files passed
-// to CacheFile are kept there as ciphertext and read from disk afterwards,
-// also offline.
+// OpenRemoteCached is OpenRemote with its reads kept in the network cache in
+// cacheDir (see networkRanges), as ciphertext: read again, or pinned with
+// CacheFile, a file comes off disk, also offline.
 func OpenRemoteCached(baseURL, vaultID, password, pinnedSHA256, accessPassword, cacheDir string) (*Vault, error) {
 	c, err := remote.New(baseURL, remote.Options{PinnedSHA256: pinnedSHA256})
 	if err != nil {
@@ -75,7 +74,11 @@ func OpenRemoteCached(baseURL, vaultID, password, pinnedSHA256, accessPassword, 
 			return nil, wrapErr(err)
 		}
 	}
-	s, err := c.OpenVaultCached(ctx, vaultID, password, cacheDir)
+	ranges, err := networkRanges(cacheDir)
+	if err != nil {
+		return nil, err
+	}
+	s, err := c.OpenVaultCached(ctx, vaultID, password, ranges)
 	if err != nil {
 		return nil, wrapErr(err)
 	}
@@ -94,9 +97,3 @@ func (v *Vault) IsCached(path string) bool { return v.s.IsCached(path) }
 
 // Uncache drops the device's copy of the file.
 func (v *Vault) Uncache(path string) error { return wrapErr(v.s.Uncache(path)) }
-
-// FileCacheSize is the size of a remote file cache directory.
-func FileCacheSize(dir string) int64 { return cache.FilesSize(dir) }
-
-// ClearFileCache empties a remote file cache directory.
-func ClearFileCache(dir string) error { return wrapErr(cache.ClearFiles(dir)) }

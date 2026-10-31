@@ -9,7 +9,7 @@ public struct GoogleDriveSetupView: View {
     @State private var showJSONImporter = false
 
     // Cache settings
-    @State private var selectedLimit: Int64 = GocryptfsDriveCache.maxBytes
+    @State private var selectedLimit: Int64 = GocryptfsNetworkCache.maxBytes
 
     private let limitOptions: [(label: String, bytes: Int64)] = [
         ("1 GB", 1_073_741_824),
@@ -87,7 +87,7 @@ public struct GoogleDriveSetupView: View {
                 }
                 .pickerStyle(.segmented)
                 .onChange(of: selectedLimit) { _, newValue in
-                    GocryptfsDriveCache.maxBytes = newValue
+                    GocryptfsNetworkCache.maxBytes = newValue
                 }
 
                 HStack {
@@ -96,7 +96,7 @@ public struct GoogleDriveSetupView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button("Clear Cache") {
-                        try? GocryptfsDriveCache.clear()
+                        try? GocryptfsNetworkCache.clear()
                         refreshCacheUsage()
                     }
                     .font(.caption)
@@ -172,7 +172,7 @@ public struct GoogleDriveSetupView: View {
     }
 
     private func refreshCacheUsage() {
-        cacheUsageBytes = GocryptfsDriveCache.size()
+        cacheUsageBytes = GocryptfsNetworkCache.size()
     }
 
     private func handleJSONImport(_ result: Result<[URL], Error>) {
