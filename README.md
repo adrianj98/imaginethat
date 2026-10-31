@@ -30,17 +30,19 @@ Scripts/install-mac.sh --open    # launch it afterwards
 Touch ID unlocks a master key in your login keychain, and the keychain only
 trusts the exact app signature that clicked "Always Allow". `make app` signs ad
 hoc by default, and that signature changes with every build, so macOS asks for
-your login password again after each rebuild. To fix that once:
+your login password again after each rebuild. To fix that once, create a
+self-signed "ImageThat Local" signing certificate in your login keychain and
+reinstall:
 
-1. Open **Keychain Access**, then choose **Keychain Access > Certificate
-   Assistant > Create a Certificate…**
-2. Name: `ImageThat Local`, Identity Type: **Self-Signed Root**, Certificate
-   Type: **Code Signing**. Click **Create**, and keep the login keychain.
-3. Run `Scripts/install-mac.sh` again. `make app` picks up `ImageThat Local` on
-   its own. The first signing asks for your login password: choose **Always
-   Allow**.
-4. Open the app and use Touch ID once more. When the keychain asks, choose
-   **Always Allow**. Later builds keep the same signature, so it won't ask again.
+```bash
+Scripts/make-signing-cert.sh    # asks for your login password once, to trust it
+Scripts/install-mac.sh
+```
+
+`make app` picks up `ImageThat Local` on its own. Unlock with Touch ID once
+more and choose **Always Allow**; later builds keep the same signature, so it
+won't ask again. (By hand instead: Keychain Access > Certificate Assistant >
+Create a Certificate…, name `ImageThat Local`, Self-Signed Root, Code Signing.)
 
 The app icons for Mac, Android and the web UI all come from
 `Scripts/make-icons.swift`; run `make icons` after changing the artwork.
