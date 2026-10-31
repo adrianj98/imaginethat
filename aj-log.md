@@ -544,3 +544,14 @@ User request: "keep testing".
 - **Android instrumented tests on the `pixel6b` emulator:** 95/95, 0 skipped. That includes the opt-in `ClientDecryptServerTest`, run against a real `imagethat-web -mode client-decrypt` on a copy of `core/vault/testdata/vault` (server at 10.0.2.2:8347). With the old `RemoteVault` (`unlocked` required), `appPathLogsInOpensAndKeepsAFileOnThePhone` fails with `MissingFieldException: Field 'unlocked' is required`, so the earlier Android fix is confirmed needed. Restored and rerun: pass.
 - **Web UI vitest:** "decrypts any byte range from just the blocks that cover it" timed out (5s) in 5 of 6 runs while the emulator and Gradle were running, and passed 5 of 5 once they stopped (about 1.4s). That is load, not a bug; the web code is unchanged on this branch. The worktree also had no `node_modules`, so `npm ci` was needed first.
 - **Mac app by hand: not done.** `make app` builds and the app launches, but this session can't see or click it: `screencapture` fails ("could not create image from display") and System Events refuses ("osascript is not allowed assistive access"). Granting the terminal Screen Recording and Accessibility would allow it.
+## 2026-10-30 — Mac video player: buffering indicator and status
+
+**What:** `VideoPlayerView` now watches `AVPlayer.timeControlStatus` and the current item's `loadedTimeRanges` (Combine KVO publishers).
+- While playback stalls (`waitingToPlayAtSpecifiedRate`), a dark glass "Buffering…" badge with a spinner sits centered over the video. It shows even when the transport bar has auto-hidden, and appears only after 300 ms so quick seeks don't flash it.
+- `TransportBarView` has a status chip after the duration: a spinner + "Buffering" while stalled, otherwise the seconds loaded ahead of the playhead (e.g. "24s"), amber below 5 s, "Loaded" with a checkmark once the whole video is buffered. Hover text spells it out.
+- Loaded ranges are now also refreshed from KVO, so the faint strip keeps updating while the player is stalled (the periodic time observer stops firing then).
+
+**Why:** user asked for an icon that shows buffering, or the buffering status, in the Mac UI. Remote and Drive videos stream through the encrypted resource loader and can stall with no visible feedback.
+
+## 2026-10-31 — Merge main into feature/determined-edison-em3exr
+User request: "can u pull main". Main added the Mac video buffering badge/status chip and a blueprint lockfile tweak. Only `aj-log.md` conflicted (both sides appended entries); kept both.

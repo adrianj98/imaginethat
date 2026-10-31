@@ -19,7 +19,6 @@
     "cd webserver && go mod download",
     "cd webserver/web && npm install"
   ],
-  "lockfiles": ["webserver/go.sum", "webserver/web/package-lock.json", "android/gradle/libs.versions.toml"],
   "aliases": {
     "wt": "make -C webserver test-short",
     "wrun": "make -C webserver run ROOT=/workspace",
