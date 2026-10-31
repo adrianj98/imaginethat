@@ -572,3 +572,6 @@ User request: "can u pull main". Main added the Mac video buffering badge/status
 ## 2026-10-31 — Merge feature/determined-edison-em3exr into main
 User request: "also merge in feature/determined-edison-em3exr". The branch (Mac, Android and Drive moved onto the shared Go library; the server-decrypt API dropped from the Go library) had already merged main up to the buffering commit, so only `aj-log.md` conflicted (both sides appended entries; kept both).
 Verified on the merged tree: `make build` ok; `make test-logic` 74 passed (the first run exited 1 without a visible failure, two reruns passed); `make golib-test` 69 checks, 0 failed; core and shim Go tests ok except the pre-existing `gocryptfs-lib/internal/tlog` vet error; web vitest 8 passed; webserver `test-short` ok; Android unit tests BUILD SUCCESSFUL.
+
+## 2026-10-31 — Ignore the stale webserver/internal/gocryptfs copy
+Added `webserver/internal/gocryptfs/` to `.gitignore`. It is a generated copy of gocryptfs v2.6.1's internal packages from when the webserver synced its own; since the Go core (f69ba5a) that copy lives in `core/internal/gocryptfs` and nothing imports the webserver one. The local directory itself can be deleted (`rm -rf webserver/internal`); deleting it was left to the user.
