@@ -93,13 +93,31 @@ func TestRemoteClientDecrypt(t *testing.T) {
 	}
 }
 
-func TestRemoteServerDecryptModeUnchanged(t *testing.T) {
-	_, _, _, rc, _, _ := rawSetup(t)
+// The Go client cannot open a vault on a server-decrypt server, and never
+// sends it the vault password: the server holds nothing unlocked afterwards.
+func TestRemoteServerDecryptRefused(t *testing.T) {
+	srv, _ := newTestServer(t)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	id := newClient(t, srv).vaultID()
 	ctx := context.Background()
+
+	rc, err := remote.New(ts.URL, remote.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if mode, err := rc.Info(ctx); err != nil || mode != remote.ModeServerDecrypt {
 		t.Fatalf("Info = %q, %v", mode, err)
 	}
 	if err := rc.Login(ctx, "anything"); !errors.Is(err, remote.ErrNotClientDecrypt) {
 		t.Errorf("Login on a server-decrypt server: %v", err)
+	}
+	if _, err := rc.OpenVault(ctx, id, fixturePassword); !errors.Is(err, remote.ErrLoginRequired) {
+		t.Errorf("OpenVault on a server-decrypt server: %v, want ErrLoginRequired", err)
+	}
+	for _, b := range srv.sessions.sessions {
+		if len(b.unlockedIDs()) != 0 {
+			t.Error("a vault was unlocked on the server")
+		}
 	}
 }

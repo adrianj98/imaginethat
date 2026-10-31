@@ -24,18 +24,24 @@ func (c *countingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return http.DefaultTransport.RoundTrip(r)
 }
 
-// rawSetup serves the test vault over a real listener and returns the vault
-// ID, a remote client, and a local session on the same files for comparison.
+// rawSetup serves the test vault in client-decrypt mode over a real listener
+// and returns the vault ID, a remote client that has logged in, and a local
+// session on the same files for comparison.
 func rawSetup(t *testing.T) (*Server, *httptest.Server, string, *remote.Client, *countingTransport, *vault.Session) {
 	t.Helper()
-	srv, root := newTestServer(t)
+	srv, root := newClientDecryptServer(t)
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
-	id := newClient(t, srv).vaultID()
+	hc := newClient(t, srv)
+	hc.login(testAccessPassword)
+	id := hc.vaultID()
 
 	ct := &countingTransport{}
 	rc, err := remote.New(ts.URL, remote.Options{Transport: ct})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rc.Login(context.Background(), testAccessPassword); err != nil {
 		t.Fatal(err)
 	}
 	local, err := vault.OpenLocal(filepath.Join(root, "myvault"), fixturePassword)
@@ -105,7 +111,7 @@ func TestRawModeMatchesLocalDecryption(t *testing.T) {
 	if _, err := rs.ReadFile("missing.jpg"); !errors.Is(err, vault.ErrNotFound) {
 		t.Errorf("missing file: %v, want vault.ErrNotFound", err)
 	}
-	// Writes go through the decrypted API; a raw-mode session refuses them.
+	// A raw-mode session is read-only.
 	if err := rs.Mkdir("new"); !errors.Is(err, vault.ErrReadOnlyBackend) {
 		t.Errorf("Mkdir over raw mode: %v, want ErrReadOnlyBackend", err)
 	}
@@ -138,7 +144,7 @@ func TestRawModeReadsAreCoalesced(t *testing.T) {
 	}
 }
 
-func TestRawModeReunlocksAfterServerExpiry(t *testing.T) {
+func TestRawModeLogsInAgainAfterServerExpiry(t *testing.T) {
 	srv, _, id, rc, _, local := rawSetup(t)
 	rs, err := rc.OpenVault(context.Background(), id, fixturePassword)
 	if err != nil {
@@ -155,7 +161,7 @@ func TestRawModeReunlocksAfterServerExpiry(t *testing.T) {
 	}
 	want, _ := local.ReadFile("photo.jpg")
 	if !bytes.Equal(got, want) {
-		t.Error("content differs after re-unlock")
+		t.Error("content differs after logging in again")
 	}
 }
 
