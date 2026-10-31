@@ -1,4 +1,4 @@
-.PHONY: build run golib clean app test test-logic test-e2e test-fixtures golib-sync \
+.PHONY: build run golib clean app install icons test test-logic test-e2e test-fixtures golib-sync \
         core-test slow-video-test golib-test golib-linux golib-linux-test web-build web-all web-run web-test android-aar android-debug android-test
 
 BIN_DIR = $(shell swift build --show-bin-path)
@@ -26,8 +26,19 @@ app: build
 	install_name_tool -change libgocryptfs.dylib @executable_path/../Frameworks/libgocryptfs.dylib $(APP_BUNDLE)/Contents/MacOS/ImageThat
 	codesign --force --sign - $(APP_BUNDLE)/Contents/Frameworks/libgocryptfs.dylib
 	codesign --force --sign - $(APP_BUNDLE)/Contents/MacOS/ImageThat
+	mkdir -p $(APP_BUNDLE)/Contents/Resources
+	cp ImageThat/Resources/AppIcon.icns $(APP_BUNDLE)/Contents/Resources/
 	cp ImageThat/Resources/Info.plist $(APP_BUNDLE)/Contents/Info.plist
 	codesign --force --sign - $(APP_BUNDLE)
+
+# Build the app and install it to /Applications (see Scripts/install-mac.sh
+# for --user / --to / --open). Usage: make install [INSTALL_ARGS=--user]
+install:
+	Scripts/install-mac.sh $(INSTALL_ARGS)
+
+# Regenerate every app icon (Mac, Android, web) from Scripts/make-icons.swift
+icons:
+	swift Scripts/make-icons.swift
 
 # Copy the gocryptfs internal/ packages into core/. Required once after
 # cloning, and again whenever the pinned gocryptfs version changes.

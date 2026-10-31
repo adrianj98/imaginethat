@@ -529,3 +529,16 @@ User request: "push to main and create a tag for release".
 - Loaded ranges are now also refreshed from KVO, so the faint strip keeps updating while the player is stalled (the periodic time observer stops firing then).
 
 **Why:** user asked for an icon that shows buffering, or the buffering status, in the Mac UI. Remote and Drive videos stream through the encrypted resource loader and can stall with no visible feedback.
+
+## 2026-10-31 — App icons (Mac, Android, web) and a Mac install script
+
+**What:**
+- `Scripts/make-icons.swift` (`make icons`): one SVG design (a photo card over a second card, with a padlock badge, on the accent-blue gradient), rendered with NSImage's built-in SVG support into:
+  - Mac: `AppIcon.appiconset` PNGs (Xcode builds) and `ImageThat/Resources/AppIcon.icns` (via `iconutil`). `make app` copies the .icns into the bundle; `Info.plist` gained `CFBundleIconFile`. `Package.swift` excludes the .icns from the SwiftPM target.
+  - Android: adaptive icon layers in `mipmap-*dpi` plus `mipmap-anydpi-v26/ic_launcher.xml`. The manifest now sets `android:icon` / `android:roundIcon`. minSdk 29, so no legacy icon is needed.
+  - Web: `public/favicon.svg` and `apple-touch-icon.png`, linked from `index.html`.
+- `Scripts/install-mac.sh` (`make install`, `INSTALL_ARGS=--user|--to DIR|--open`): checks for macOS on arm64, swift and go, runs `make app`, then copies the bundle with `ditto` to /Applications (using sudo only when needed) or ~/Applications, and re-registers it with LaunchServices so the icon shows. If the copy being replaced is running, it refuses rather than quitting it.
+
+**Why:** user asked for app icons and a Mac install script. None of the three apps had an icon (the Mac AppIcon set was empty, Android had no launcher icon, the web app had no favicon).
+
+**Note:** the first test run of the script quit an ImageThat that was running on this Mac; that is why it now only refuses, and only for the copy being replaced.

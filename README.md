@@ -15,6 +15,19 @@ through `gocryptfs-lib`, a thin cgo shim. See
   make clean    # wipe all build artifacts
 ```
 
+### Install
+
+Builds the app and copies it into `/Applications` (Apple silicon only):
+
+```bash
+Scripts/install-mac.sh           # or: make install
+Scripts/install-mac.sh --user    # ~/Applications, no admin rights
+Scripts/install-mac.sh --open    # launch it afterwards
+```
+
+The app icons for Mac, Android and the web UI all come from
+`Scripts/make-icons.swift`; run `make icons` after changing the artwork.
+
 ## Shortcuts
 
 - **Cmd+O** — open folder
