@@ -575,3 +575,11 @@ Verified on the merged tree: `make build` ok; `make test-logic` 74 passed (the f
 
 ## 2026-10-31 — Ignore the stale webserver/internal/gocryptfs copy
 Added `webserver/internal/gocryptfs/` to `.gitignore`. It is a generated copy of gocryptfs v2.6.1's internal packages from when the webserver synced its own; since the Go core (f69ba5a) that copy lives in `core/internal/gocryptfs` and nothing imports the webserver one. The local directory itself can be deleted (`rm -rf webserver/internal`); deleting it was left to the user.
+
+## 2026-10-31 — Mac viewer: prebuffer the next item
+**What:**
+- `AppState.prefetch(_:)` starts loading the item after the current one: a full image into the existing preload cache, or a video via `prepareVideo`, which attaches it to a paused `AVPlayer` and calls `preroll(atRate:)` once the item is ready. `VideoPlayerView` takes that player (`takePreparedPlayer`) instead of creating a new one, so the next video starts from buffered data.
+- `DetailView` prefetches through `prefetch` after an image loads (it used to preload only images). `VideoPlayerView` now prefetches too: a next image straight away, a next video once the current one has 30 s buffered ahead or is fully loaded, so the two don't compete for bandwidth.
+- Prefetched media is dropped when `mediaSource` changes (folder change, lock, cache swap) and when leaving the viewer. A generation counter discards image loads that finish after a drop. The image cache now keeps only the latest prefetch.
+
+**Why:** user asked for prebuffering of the next item. Fixed along the way: the image preload cache was never cleared, so skipped preloads and images preloaded before a lock stayed in memory as decrypted data.

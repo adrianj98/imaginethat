@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import CryptoKit
 import UniformTypeIdentifiers
 import Foundation
@@ -14,7 +15,11 @@ public enum ViewMode {
 
 @MainActor
 public class AppState: ObservableObject {
-    @Published public var mediaSource: (any MediaSource)?
+    @Published public var mediaSource: (any MediaSource)? {
+        // Prefetched media belongs to the old source, and after a lock it is
+        // decrypted content that must not outlive the vault.
+        didSet { dropPrefetched() }
+    }
     @Published public var mediaItems: [MediaItem] = []
     @Published public var selectedIndex: Int = 0
     @Published public var viewMode: ViewMode = .grid
@@ -56,6 +61,12 @@ public class AppState: ObservableObject {
 
     /// Preloaded full images for instant navigation (next item only, evicted on navigation)
     private var imagePreloadCache: [MediaItem.ID: NSImage] = [:]
+    /// The next video, attached to a paused player that is buffering it.
+    private var preparedVideo: (id: MediaItem.ID, player: AVPlayer)?
+    private var preparedVideoStatus: NSKeyValueObservation?
+    /// Bumped whenever prefetched media is dropped, so a load that finishes
+    /// afterwards is discarded instead of cached.
+    private var prefetchGeneration = 0
 
     private static let lastFolderKey = "lastOpenedFolderURL"
 
@@ -218,15 +229,69 @@ public class AppState: ObservableObject {
         return mediaItems[selectedIndex + 1]
     }
 
+    /// Start loading the item the viewer will most likely show next: a full
+    /// image, or a video buffered in a paused player.
+    public func prefetch(_ item: MediaItem) {
+        switch item.mediaType {
+        case .image:
+            Task(priority: .background) { await preloadImage(for: item) }
+        case .video:
+            prepareVideo(for: item)
+        }
+    }
+
     public func preloadImage(for item: MediaItem) async {
         guard imagePreloadCache[item.id] == nil, item.mediaType == .image,
               let source = mediaSource else { return }
-        guard let image = try? await source.loadImage(for: item) else { return }
-        imagePreloadCache[item.id] = image
+        let generation = prefetchGeneration
+        guard let image = try? await source.loadImage(for: item),
+              generation == prefetchGeneration else { return }
+        // Only the latest prefetch is kept, so skipped images don't pile up.
+        imagePreloadCache = [item.id: image]
     }
 
     public func popPreloadedImage(for item: MediaItem) -> NSImage? {
         imagePreloadCache.removeValue(forKey: item.id)
+    }
+
+    /// Attach the video to a paused player and preroll it, so playback can
+    /// start from data that is already buffered.
+    public func prepareVideo(for item: MediaItem) {
+        guard item.mediaType == .video, preparedVideo?.id != item.id,
+              let source = mediaSource,
+              let playerItem = try? source.createPlayerItem(for: item) else { return }
+        dropPreparedVideo()
+        let player = AVPlayer(playerItem: playerItem)
+        preparedVideo = (item.id, player)
+        preparedVideoStatus = playerItem.observe(\.status, options: [.initial, .new]) { [weak player] item, _ in
+            guard item.status == .readyToPlay else { return }
+            DispatchQueue.main.async {
+                guard let player, player.rate == 0, player.status == .readyToPlay else { return }
+                player.preroll(atRate: 1)
+            }
+        }
+    }
+
+    /// The prepared player for this item, if there is a usable one.
+    public func takePreparedPlayer(for item: MediaItem) -> AVPlayer? {
+        guard let prepared = preparedVideo, prepared.id == item.id else { return nil }
+        preparedVideoStatus = nil
+        preparedVideo = nil
+        guard prepared.player.currentItem?.status != .failed else { return nil }
+        return prepared.player
+    }
+
+    private func dropPreparedVideo() {
+        preparedVideoStatus = nil
+        preparedVideo?.player.cancelPendingPrerolls()
+        preparedVideo?.player.replaceCurrentItem(with: nil)
+        preparedVideo = nil
+    }
+
+    private func dropPrefetched() {
+        prefetchGeneration += 1
+        imagePreloadCache.removeAll()
+        dropPreparedVideo()
     }
 
     public var currentItemLabel: String {
@@ -676,6 +741,7 @@ public class AppState: ObservableObject {
 
     public func exitDetail() {
         viewMode = .grid
+        dropPrefetched()
     }
 
     public var isSourceWritable: Bool {
