@@ -64,11 +64,11 @@ func OpenLocal(dir, password string) (*Vault, error) {
 // OpenRemote opens a vault on an imagethat-web server in ciphertext mode: the
 // server sends the vault's encrypted files and decryption happens here.
 // pinnedSHA256 is the hex SHA-256 of a self-signed server's certificate, or
-// "". accessPassword is the server access password of a client-decrypt
-// server (see ServerMode), after which the vault password never leaves the
-// device; pass "" for a server-decrypt server. The vault is read-only; writes
-// go through the server's API. Errors carry the usual codes plus
-// "cert_mismatch:" and "wrong_access_password:".
+// "". accessPassword is the server access password: only client-decrypt
+// servers (see ServerMode) are supported, and the vault password never leaves
+// the device. Without one nothing is sent and the error is "locked:". The
+// vault is read-only. Errors carry the usual codes plus "cert_mismatch:" and
+// "wrong_access_password:".
 func OpenRemote(baseURL, vaultID, password, pinnedSHA256, accessPassword string) (*Vault, error) {
 	c, err := remote.New(baseURL, remote.Options{PinnedSHA256: pinnedSHA256})
 	if err != nil {
@@ -88,8 +88,8 @@ func OpenRemote(baseURL, vaultID, password, pinnedSHA256, accessPassword string)
 }
 
 // ServerMode reports how an imagethat-web server works: "server-decrypt"
-// (send it the vault password) or "client-decrypt" (log in with its access
-// password and decrypt here).
+// (this engine cannot open its vaults) or "client-decrypt" (log in with its
+// access password and decrypt here).
 func ServerMode(baseURL, pinnedSHA256 string) (string, error) {
 	c, err := remote.New(baseURL, remote.Options{PinnedSHA256: pinnedSHA256})
 	if err != nil {

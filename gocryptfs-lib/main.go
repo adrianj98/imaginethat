@@ -226,14 +226,14 @@ func GocryptfsOpenVFS(
 // The session is read-only (writes go through the server's decrypted API)
 // and works with every read and thumbnail export.
 //
-// accessPassword is the server's access password for a server in
-// client-decrypt mode (see GocryptfsServerMode); the vault password then
-// never leaves this process. Pass empty for a server-decrypt server, which is
-// sent the vault password to unlock the vault there.
+// accessPassword is the server's access password: only client-decrypt
+// servers (see GocryptfsServerMode) are supported, and the vault password
+// never leaves this process. Without one nothing is sent and the call fails
+// with -8.
 //
 // Returns a session id, or -1 no such vault, -2 wrong password, -3 network or
 // server error, -6 certificate does not match the pin, -7 wrong access
-// password.
+// password, -8 no access password (log in first).
 //
 //export GocryptfsOpenRemote
 func GocryptfsOpenRemote(baseURL *C.char, vaultID *C.char, password *C.char, pinnedSHA256 *C.char, accessPassword *C.char) C.int {
@@ -265,14 +265,16 @@ func remoteRC(err error) C.int {
 		return rcNoConfig
 	case errors.Is(err, remote.ErrCertMismatch):
 		return -6
+	case errors.Is(err, remote.ErrLocked):
+		return rcLocked
 	default:
 		return rcCrypto
 	}
 }
 
 // GocryptfsServerMode asks an imagethat-web server how it works: 0
-// server-decrypt (send it the vault password), 1 client-decrypt (log in with
-// its access password and decrypt here). -3 network or server error, -6
+// server-decrypt (this library cannot open its vaults), 1 client-decrypt (log
+// in with its access password and decrypt here). -3 network or server error, -6
 // certificate does not match the pin.
 //
 //export GocryptfsServerMode

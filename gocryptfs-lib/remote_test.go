@@ -12,32 +12,62 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/adrianm/imagethat/webserver/server"
 )
 
-// TestOpenRemoteAgainstRealServer runs the real imagethat-web server in
-// process over a copy of the fixture vault and opens it through
-// GocryptfsOpenRemote: the session must read exactly what the local session
-// reads, including thumbnails, and refuse writes.
-func TestOpenRemoteAgainstRealServer(t *testing.T) {
+const shimAccessPassword = "access-pw"
+
+// serveFixture runs the real imagethat-web server in process over a copy of
+// the fixture vault, in client-decrypt mode or (clientDecrypt false)
+// server-decrypt mode. It returns the vault directory, the server URL and the
+// vault ID; paths records every request path the server saw.
+func serveFixture(t *testing.T, clientDecrypt bool) (vaultDir, url, id string, paths *[]string) {
+	t.Helper()
 	if _, err := os.Stat(filepath.Join(fixtureDir, "gocryptfs.conf")); err != nil {
 		t.Skip("fixture vault missing")
 	}
 	root := t.TempDir()
-	if err := os.CopyFS(filepath.Join(root, "v"), os.DirFS(fixtureDir)); err != nil {
+	vaultDir = filepath.Join(root, "v")
+	if err := os.CopyFS(vaultDir, os.DirFS(fixtureDir)); err != nil {
 		t.Fatal(err)
 	}
-	srv, err := server.New(server.Config{Root: root, Logger: log.New(io.Discard, "", 0)})
+	cfg := server.Config{Root: root, Logger: log.New(io.Discard, "", 0)}
+	if clientDecrypt {
+		hash, err := server.HashAccessPassword(shimAccessPassword)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Mode, cfg.AccessPasswordHash = server.ModeClientDecrypt, hash
+	}
+	srv, err := server.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer srv.Close()
-	ts := httptest.NewServer(srv)
-	defer ts.Close()
+	t.Cleanup(func() { srv.Close() })
+	var mu sync.Mutex
+	paths = new([]string)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		*paths = append(*paths, r.URL.Path)
+		mu.Unlock()
+		srv.ServeHTTP(w, r)
+	}))
+	t.Cleanup(ts.Close)
 
-	resp, err := http.Get(ts.URL + "/api/vaults")
+	hc := &http.Client{Jar: newJar(t)}
+	if clientDecrypt {
+		resp, err := hc.Post(ts.URL+"/api/login", "application/json",
+			bytes.NewReader([]byte(`{"password":"`+shimAccessPassword+`"}`)))
+		if err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("login: %v %v", err, resp)
+		}
+		resp.Body.Close()
+	}
+	resp, err := hc.Get(ts.URL + "/api/vaults")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,24 +79,46 @@ func TestOpenRemoteAgainstRealServer(t *testing.T) {
 	if len(vs.Vaults) != 1 {
 		t.Fatalf("server found %d vaults", len(vs.Vaults))
 	}
-	id := vs.Vaults[0].ID
+	mu.Lock()
+	*paths = (*paths)[:0]
+	mu.Unlock()
+	return vaultDir, ts.URL, vs.Vaults[0].ID, paths
+}
 
-	if rc := tOpenRemote(ts.URL, id, "wrong", ""); rc != rcWrongPassword {
+// TestOpenRemoteAgainstRealServer opens the fixture vault on a client-decrypt
+// server through GocryptfsOpenRemote and GocryptfsOpenRemoteCached: the
+// library logs in with the access password and decrypts here. The session
+// must read exactly what the local session reads, including thumbnails, and
+// refuse writes.
+func TestOpenRemoteAgainstRealServer(t *testing.T) {
+	vaultDir, url, id, _ := serveFixture(t, true)
+	access := shimAccessPassword
+
+	if m := tServerMode(url); m != 1 {
+		t.Fatalf("GocryptfsServerMode = %d, want 1", m)
+	}
+	if rc := tOpenRemoteAccess(url, id, fixturePassword, "", "wrong"); rc != -7 {
+		t.Errorf("wrong access password = %d, want -7", rc)
+	}
+	if rc := tOpenRemoteAccess(url, id, "wrong", "", access); rc != rcWrongPassword {
 		t.Errorf("wrong password = %d, want %d", rc, rcWrongPassword)
 	}
-	if rc := tOpenRemote(ts.URL, "nope", fixturePassword, ""); rc != rcNoConfig {
+	if rc := tOpenRemoteAccess(url, "nope", fixturePassword, "", access); rc != rcNoConfig {
 		t.Errorf("unknown vault = %d, want %d", rc, rcNoConfig)
 	}
-	if rc := tOpenRemote("not a url", id, fixturePassword, ""); rc != rcCrypto {
+	if rc := tOpenRemoteAccess("not a url", id, fixturePassword, "", access); rc != rcCrypto {
 		t.Errorf("bad URL = %d, want %d", rc, rcCrypto)
 	}
+	if rc := tOpenRemote(url, id, fixturePassword, ""); rc != rcLocked {
+		t.Errorf("no access password = %d, want %d", rc, rcLocked)
+	}
 
-	rid := tOpenRemote(ts.URL, id, fixturePassword, "")
+	rid := tOpenRemoteAccess(url, id, fixturePassword, "", access)
 	if rid <= 0 {
 		t.Fatalf("GocryptfsOpenRemote = %d", rid)
 	}
 	defer tClose(rid)
-	lid := tOpen(filepath.Join(root, "v"), fixturePassword)
+	lid := tOpen(vaultDir, fixturePassword)
 	if lid <= 0 {
 		t.Fatal(lid)
 	}
@@ -100,7 +152,10 @@ func TestOpenRemoteAgainstRealServer(t *testing.T) {
 	// The same vault with a file cache: caching photo.jpg stores its
 	// ciphertext, and reads still match the local session.
 	cacheDir := t.TempDir()
-	cid := tOpenRemoteCached(ts.URL, id, fixturePassword, "", "", cacheDir)
+	if rc := tOpenRemoteCached(url, id, fixturePassword, "", "", cacheDir); rc != rcLocked {
+		t.Errorf("cached, no access password = %d, want %d", rc, rcLocked)
+	}
+	cid := tOpenRemoteCached(url, id, fixturePassword, "", access, cacheDir)
 	if cid <= 0 {
 		t.Fatalf("GocryptfsOpenRemoteCached = %d", cid)
 	}
@@ -126,71 +181,31 @@ func TestOpenRemoteAgainstRealServer(t *testing.T) {
 	}
 }
 
-// TestOpenRemoteClientDecrypt opens a vault on a client-decrypt server: the
-// library logs in with the access password and unlocks the vault itself.
-func TestOpenRemoteClientDecrypt(t *testing.T) {
-	if _, err := os.Stat(filepath.Join(fixtureDir, "gocryptfs.conf")); err != nil {
-		t.Skip("fixture vault missing")
-	}
-	root := t.TempDir()
-	if err := os.CopyFS(filepath.Join(root, "v"), os.DirFS(fixtureDir)); err != nil {
-		t.Fatal(err)
-	}
-	hash, err := server.HashAccessPassword("access-pw")
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv, err := server.New(server.Config{
-		Root: root, Logger: log.New(io.Discard, "", 0),
-		Mode: server.ModeClientDecrypt, AccessPasswordHash: hash,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer srv.Close()
-	ts := httptest.NewServer(srv)
-	defer ts.Close()
+// TestOpenRemoteRefusesServerDecrypt: the library cannot open a vault on a
+// server-decrypt server, and the server never sees the vault password: no
+// call reaches its /unlock endpoint.
+func TestOpenRemoteRefusesServerDecrypt(t *testing.T) {
+	_, url, id, paths := serveFixture(t, false)
 
-	if m := tServerMode(ts.URL); m != 1 {
-		t.Fatalf("GocryptfsServerMode = %d, want 1", m)
+	if rc := tOpenRemote(url, id, fixturePassword, ""); rc != rcLocked {
+		t.Errorf("GocryptfsOpenRemote without access password = %d, want %d", rc, rcLocked)
 	}
-	// The vault ID is the same hash the server-decrypt test sees; get it
-	// through a logged-in request.
-	jar := &http.Client{Jar: newJar(t)}
-	resp, err := jar.Post(ts.URL+"/api/login", "application/json", bytes.NewReader([]byte(`{"password":"access-pw"}`)))
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("login: %v %v", err, resp)
+	if rc := tOpenRemoteCached(url, id, fixturePassword, "", "", t.TempDir()); rc != rcLocked {
+		t.Errorf("GocryptfsOpenRemoteCached without access password = %d, want %d", rc, rcLocked)
 	}
-	var vs struct {
-		Vaults []struct{ ID string } `json:"vaults"`
+	if rc := tOpenRemoteAccess(url, id, fixturePassword, "", shimAccessPassword); rc > 0 {
+		tClose(rc)
+		t.Error("GocryptfsOpenRemote opened a server-decrypt vault")
 	}
-	_ = json.NewDecoder(resp.Body).Decode(&vs)
-	resp.Body.Close()
-	if len(vs.Vaults) != 1 {
-		t.Fatalf("server found %d vaults", len(vs.Vaults))
+	h := tServerNew(url)
+	defer tServerFree(h)
+	if rc := tServerOpenVault(h, id, fixturePassword, ""); rc != rcLocked {
+		t.Errorf("GocryptfsServerOpenVault without login = %d, want %d", rc, rcLocked)
 	}
-	id := vs.Vaults[0].ID
-
-	if rc := tOpenRemoteAccess(ts.URL, id, fixturePassword, "", "wrong"); rc != -7 {
-		t.Errorf("wrong access password = %d, want -7", rc)
-	}
-	if rc := tOpenRemoteAccess(ts.URL, id, "wrong", "", "access-pw"); rc != rcWrongPassword {
-		t.Errorf("wrong vault password = %d, want %d", rc, rcWrongPassword)
-	}
-	rid := tOpenRemoteAccess(ts.URL, id, fixturePassword, "", "access-pw")
-	if rid <= 0 {
-		t.Fatalf("GocryptfsOpenRemote = %d", rid)
-	}
-	defer tClose(rid)
-	lid := tOpen(filepath.Join(root, "v"), fixturePassword)
-	if lid <= 0 {
-		t.Fatal(lid)
-	}
-	defer tClose(lid)
-	rb, errR := tDecryptFile(rid, "photo.jpg")
-	lb, errL := tDecryptFile(lid, "photo.jpg")
-	if errR != nil || errL != nil || !bytes.Equal(rb, lb) {
-		t.Errorf("photo.jpg: remote %d bytes (%v), local %d (%v)", len(rb), errR, len(lb), errL)
+	for _, p := range *paths {
+		if strings.HasSuffix(p, "/unlock") {
+			t.Errorf("the library called %s", p)
+		}
 	}
 }
 

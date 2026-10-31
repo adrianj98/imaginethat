@@ -27,11 +27,13 @@ type fakeServer struct {
 	failEvery atomic.Int64
 	down      atomic.Bool
 	fileReqs  atomic.Int64
+	allReqs   atomic.Int64
 }
 
 func (f *fakeServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	f.allReqs.Add(1)
 	switch {
-	case strings.HasSuffix(r.URL.Path, "/unlock"):
+	case r.URL.Path == "/api/login":
 		w.WriteHeader(http.StatusOK)
 	case strings.HasSuffix(r.URL.Path, "/raw/list"):
 		entries, err := os.ReadDir(filepath.Join(f.dir, r.URL.Query().Get("path")))
@@ -89,6 +91,9 @@ func setup(t *testing.T, content []byte) (remote, local *vault.Session, fake *fa
 	t.Cleanup(ts.Close)
 	c, err := New(ts.URL, Options{Timeout: 5 * time.Second})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Login(context.Background(), "access"); err != nil {
 		t.Fatal(err)
 	}
 	cacheDir = t.TempDir()

@@ -4,11 +4,11 @@
 // password the client already holds. What crosses the network and anything a
 // client caches is ciphertext, exactly as for a vault in Google Drive.
 //
-// A server in server-decrypt mode wants the vault password at /unlock before
-// it serves the raw files; its decrypted endpoints are unaffected and writes
-// still go through them, since a vault opened here is read-only. A server in
-// client-decrypt mode never sees a vault password: the client logs in with
-// the server's access password (Login) and unlocks the vault locally.
+// Only client-decrypt servers are supported: the client logs in with the
+// server's access password (Login) and unlocks the vault locally, so the
+// server never sees a vault password. This package never sends one; a
+// server-decrypt server, which wants the vault password at /unlock, cannot
+// be opened here.
 package remote
 
 import (
@@ -35,11 +35,14 @@ import (
 
 // Errors a caller can tell apart with errors.Is.
 var (
-	// ErrWrongPassword means the server refused the password.
+	// ErrWrongPassword means the vault password is wrong.
 	ErrWrongPassword = errors.New("remote: wrong password")
-	// ErrLocked means the server no longer holds the vault unlocked and
-	// re-unlocking did not help.
-	ErrLocked = errors.New("remote: vault is locked on the server")
+	// ErrLocked means the client is not logged in to the server, or its
+	// session expired and logging in again did not help.
+	ErrLocked = errors.New("remote: not logged in to the server")
+	// ErrLoginRequired means a vault was opened before Login. It is an
+	// ErrLocked.
+	ErrLoginRequired = fmt.Errorf("%w: log in with the server's access password first", ErrLocked)
 	// ErrNotFound means the server has no such vault or path.
 	ErrNotFound = errors.New("remote: not found")
 	// ErrCertMismatch means the server's certificate is not the pinned one.
@@ -69,13 +72,12 @@ type Options struct {
 }
 
 // Client talks to one imagethat-web server. Its session cookie and the
-// passwords it re-authenticates with live in memory only.
+// access password it logs in again with live in memory only.
 type Client struct {
 	base *url.URL
 	hc   *http.Client
 
-	mu        sync.Mutex
-	passwords map[string]string // vault ID -> password, for re-unlock after the server's idle timeout
+	mu sync.Mutex
 	// accessPassword is set by Login (client-decrypt servers), for logging in
 	// again after the server's idle timeout.
 	accessPassword string
@@ -103,9 +105,8 @@ func New(baseURL string, opts Options) (*Client, error) {
 		rt = t
 	}
 	return &Client{
-		base:      u,
-		hc:        &http.Client{Jar: jar, Timeout: opts.Timeout, Transport: rt},
-		passwords: make(map[string]string),
+		base: u,
+		hc:   &http.Client{Jar: jar, Timeout: opts.Timeout, Transport: rt},
 	}, nil
 }
 
@@ -208,46 +209,12 @@ func (c *Client) loggedIn() (string, bool) {
 	return c.accessPassword, c.accessPassword != ""
 }
 
-// Unlock proves the password to the server, which then holds the vault
-// unlocked for this client's session.
-func (c *Client) Unlock(ctx context.Context, vaultID, password string) error {
-	body, _ := json.Marshal(map[string]string{"password": password})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.endpoint("/api/vaults/"+url.PathEscape(vaultID)+"/unlock", nil), bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.hc.Do(req)
-	if err != nil {
-		return wrapTransport(err)
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	switch resp.StatusCode {
-	case http.StatusOK:
-		c.mu.Lock()
-		c.passwords[vaultID] = password
-		c.mu.Unlock()
-		return nil
-	case http.StatusUnauthorized:
-		return ErrWrongPassword
-	case http.StatusNotFound:
-		return ErrNotFound
-	default:
-		return fmt.Errorf("remote: unlock: HTTP %d", resp.StatusCode)
-	}
-}
-
 // OpenVault opens a vault here over the server's ciphertext endpoints; the
-// session decrypts locally and is read-only. After Login (client-decrypt) the
-// password is used only here; otherwise the vault is first unlocked on the
-// server, which wants the password before it serves the raw files.
+// session decrypts locally and is read-only. It needs Login first and fails
+// with ErrLoginRequired otherwise; the password is used only here.
 func (c *Client) OpenVault(ctx context.Context, vaultID, password string) (*vault.Session, error) {
-	if _, ok := c.loggedIn(); !ok {
-		if err := c.Unlock(ctx, vaultID, password); err != nil {
-			return nil, err
-		}
+	if !c.LoggedIn() {
+		return nil, ErrLoginRequired
 	}
 	s, err := vault.Open(&RawFS{c: c, vaultID: vaultID}, password)
 	if errors.Is(err, vault.ErrWrongPassword) {
@@ -259,10 +226,9 @@ func (c *Client) OpenVault(ctx context.Context, vaultID, password string) (*vaul
 	return s, err
 }
 
-// do sends a request for vaultID, authenticating again once if the server has
-// expired the session (its idle timeout): logging in on a client-decrypt
-// server, re-unlocking with the known password otherwise.
-func (c *Client) do(vaultID string, build func() (*http.Request, error)) (*http.Response, error) {
+// do sends a request, logging in again once if the server has expired the
+// session (its idle timeout).
+func (c *Client) do(build func() (*http.Request, error)) (*http.Response, error) {
 	for attempt := 0; ; attempt++ {
 		req, err := build()
 		if err != nil {
@@ -276,23 +242,12 @@ func (c *Client) do(vaultID string, build func() (*http.Request, error)) (*http.
 			return resp, nil
 		}
 		resp.Body.Close()
-		if access, ok := c.loggedIn(); ok {
-			if err := c.Login(req.Context(), access); err != nil {
-				return nil, fmt.Errorf("%w: login again failed: %v", ErrLocked, err)
-			}
-			continue
-		}
-		c.mu.Lock()
-		pw, ok := c.passwords[vaultID]
-		c.mu.Unlock()
+		access, ok := c.loggedIn()
 		if !ok {
 			return nil, ErrLocked
 		}
-		if err := c.Unlock(req.Context(), vaultID, pw); err != nil {
-			if errors.Is(err, ErrWrongPassword) {
-				return nil, err
-			}
-			return nil, fmt.Errorf("%w: re-unlock failed: %v", ErrLocked, err)
+		if err := c.Login(req.Context(), access); err != nil {
+			return nil, fmt.Errorf("%w: login again failed: %v", ErrLocked, err)
 		}
 	}
 }
@@ -318,7 +273,7 @@ func (r *RawFS) url(op, path string) string {
 }
 
 func (r *RawFS) get(method, op, path string, header http.Header) (*http.Response, error) {
-	return r.c.do(r.vaultID, func() (*http.Request, error) {
+	return r.c.do(func() (*http.Request, error) {
 		req, err := http.NewRequest(method, r.url(op, path), nil)
 		if err != nil {
 			return nil, err

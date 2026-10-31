@@ -44,16 +44,13 @@ var (
 
 // OpenVaultCached is OpenVault with a file cache in cacheDir.
 func (c *Client) OpenVaultCached(ctx context.Context, vaultID, password, cacheDir string) (*vault.Session, error) {
+	// As in OpenVault: only after Login, so no vault password is ever sent.
+	if !c.LoggedIn() {
+		return nil, ErrLoginRequired
+	}
 	files, err := cache.NewFiles(cacheDir)
 	if err != nil {
 		return nil, fmt.Errorf("remote: cache dir: %w", err)
-	}
-	// As in OpenVault: a client-decrypt server (after Login) never gets the
-	// vault password; a server-decrypt one must unlock before serving raw files.
-	if _, ok := c.loggedIn(); !ok {
-		if err := c.Unlock(ctx, vaultID, password); err != nil {
-			return nil, err
-		}
 	}
 	raw := &RawFS{c: c, vaultID: vaultID}
 	s, err := vault.Open(&CachedFS{RawFS: raw, files: files, prefix: c.base.String() + "\x00" + vaultID + "\x00"}, password)

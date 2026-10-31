@@ -20,7 +20,7 @@ type VaultInfo struct {
 // Vaults lists the server's vaults. A client-decrypt server answers only
 // after Login.
 func (c *Client) Vaults(ctx context.Context) ([]VaultInfo, error) {
-	resp, err := c.do("", func() (*http.Request, error) {
+	resp, err := c.do(func() (*http.Request, error) {
 		return http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint("/api/vaults", nil), nil)
 	})
 	if err != nil {
@@ -43,11 +43,9 @@ func (c *Client) Vaults(ctx context.Context) ([]VaultInfo, error) {
 	return body.Vaults, nil
 }
 
-// Logout ends the session on the server and forgets the passwords this
-// client kept.
+// Logout ends the session on the server and forgets the access password.
 func (c *Client) Logout(ctx context.Context) error {
 	c.mu.Lock()
-	c.passwords = make(map[string]string)
 	c.accessPassword = ""
 	c.mu.Unlock()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/api/logout", nil), nil)

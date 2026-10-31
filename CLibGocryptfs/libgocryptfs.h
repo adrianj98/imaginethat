@@ -37,12 +37,12 @@ extern int GocryptfsOpenVFS(char* configData, int configDataLen, char* password,
                              void* ctx);
 // Open a vault on an imagethat-web server in ciphertext mode: the server sends
 // the vault's encrypted files and this library decrypts them. pinnedSHA256 is
-// the hex SHA-256 of a self-signed server's certificate, or "". Read-only;
-// writes go through the server's decrypted API. accessPassword is the server
-// access password for a client-decrypt server (the vault password then never
-// leaves this process), or "" for a server-decrypt server. Returns a session
-// id, or -1 no such vault, -2 wrong password, -3 network/server error, -6
-// certificate mismatch, -7 wrong access password.
+// the hex SHA-256 of a self-signed server's certificate, or "". Read-only.
+// accessPassword is the server's access password: only client-decrypt servers
+// are supported, and the vault password never leaves this process. With ""
+// nothing is sent and it returns -8. Returns a session id, or -1 no such
+// vault, -2 wrong password, -3 network/server error, -6 certificate mismatch,
+// -7 wrong access password, -8 no access password.
 extern int GocryptfsOpenRemote(char* baseURL, char* vaultID, char* password, char* pinnedSHA256, char* accessPassword);
 // GocryptfsServerMode: 0 server-decrypt, 1 client-decrypt, -3 network/server
 // error, -6 certificate mismatch.

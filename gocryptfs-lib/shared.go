@@ -539,7 +539,7 @@ func GocryptfsServerLogout(h C.int) C.int {
 // GocryptfsServerOpenVault opens a vault over the server's ciphertext
 // endpoints with this connection, after GocryptfsServerLogin, and decrypts
 // here; the vault password never leaves this process. Without a login it
-// fails (-5) rather than unlocking on the server. cacheDir, when not "", keeps
+// fails (-8) and sends nothing. cacheDir, when not "", keeps
 // files passed to GocryptfsCacheFile. Returns a read-only session ID.
 //
 //export GocryptfsServerOpenVault
@@ -547,10 +547,6 @@ func GocryptfsServerOpenVault(h C.int, vaultID, password, cacheDir *C.char) C.in
 	c, ctx, ok := serverHandle(h)
 	if !ok {
 		return rcNoConfig
-	}
-	if !c.LoggedIn() {
-		// Never fall back to unlocking on the server: that sends it the password.
-		return codeRC(remote.ErrNotClientDecrypt)
 	}
 	id, pw, dir := C.GoString(vaultID), C.GoString(password), C.GoString(cacheDir)
 	if dir != "" {
