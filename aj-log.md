@@ -521,6 +521,29 @@ User request: "push to main and create a tag for release".
 - **aj-log.md:** kept both sides.
 - **Checked:** web build + vitest (8 passed), core + shim tests ok (except the pre-existing `internal/tlog` vet failure), webserver tests ok, `make build` no errors, `make test-logic` 74 passed, `make golib-test` 69 checks 0 failed.
 
+## 2026-10-30 — One Go library for the Mac and Android apps (Drive, caching, copies, thumbnails)
+User request: "the android and mac app use the same go code and same protocol etc features. like caching. google drive" — later: "I do not want the server to decrypt anything. So do not put any of the server side encryption in the go lib".
+- **core/drive (new):** Drive v3 client (paged listings, ranged downloads, multipart + resumable streaming uploads, folders, moves, deletes, thumbnails), loopback OAuth sign-in with PKCE + refresh, and `VaultFS`, a `vault.WriteVFS` over a Drive folder. `vault.Session` now does all gocryptfs writes on Drive (diriv, long-name sidecars, temp + rename). *Why:* the Mac hand-rolled this in Swift and Android had no Drive at all. `drivetest` is an in-memory fake Drive for tests.
+- **core/cache/ranges.go (new):** on-disk ciphertext range cache keyed by Drive modifiedTime, LRU with pinning (Cache File). Replaces the Mac's DriveCache + DriveRangeCache.
+- **core/errcode (new):** one error-code mapping ("not_found:", "locked:", "auth:" ...) used by both bindings.
+- **core/remote/server.go:** only Vaults and Logout. A server-decrypt API was added and then removed at the user's request; through a server handle `OpenVault` refuses to run without a login rather than sending the vault password to `/unlock`. *Still there from before:* `Client.Unlock` and the `OpenVault`/`OpenRemote*` fallback that unlocks on a server-decrypt server — to go when the server drops decrypted access.
+- **Bindings:** `core/mobile` (Job, CopyFrom/CopyFile, OpenRemoteCached, CacheFile/IsCached/Uncache, ConfigureThumbnails/Thumbnail/StoreThumbnail, Drive + SignIn (`Await`, since Java reserves `wait`), OpenDrive/InitDrive, Drive cache, Server) and the matching C exports in `gocryptfs-lib/shared.go` + `CLibGocryptfs/libgocryptfs.h`.
+- **Mac:** Drive through Go (deleted DriveVaultFS, DriveVaultBridge, DriveCache, DriveRangeCache, LocalOAuthServer); a Drive vault is a normal writable session behind VaultSource. One Drive cache limit; plain (non-vault) Drive files are no longer cached. RemoteServerClient uses a Go handle for mode/login/vaults/logout/client-decrypt open; its server-decrypt HTTP code is unchanged.
+- **Android:** client-decrypt login/vaults/open through `mobile.Server` (with a file cache, "Keep on phone" in the viewer); Save Offline uses Go `copyFrom` jobs (server-decrypt sources keep the Kotlin path); thumbnails from Go with the BitmapFactory fallback stored back; new Google Drive screen (setup, sign-in, folder browser, open vault, cache size/clear, sign out) and Drive vaults on the home screen.
+- **Checked:** core + webserver tests, shim tests (incl. fake Drive and real client-decrypt server), header vs exports (72), ctest 69/0, gobind Java generation. **Not checked:** Swift and Kotlin were not compiled — no Swift toolchain or Android SDK in this environment.
+
+## 2026-10-30 — Teleported to the Mac: compile what the cloud session couldn't
+The previous session had no Swift toolchain or Android SDK, so the "one Go library" change was never compiled on either app. Built here: `make build` clean (pre-existing warnings only), `make golib-test` 69/0, `make android-aar` + `android-debug` + `android-test` (129 unit tests, 0 failures).
+- **Mac `make test-logic`: 64 passed, 1 failed** — "client-decrypt operations badResponse", right after login. `RemoteServerClient.listVaultsLocally` decoded the engine's vault list as `[RemoteVault]`, which requires `unlocked`, but `GocryptfsServerVaults` serializes `remote.VaultInfo` (`id`, `name` only). The decoder failed and surfaced as `badResponse`, so a client-decrypt server could never list its vaults from the Mac app. Fix: decode a local `{id, name}` shape there; `unlocked` was already being computed from the client's open bridges.
+- **Android, same bug:** `RemoteVault.unlocked` was a required field, so `ClientDecryptServer.vaults()` would throw `MissingFieldException` on the same JSON (the unit tests mock the vault list, so they didn't catch it). `unlocked` now defaults to `false`, which is correct in client-decrypt mode: the server holds nothing open, this device does.
+- **Checked after the fix:** `make test-logic` 74 passed, 0 failed (the 9 client-decrypt checks after the vault list now run); `make android-debug` + `android-test` 129/0. *Not checked:* Android instrumented tests on a device, and a click-through of either app against a real client-decrypt server.
+
+## 2026-10-30 — More testing on the Mac (no code changes)
+User request: "keep testing".
+- **Go core, shim and webserver tests (`make core-test`, `make web-test`):** pass.
+- **Android instrumented tests on the `pixel6b` emulator:** 95/95, 0 skipped. That includes the opt-in `ClientDecryptServerTest`, run against a real `imagethat-web -mode client-decrypt` on a copy of `core/vault/testdata/vault` (server at 10.0.2.2:8347). With the old `RemoteVault` (`unlocked` required), `appPathLogsInOpensAndKeepsAFileOnThePhone` fails with `MissingFieldException: Field 'unlocked' is required`, so the earlier Android fix is confirmed needed. Restored and rerun: pass.
+- **Web UI vitest:** "decrypts any byte range from just the blocks that cover it" timed out (5s) in 5 of 6 runs while the emulator and Gradle were running, and passed 5 of 5 once they stopped (about 1.4s). That is load, not a bug; the web code is unchanged on this branch. The worktree also had no `node_modules`, so `npm ci` was needed first.
+- **Mac app by hand: not done.** `make app` builds and the app launches, but this session can't see or click it: `screencapture` fails ("could not create image from display") and System Events refuses ("osascript is not allowed assistive access"). Granting the terminal Screen Recording and Accessibility would allow it.
 ## 2026-10-30 — Mac video player: buffering indicator and status
 
 **What:** `VideoPlayerView` now watches `AVPlayer.timeControlStatus` and the current item's `loadedTimeRanges` (Combine KVO publishers).
@@ -542,3 +565,10 @@ User request: "push to main and create a tag for release".
 **Why:** user asked for app icons and a Mac install script. None of the three apps had an icon (the Mac AppIcon set was empty, Android had no launcher icon, the web app had no favicon).
 
 **Note:** the first test run of the script quit an ImageThat that was running on this Mac; that is why it now only refuses, and only for the copy being replaced.
+
+## 2026-10-31 — Merge main into feature/determined-edison-em3exr
+User request: "can u pull main". Main added the Mac video buffering badge/status chip and a blueprint lockfile tweak. Only `aj-log.md` conflicted (both sides appended entries); kept both.
+
+## 2026-10-31 — Merge feature/determined-edison-em3exr into main
+User request: "also merge in feature/determined-edison-em3exr". The branch (Mac, Android and Drive moved onto the shared Go library; the server-decrypt API dropped from the Go library) had already merged main up to the buffering commit, so only `aj-log.md` conflicted (both sides appended entries; kept both).
+Verified on the merged tree: `make build` ok; `make test-logic` 74 passed (the first run exited 1 without a visible failure, two reruns passed); `make golib-test` 69 checks, 0 failed; core and shim Go tests ok except the pre-existing `gocryptfs-lib/internal/tlog` vet error; web vitest 8 passed; webserver `test-short` ok; Android unit tests BUILD SUCCESSFUL.

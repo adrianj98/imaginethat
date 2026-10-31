@@ -24,6 +24,7 @@ import ai.alertd.imagethat.keys.PasswordIds
 internal object Routes {
     const val HOME = "home"
     const val CONNECT = "connect"
+    const val DRIVE = "drive"
     const val SET_OFFLINE = "setOffline"
     const val SERVERS = "servers/{serverKey}"
     const val BROWSER = "browser/{sourceId}"
@@ -88,6 +89,14 @@ fun AppNav(session: Session, activity: FragmentActivity? = null, nav: NavHostCon
                 onConnect = { nav.navigate(Routes.CONNECT) },
                 onOpenServer = { nav.navigate(Routes.servers(it)) },
                 onSetOfflinePassword = { nav.navigate(Routes.SET_OFFLINE) },
+                onOpenSource = { nav.navigate(Routes.browser(it)) },
+                onOpenDrive = { nav.navigate(Routes.DRIVE) },
+            )
+        }
+        composable(Routes.DRIVE) {
+            DriveScreen(
+                session, activity,
+                onBack = { nav.popBackStack() },
                 onOpenSource = { nav.navigate(Routes.browser(it)) },
             )
         }

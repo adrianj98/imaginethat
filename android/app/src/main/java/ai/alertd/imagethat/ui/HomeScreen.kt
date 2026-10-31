@@ -1,6 +1,7 @@
 package ai.alertd.imagethat.ui
 
 import ai.alertd.imagethat.keys.PasswordIds
+import ai.alertd.imagethat.keys.SavedDriveVault
 import ai.alertd.imagethat.keys.SavedFolder
 import ai.alertd.imagethat.keys.SavedServer
 import ai.alertd.imagethat.local.LocalError
@@ -87,6 +88,7 @@ fun HomeScreen(
     onOpenServer: (serverKey: String) -> Unit,
     onSetOfflinePassword: () -> Unit,
     onOpenSource: (sourceId: String) -> Unit,
+    onOpenDrive: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -102,6 +104,7 @@ fun HomeScreen(
     var forgetting by remember { mutableStateOf<Pair<String, String>?>(null) }
     var removingServer by remember { mutableStateOf<SavedServer?>(null) }
     var folderOptions by remember { mutableStateOf<SavedFolder?>(null) }
+    var driveOptions by remember { mutableStateOf<SavedDriveVault?>(null) }
 
     fun refresh() { state = session.keys.state() }
 
@@ -144,6 +147,15 @@ fun HomeScreen(
 
     fun openLocal(target: LocalTarget) {
         if (session.source(target.sourceId) != null) onOpenSource(target.sourceId) else unlocking = target
+    }
+
+    /** A Drive vault needs the signed-in account; without one the Drive screen sets it up. */
+    fun openDriveVault(v: SavedDriveVault) {
+        if (session.source(driveSourceId(v)) != null) { onOpenSource(driveSourceId(v)); return }
+        scope.launch {
+            val drive = withContext(Dispatchers.IO) { session.drive() }
+            if (drive == null) onOpenDrive() else unlocking = driveTarget(session, drive, v)
+        }
     }
 
     val offlineExists = session.local.offlineExists()
@@ -222,6 +234,31 @@ fun HomeScreen(
             }
         }
 
+        Section("Google Drive") {
+            state.driveVaults.forEach { v ->
+                VaultRow(
+                    v.label,
+                    unlocked = driveSourceId(v) in open,
+                    saved = session.hasSavedPassword(PasswordIds.drive(v.rootId)),
+                    icon = AppIcons.Cloud,
+                    modifier = Modifier.combinedClickable(onLongClick = { driveOptions = v }) { openDriveVault(v) }
+                        .testTag("drive-vault-${v.id}"),
+                    trailing = {
+                        RoundIconButton(
+                            AppIcons.More, "Options for ${v.label}", { driveOptions = v },
+                            Modifier.testTag("drive-options-${v.id}"), tint = Palette.TextTertiary, size = 40.dp, iconSize = 18.dp,
+                        )
+                    },
+                )
+                InsetDivider()
+            }
+            CardRow(
+                if (state.driveClientId == null) "Connect Google Drive" else "Browse Google Drive", onClick = onOpenDrive, trailing = null,
+                leading = { IconTile(AppIcons.Plus, tint = Palette.TextSecondary, dashed = true) },
+                modifier = Modifier.testTag("drive-row"),
+            )
+        }
+
         Section("Settings") {
             CardRow(
                 "Auto-lock after",
@@ -259,7 +296,7 @@ fun HomeScreen(
                 onOpenSource(id)
             },
             onDismiss = { unlocking = null; pendingFolder = null },
-            onPickAgain = if (pendingFolder == null && target.sourceId != OFFLINE_ID) {
+            onPickAgain = if (pendingFolder == null && target.sourceId != OFFLINE_ID && target.place == LOCAL_PLACE) {
                 { unlocking = null; openFolder(null) }
             } else null,
         )
@@ -306,6 +343,23 @@ fun HomeScreen(
             s.label,
             onRemove = { removeServer(session, s.id); removingServer = null; refresh() },
             onDismiss = { removingServer = null },
+        )
+    }
+
+    driveOptions?.let { v ->
+        FolderOptionsDialog(
+            v.label,
+            hasSavedPassword = session.hasSavedPassword(PasswordIds.drive(v.rootId)),
+            onForget = { driveOptions = null; forgetting = PasswordIds.drive(v.rootId) to v.label },
+            onRemove = {
+                session.forgetPassword(PasswordIds.drive(v.rootId))
+                session.closeRemoved({ it == driveSourceId(v) })
+                session.keys.store().update { st -> st.copy(driveVaults = st.driveVaults.filterNot { it.id == v.id }) }
+                driveOptions = null
+                refresh()
+            },
+            onDismiss = { driveOptions = null },
+            removeNote = "The vault stays in your Google Drive.",
         )
     }
 
@@ -360,7 +414,14 @@ internal fun RemoveServerDialog(label: String, onRemove: () -> Unit, onDismiss: 
 }
 
 @Composable
-private fun FolderOptionsDialog(label: String, hasSavedPassword: Boolean, onForget: () -> Unit, onRemove: () -> Unit, onDismiss: () -> Unit) =
+private fun FolderOptionsDialog(
+    label: String,
+    hasSavedPassword: Boolean,
+    onForget: () -> Unit,
+    onRemove: () -> Unit,
+    onDismiss: () -> Unit,
+    removeNote: String = "The folder and its vault stay on the phone.",
+) =
     SecureAlertDialog(
         onDismissRequest = onDismiss,
         title = label,
@@ -373,7 +434,7 @@ private fun FolderOptionsDialog(label: String, hasSavedPassword: Boolean, onForg
             }
             CardRow(
                 "Remove from this list", Modifier.testTag("folder-remove"),
-                subtitle = "The folder and its vault stay on the phone.",
+                subtitle = removeNote,
                 onClick = onRemove, titleColor = Palette.Destructive, trailing = null,
             )
         }

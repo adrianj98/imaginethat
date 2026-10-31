@@ -8,6 +8,10 @@ data class SavedServer(val id: String, val label: String, val url: String, val p
 @Serializable
 data class SavedFolder(val id: String, val label: String, val treeUri: String)
 
+/** A gocryptfs vault in a Google Drive folder ([rootId]) that has been opened before. */
+@Serializable
+data class SavedDriveVault(val id: String, val label: String, val rootId: String)
+
 /** Everything the app remembers. Persisted only through [StateStore] (encrypted). */
 @Serializable
 data class AppState(
@@ -25,4 +29,7 @@ data class AppState(
     val offlineVaultCreated: Boolean = false,
     /** Auto-lock after this many minutes without a touch (not secret; spec default 5). */
     val idleTimeoutMinutes: Int = 5,
+    /** The Google OAuth client ID ("Desktop app" client); its secret and the token are saved passwords. */
+    val driveClientId: String? = null,
+    val driveVaults: List<SavedDriveVault> = emptyList(),
 )

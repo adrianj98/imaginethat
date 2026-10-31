@@ -29,6 +29,7 @@ import (
 	"unsafe"
 
 	"github.com/adrianm/imagethat/core/cache"
+	"github.com/adrianm/imagethat/core/drive"
 	"github.com/adrianm/imagethat/core/remote"
 	"github.com/adrianm/imagethat/core/thumb"
 	"github.com/adrianm/imagethat/core/vault"
@@ -54,6 +55,8 @@ type openFile struct {
 
 type session struct {
 	s *vault.Session
+	// drive is set for a vault in Google Drive.
+	drive *drive.VaultFS
 
 	mu    sync.Mutex
 	files map[string]*openFile // plaintext path -> handle, at most maxOpenFiles
@@ -78,12 +81,15 @@ func getSession(id C.int) *session {
 	return sessions[int(id)]
 }
 
-func register(s *vault.Session) C.int {
+func register(s *vault.Session) C.int { return registerSession(&session{s: s}) }
+
+func registerSession(sess *session) C.int {
+	sess.files = make(map[string]*openFile)
 	sessionMu.Lock()
 	defer sessionMu.Unlock()
 	id := nextID
 	nextID++
-	sessions[id] = &session{s: s, files: make(map[string]*openFile)}
+	sessions[id] = sess
 	return C.int(id)
 }
 
@@ -630,12 +636,12 @@ func GocryptfsWriteFile(sessionID C.int, relativePath *C.char, data unsafe.Point
 // failed Create) leaves no entry and no temp file behind.
 
 type writer struct {
-	sess *session
-	path string
 	pw   *io.PipeWriter
 	done chan struct{}
 	once sync.Once
-	err  error // result of Create, valid once done is closed
+	err  error // result of commit, valid once done is closed
+	// committed runs after a successful Close.
+	committed func()
 }
 
 var (
@@ -652,15 +658,28 @@ func GocryptfsCreateFile(sessionID C.int, relativePath *C.char) C.int {
 	if sess == nil {
 		return rcNoConfig
 	}
+	p := C.GoString(relativePath)
+	return newWriter(func(r io.Reader) error {
+		_, err := sess.s.Create(p, r)
+		return err
+	}, func() {
+		sess.dropFile(p)
+		sess.invalidateThumb(p)
+	})
+}
+
+// newWriter registers a writer whose data commit consumes in a goroutine.
+// Server uploads use it too.
+func newWriter(commit func(io.Reader) error, committed func()) C.int {
 	pr, pw := io.Pipe()
-	w := &writer{sess: sess, path: C.GoString(relativePath), pw: pw, done: make(chan struct{})}
+	w := &writer{pw: pw, done: make(chan struct{}), committed: committed}
 	go func() {
-		_, err := sess.s.Create(w.path, pr)
+		err := commit(pr)
 		w.err = err
 		if err == nil {
 			err = io.EOF
 		}
-		// Unblock a Write still pushing data if Create bailed out early.
+		// Unblock a Write still pushing data if commit bailed out early.
 		pr.CloseWithError(err)
 		close(w.done)
 	}()
@@ -713,9 +732,8 @@ func GocryptfsWriterClose(writerID C.int) C.int {
 	}
 	w.once.Do(func() { w.pw.Close() })
 	<-w.done
-	if w.err == nil {
-		w.sess.dropFile(w.path)
-		w.sess.invalidateThumb(w.path)
+	if w.err == nil && w.committed != nil {
+		w.committed()
 	}
 	return writeCode(w.err)
 }
@@ -738,24 +756,6 @@ func GocryptfsWriterAbort(writerID C.int) {
 // those itself and hands the JPEG back with GocryptfsThumbPut so both tiers
 // learn it. The host never implements a callback.
 
-var (
-	thumbDisks   = make(map[string]*cache.ThumbDisk) // one store per directory, shared by sessions
-	thumbDisksMu sync.Mutex
-)
-
-func thumbDiskFor(dir string, budget int64) *cache.ThumbDisk {
-	thumbDisksMu.Lock()
-	defer thumbDisksMu.Unlock()
-	if d, ok := thumbDisks[dir]; ok {
-		return d
-	}
-	d := cache.NewThumbDisk(dir, budget)
-	thumbDisks[dir] = d
-	return d
-}
-
-// thumbService returns the session's preview service, creating a memory-only
-// one if GocryptfsThumbConfigure was never called.
 func (sess *session) thumbService() (*thumb.Service, error) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
@@ -792,11 +792,7 @@ func GocryptfsThumbConfigure(sessionID C.int, sourceID *C.char, diskDir *C.char,
 	}
 	opts := thumb.Options{MemBytes: int64(memBytes)}
 	if dir := C.GoString(diskDir); dir != "" {
-		budget := int64(diskBytes)
-		if budget <= 0 {
-			budget = 1 << 30
-		}
-		opts.Disk = thumbDiskFor(dir, budget)
+		opts.Disk = cache.SharedThumbDisk(dir, int64(diskBytes))
 		opts.Sealer = sess.s
 	}
 	svc, err := thumb.New(C.GoString(sourceID), thumb.SessionReader{S: sess.s}, opts)
@@ -875,7 +871,7 @@ func GocryptfsThumbCacheClear(diskDir *C.char) C.int {
 	if dir == "" {
 		return rcCrypto
 	}
-	if err := thumbDiskFor(dir, 1<<30).Clear(); err != nil {
+	if err := cache.SharedThumbDisk(dir, 0).Clear(); err != nil {
 		return rcBackend
 	}
 	return rcOK
@@ -889,7 +885,7 @@ func GocryptfsThumbCacheSize(diskDir *C.char) C.int64_t {
 	if dir == "" {
 		return 0
 	}
-	return C.int64_t(thumbDiskFor(dir, 1<<30).Size())
+	return C.int64_t(cache.SharedThumbDisk(dir, 0).Size())
 }
 
 // --- Memory helpers --------------------------------------------------------------

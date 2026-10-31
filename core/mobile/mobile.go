@@ -9,38 +9,24 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
+	"sync"
 
+	"github.com/adrianm/imagethat/core/drive"
+	"github.com/adrianm/imagethat/core/errcode"
 	"github.com/adrianm/imagethat/core/remote"
+	"github.com/adrianm/imagethat/core/thumb"
 	"github.com/adrianm/imagethat/core/vault"
 )
 
-// wrapErr prefixes err with a stable code Kotlin can switch on:
-// wrong_password:, no_config:, not_found:, exists:, invalid_path:, closed:.
+// wrapErr prefixes err with a stable code Kotlin can switch on
+// (errcode.Code: wrong_password:, not_found:, exists:, closed:, locked:, ...).
 // Errors without a code are returned unchanged.
 func wrapErr(err error) error {
-	if err == nil {
-		return nil
+	if c := errcode.Code(err); c != "" {
+		return fmt.Errorf("%s: %w", c, err)
 	}
-	var code string
-	switch {
-	case errors.Is(err, vault.ErrWrongPassword):
-		code = "wrong_password"
-	case errors.Is(err, vault.ErrNoConfig):
-		code = "no_config"
-	case errors.Is(err, vault.ErrNotFound), errors.Is(err, fs.ErrNotExist):
-		code = "not_found"
-	case errors.Is(err, vault.ErrExists), errors.Is(err, fs.ErrExist):
-		code = "exists"
-	case errors.Is(err, vault.ErrInvalidPath):
-		code = "invalid_path"
-	case errors.Is(err, vault.ErrClosed):
-		code = "closed"
-	default:
-		return err
-	}
-	return fmt.Errorf("%s: %w", code, err)
+	return err
 }
 
 // SetTempDir sets the directory Go uses for temporary files (TMPDIR). Android
@@ -55,9 +41,15 @@ func InitLocal(dir, password string) error {
 	return wrapErr(vault.Init(vault.NewLocalFS(dir), password))
 }
 
-// Vault is an unlocked local vault.
+// Vault is an unlocked vault: local, in a SAF folder, on a server or in
+// Google Drive.
 type Vault struct {
 	s *vault.Session
+	// drive is set for a vault in Google Drive.
+	drive *drive.VaultFS
+
+	mu     sync.Mutex
+	thumbs *thumb.Service // set up by ConfigureThumbnails or on first use
 }
 
 // OpenLocal unlocks the vault in dir.
@@ -85,12 +77,12 @@ func OpenRemote(baseURL, vaultID, password, pinnedSHA256, accessPassword string)
 	ctx := context.Background()
 	if accessPassword != "" {
 		if err := c.Login(ctx, accessPassword); err != nil {
-			return nil, wrapRemoteErr(err)
+			return nil, wrapErr(err)
 		}
 	}
 	s, err := c.OpenVault(ctx, vaultID, password)
 	if err != nil {
-		return nil, wrapRemoteErr(err)
+		return nil, wrapErr(err)
 	}
 	return &Vault{s: s}, nil
 }
@@ -105,23 +97,9 @@ func ServerMode(baseURL, pinnedSHA256 string) (string, error) {
 	}
 	mode, err := c.Info(context.Background())
 	if err != nil {
-		return "", wrapRemoteErr(err)
+		return "", wrapErr(err)
 	}
 	return mode, nil
-}
-
-func wrapRemoteErr(err error) error {
-	switch {
-	case errors.Is(err, remote.ErrWrongAccessPassword):
-		return fmt.Errorf("wrong_access_password: %w", err)
-	case errors.Is(err, remote.ErrWrongPassword):
-		return fmt.Errorf("wrong_password: %w", err)
-	case errors.Is(err, remote.ErrNotFound):
-		return fmt.Errorf("not_found: %w", err)
-	case errors.Is(err, remote.ErrCertMismatch):
-		return fmt.Errorf("cert_mismatch: %w", err)
-	}
-	return wrapErr(err)
 }
 
 // List returns the directory's entries as a JSON array of vault.Entry.
@@ -171,17 +149,34 @@ func (v *Vault) ReadRange(path string, off int64, n int) ([]byte, error) {
 
 // Create starts writing a new file; the entry appears on FileWriter.Close.
 func (v *Vault) Create(path string) (*FileWriter, error) {
-	return newFileWriter(v.s, path), nil
+	return newFileWriter(v.s, path, func() { v.invalidateThumb(path) }), nil
 }
 
 // Mkdir creates a directory.
 func (v *Vault) Mkdir(path string) error { return wrapErr(v.s.Mkdir(path)) }
 
 // Move renames a file or directory.
-func (v *Vault) Move(from, to string) error { return wrapErr(v.s.Move(from, to)) }
+func (v *Vault) Move(from, to string) error {
+	err := v.s.Move(from, to)
+	if err == nil {
+		v.invalidateThumb(from)
+	}
+	return wrapErr(err)
+}
 
 // Remove deletes a file or directory.
-func (v *Vault) Remove(path string) error { return wrapErr(v.s.Remove(path)) }
+func (v *Vault) Remove(path string) error {
+	v.invalidateThumb(path)
+	return wrapErr(v.s.Remove(path))
+}
 
-// Close wipes the vault's keys.
-func (v *Vault) Close() error { return wrapErr(v.s.Close()) }
+// Close wipes the vault's keys and its in-memory previews.
+func (v *Vault) Close() error {
+	v.mu.Lock()
+	if v.thumbs != nil {
+		v.thumbs.Close()
+		v.thumbs = nil
+	}
+	v.mu.Unlock()
+	return wrapErr(v.s.Close())
+}

@@ -243,7 +243,7 @@ public struct GoogleDriveTab: View {
         ("Unlimited", 0),
     ]
 
-    @State private var selectedLimit: Int64 = DriveCache.maxBytes
+    @State private var selectedLimit: Int64 = GocryptfsDriveCache.maxBytes
     @State private var cacheBytes: Int64 = 0
 
     public init() {}
@@ -260,13 +260,11 @@ public struct GoogleDriveTab: View {
                     .font(.system(size: 12))
                     .fixedSize()
                     .onChange(of: selectedLimit) { _, newValue in
-                        DriveCache.maxBytes = newValue
+                        GocryptfsDriveCache.maxBytes = newValue
                     }
                     Button("Clear") {
-                        Task {
-                            await DriveCache.shared.clear()
-                            cacheBytes = await DriveCache.shared.currentSize()
-                        }
+                        try? GocryptfsDriveCache.clear()
+                        cacheBytes = GocryptfsDriveCache.size()
                     }
                     .buttonStyle(PillButtonStyle(height: 28))
                     .font(.system(size: 12))
@@ -276,9 +274,9 @@ public struct GoogleDriveTab: View {
             Spacer()
         }
         .padding(24)
-        .task {
-            selectedLimit = DriveCache.maxBytes
-            cacheBytes = await DriveCache.shared.currentSize()
+        .onAppear {
+            selectedLimit = GocryptfsDriveCache.maxBytes
+            cacheBytes = GocryptfsDriveCache.size()
         }
     }
 

@@ -58,6 +58,8 @@ data class BrowserState(
     val result: OpResult? = null,
     /** Label of a long-running operation, null when idle. */
     val busy: String? = null,
+    /** How far the current file of [busy] is, 0..1, when known. */
+    val progress: Float? = null,
     val move: MoveState? = null,
     val canSaveOffline: Boolean = true,
 )
@@ -164,7 +166,10 @@ class BrowserViewModel(
         }
         guarded("Saving offline") {
             try {
-                val r = saveOffline(source, items, into, savePrefix)
+                val r = saveOffline(source, items, into, savePrefix) { p ->
+                    val fraction = if (p.total > 0) (p.done.toFloat() / p.total).coerceIn(0f, 1f) else null
+                    _state.update { it.copy(busy = "Saving ${p.name}", progress = fraction) }
+                }
                 _state.update { it.copy(selection = emptySet(), result = OpResult("Saved offline", r.saved, r.failed, skipped = r.skipped)) }
             } catch (e: SaveInterrupted) {
                 val locked = e.reason is SourceError.Locked
@@ -321,7 +326,7 @@ class BrowserViewModel(
             } catch (e: Exception) {
                 _state.update { it.copy(error = e.message ?: e.toString()) }
             } finally {
-                if (label != null) _state.update { it.copy(busy = null) }
+                if (label != null) _state.update { it.copy(busy = null, progress = null) }
             }
         }
     }

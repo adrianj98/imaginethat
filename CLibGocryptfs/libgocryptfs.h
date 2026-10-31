@@ -128,4 +128,73 @@ extern int GocryptfsUncache(int sessionID, char* relativePath);
 extern int GocryptfsFileCacheClear(char* dir);
 extern int64_t GocryptfsFileCacheSize(char* dir);
 
+// Google Drive and imagethat-web servers: the same Go code the Android app
+// binds. A Drive account or a server connection is a handle; vaults opened
+// through them are ordinary sessions. Calls returning DecryptResult carry JSON
+// (free with GocryptfsFreeDecryptResult); its error string starts with a
+// stable code shared with Android: "not_found:", "exists:", "locked:",
+// "wrong_password:", "not_connected:", "auth:", "cancelled:", "forbidden:" ...
+// int results: 0 ok, -1 not found (or bad handle), -2 wrong password, -4
+// already exists, -5 network or other failure, -6 certificate mismatch, -7
+// cancelled (wrong access password for ServerLogin), -8 locked on the server,
+// -9 Drive not signed in or authorization refused, -10 server refused the change.
+
+// Drive account for the user's OAuth client; refreshToken "" until signed in.
+extern int GocryptfsDriveNew(char* clientID, char* clientSecret, char* refreshToken);
+extern void GocryptfsDriveFree(int drive);
+// The refresh token to store after sign-in ("" when signed out). Caller frees.
+extern char* GocryptfsDriveRefreshToken(int drive);
+extern void GocryptfsDriveSignOut(int drive);
+// Sign-in: Start returns Google's consent URL to open in the browser (caller
+// frees; NULL on failure), Wait blocks on a background thread until the
+// browser comes back through the engine's loopback listener, Cancel ends Wait.
+extern char* GocryptfsDriveSignInStart(int drive);
+extern int GocryptfsDriveSignInWait(int drive);
+extern void GocryptfsDriveSignInCancel(int drive);
+// A folder's entries ("root" = My Drive) as JSON
+// [{id,name,mimeType,size,modifiedTime,thumbnailLink,isFolder}]. mediaOnly=1
+// keeps folders, images and videos, folders first.
+extern DecryptResult GocryptfsDriveList(int drive, char* folderID, int mediaOnly);
+// {rootId, path} of the vault folderID is in; "not_found:" when none.
+extern DecryptResult GocryptfsDriveFindVaultRoot(int drive, char* folderID);
+// Plain (unencrypted) files.
+extern DecryptResult GocryptfsDriveReadRange(int drive, char* fileID, int64_t offset, int64_t length);
+extern DecryptResult GocryptfsDriveThumbnail(int drive, char* thumbnailLink, int maxEdge);
+// Create a file in parentID, or with updateFileID set replace that file's
+// content. Returns the file as JSON.
+extern DecryptResult GocryptfsDriveUpload(int drive, char* parentID, char* name, char* mimeType, char* updateFileID, void* data, int64_t dataLen);
+extern DecryptResult GocryptfsDriveCreateFolder(int drive, char* parentID, char* name);
+extern int GocryptfsDriveDelete(int drive, char* fileID);
+// Move from oldParent to newParent ("" stays) and/or rename ("" keeps the name).
+extern int GocryptfsDriveMove(int drive, char* fileID, char* oldParent, char* newParent, char* newName);
+// Unlock the vault in Drive folder rootID. Downloaded ciphertext is cached in
+// cacheDir ("" none), shared by all Drive vaults. Returns a writable session.
+extern int GocryptfsOpenDrive(int drive, char* rootID, char* password, char* cacheDir);
+// Create a new empty vault in an empty Drive folder.
+extern int GocryptfsInitDrive(int drive, char* folderID, char* password);
+// The Drive cache as a whole. Files kept with GocryptfsCacheFile are never evicted.
+extern int GocryptfsDriveCacheLimit(char* dir, int64_t limit);
+extern int64_t GocryptfsDriveCacheSize(char* dir);
+extern int GocryptfsDriveCacheClear(char* dir);
+// Parts of a Drive vault file held on disk, JSON [[start,end],...] as
+// fractions of its length ("[]" for other sessions).
+extern DecryptResult GocryptfsCachedRanges(int sessionID, char* relativePath);
+// Re-fetch a Drive vault directory's listing next time (changes made elsewhere).
+extern int GocryptfsRefreshDir(int sessionID, char* relativePath);
+
+// imagethat-web server connection (pinnedSHA256 as for GocryptfsOpenRemote).
+// Its cookie and the passwords it re-authenticates with stay in memory.
+extern int GocryptfsServerNew(char* baseURL, char* pinnedSHA256);
+extern void GocryptfsServerFree(int server);
+// 0 server-decrypt, 1 client-decrypt, or a negative code.
+extern int GocryptfsServerGetMode(int server);
+extern int GocryptfsServerLogin(int server, char* accessPassword);
+// JSON [{id,name}].
+extern DecryptResult GocryptfsServerVaults(int server);
+extern int GocryptfsServerLogout(int server);
+// Open a vault over the server's ciphertext endpoints with this connection,
+// after ServerLogin, decrypting here: the server never sees the vault
+// password or plaintext. cacheDir "" for none. Returns a read-only session.
+extern int GocryptfsServerOpenVault(int server, char* vaultID, char* password, char* cacheDir);
+
 #endif

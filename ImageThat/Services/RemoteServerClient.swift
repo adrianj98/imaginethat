@@ -1,4 +1,5 @@
 import Foundation
+import CLibGocryptfs
 
 /// A vault advertised by an imagethat-web server.
 public struct RemoteVault: Decodable, Sendable, Hashable {
@@ -22,6 +23,7 @@ public enum RemoteServerError: LocalizedError {
     case wrongAccessPassword
     case readOnly
     case vaultLocked
+    case unreachable
     case http(status: Int, message: String)
 
     public var errorDescription: String? {
@@ -33,7 +35,20 @@ public enum RemoteServerError: LocalizedError {
         case .wrongAccessPassword: return "Wrong server access password"
         case .readOnly: return "Vaults on this server are decrypted on this Mac and are read-only for now"
         case .vaultLocked: return "The vault is locked"
+        case .unreachable: return "The server could not be reached"
         case .http(_, let message): return "Server: \(message)"
+        }
+    }
+}
+
+extension RemoteServerError {
+    /// A negative return code of the engine's server calls (see libgocryptfs.h).
+    init(code rc: Int32) {
+        switch rc {
+        case -2: self = .wrongPassword
+        case -7: self = .wrongAccessPassword
+        case -8: self = .vaultLocked
+        default: self = .unreachable
         }
     }
 }
@@ -54,22 +69,27 @@ public enum RemoteServerMode: Sendable {
 /// nor the session cookie that holds the unlocked vaults reach the disk.
 ///
 /// A client-decrypt server never sees a vault password: the client logs in
-/// with the server's access password, and `unlock` opens the vault here
-/// through the Go library (GocryptfsBridge over GocryptfsOpenRemote), which
-/// fetches ciphertext and decrypts it in this process. Reads then go to that
-/// session; writes are refused.
+/// with the server's access password and `unlock` opens the vault here. That
+/// side runs in the Go engine, the same code the Android app uses: one
+/// engine connection per client (GocryptfsServerNew) asks the server's mode,
+/// logs in, lists and logs out, and opens vaults over the server's
+/// ciphertext endpoints (GocryptfsServerOpenVault), decrypting in this
+/// process. Reads then go to that session; writes are refused.
 public final class RemoteServerClient: @unchecked Sendable {
     public let baseURL: URL
     private let session: URLSession
+    /// The engine's connection to this server; 0 when it refused the URL.
+    let handle: Int32
 
     private let lock = NSLock()
     // vault ID → password, in memory only. The server locks idle sessions
     // (default 30 min); with this the client re-unlocks instead of failing.
     private var passwords: [String: String] = [:]
-    // Client-decrypt servers: the access password (memory only, for logging
-    // in again after the server's idle timeout) and the open vaults.
+    // Client-decrypt servers: whether the engine connection is logged in
+    // (it keeps the access password in memory to log in again after the
+    // server's idle timeout), and the open vaults.
     private var mode: RemoteServerMode?
-    private var accessPassword: String?
+    private var loggedIn = false
     private var bridges: [String: GocryptfsBridge] = [:]
 
     public init(baseURL: URL) {
@@ -81,10 +101,23 @@ public final class RemoteServerClient: @unchecked Sendable {
         config.httpCookieAcceptPolicy = .always
         config.timeoutIntervalForRequest = 60
         self.session = URLSession(configuration: config)
+        // No certificate pinning on the Mac: the pin is "".
+        let id = baseURL.absoluteString.withCString { b in
+            "".withCString { pin in GocryptfsServerNew(UnsafeMutablePointer(mutating: b), UnsafeMutablePointer(mutating: pin)) }
+        }
+        self.handle = max(id, 0)
     }
 
     deinit {
         session.invalidateAndCancel()
+        if handle > 0 { GocryptfsServerFree(handle) }
+    }
+
+    /// Runs a blocking engine call with the connection handle, off the caller's thread.
+    private func engine<T: Sendable>(_ body: @escaping @Sendable (Int32) throws -> T) async throws -> T {
+        let handle = self.handle
+        guard handle > 0 else { throw RemoteServerError.invalidServerURL }
+        return try await Task.detached { try body(handle) }.value
     }
 
     // MARK: - Mode and login
@@ -93,18 +126,12 @@ public final class RemoteServerClient: @unchecked Sendable {
     /// no /api/info and decrypt themselves.
     public func serverMode() async throws -> RemoteServerMode {
         if let mode = lock.withLock({ self.mode }) { return mode }
-        struct Info: Decodable { let mode: String? }
-        let (data, response) = try await raw(request("api/info"))
+        let rc = try await engine { GocryptfsServerGetMode($0) }
         let mode: RemoteServerMode
-        switch response.statusCode {
-        case 404:
-            mode = .serverDecrypt
-        case 200:
-            mode = (try? JSONDecoder().decode(Info.self, from: data))?.mode == "client-decrypt"
-                ? .clientDecrypt : .serverDecrypt
-        default:
-            try check(response, data)
-            throw RemoteServerError.badResponse
+        switch rc {
+        case 0: mode = .serverDecrypt
+        case 1: mode = .clientDecrypt
+        default: throw RemoteServerError(code: rc)
         }
         lock.withLock { self.mode = mode }
         return mode
@@ -115,34 +142,51 @@ public final class RemoteServerClient: @unchecked Sendable {
     }
 
     public var hasAccessPassword: Bool {
-        lock.withLock { accessPassword != nil }
+        lock.withLock { loggedIn }
     }
 
     /// Logs in to a client-decrypt server with its access password.
     public func login(accessPassword: String) async throws {
-        var req = request("api/login", method: "POST")
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONEncoder().encode(["password": accessPassword])
-        let (data, response) = try await raw(req)
-        if response.statusCode == 401 { throw RemoteServerError.wrongAccessPassword }
-        try check(response, data)
-        lock.withLock { self.accessPassword = accessPassword }
+        let rc = try await engine { h in
+            accessPassword.withCString { GocryptfsServerLogin(h, UnsafeMutablePointer(mutating: $0)) }
+        }
+        guard rc == 0 else { throw RemoteServerError(code: rc) }
+        lock.withLock { loggedIn = true }
     }
 
     // MARK: - Vaults
 
     public func listVaults() async throws -> [RemoteVault] {
+        if isClientDecrypt { return try await listVaultsLocally() }
         struct Response: Decodable { let vaults: [RemoteVault]? }
-        var (data, response) = try await raw(request("api/vaults"))
-        if response.statusCode == 401, isClientDecrypt {
-            guard let access = lock.withLock({ accessPassword }) else { throw RemoteServerError.accessPasswordRequired }
-            try await login(accessPassword: access)
-            (data, response) = try await raw(request("api/vaults"))
+        let (data, _) = try await send(request("api/vaults"))
+        return try decode(Response.self, data).vaults ?? []
+    }
+
+    /// Client-decrypt: the engine connection lists the vaults (logging in
+    /// again after the server's idle timeout).
+    private func listVaultsLocally() async throws -> [RemoteVault] {
+        let data: Data
+        do {
+            data = try await engine { h in
+                let result = GocryptfsServerVaults(h)
+                defer { GocryptfsFreeDecryptResult(result) }
+                if let errPtr = result.error {
+                    // "locked:" means not logged in, or the login no longer works.
+                    if String(cString: errPtr).hasPrefix("locked:") { throw RemoteServerError.accessPasswordRequired }
+                    throw RemoteServerError.http(status: 0, message: String(cString: errPtr))
+                }
+                guard let dataPtr = result.data, result.size > 0 else { return Data() }
+                return Data(bytes: dataPtr, count: Int(result.size))
+            }
+        } catch RemoteServerError.accessPasswordRequired {
+            lock.withLock { loggedIn = false }
+            throw RemoteServerError.accessPasswordRequired
         }
-        try check(response, data)
-        let vaults = try decode(Response.self, data).vaults ?? []
-        guard isClientDecrypt else { return vaults }
-        // The server holds nothing open here; this client does.
+        // The engine reports id and name only; the server holds nothing open
+        // here, this client does.
+        struct Listed: Decodable { let id: String; let name: String }
+        let vaults = try decode([Listed].self, data)
         let open = lock.withLock { Set(bridges.keys) }
         return vaults.map { RemoteVault(id: $0.id, name: $0.name, unlocked: open.contains($0.id)) }
     }
@@ -162,22 +206,42 @@ public final class RemoteServerClient: @unchecked Sendable {
         lock.withLock { passwords[vaultID] = password }
     }
 
-    /// Client-decrypt: opens the vault in this process. The Go library logs
-    /// in on its own connection with the access password, so the vault
-    /// password goes only to scrypt here.
+    /// Client-decrypt: opens the vault in this process over the logged-in
+    /// engine connection, so the vault password goes only to scrypt here.
     private func unlockLocally(vaultID: String, password: String) async throws {
-        guard let access = lock.withLock({ accessPassword }) else { throw RemoteServerError.accessPasswordRequired }
-        let server = baseURL
+        guard hasAccessPassword else { throw RemoteServerError.accessPasswordRequired }
         do {
-            let bridge = try await Task.detached {
-                try GocryptfsBridge(server: server, vaultID: vaultID, password: password, accessPassword: access)
-            }.value
+            let bridge = try await openVault(vaultID: vaultID, password: password, cacheDir: nil)
             lock.withLock { bridges[vaultID] = bridge }
-        } catch GocryptfsError.wrongPassword {
-            throw RemoteServerError.wrongPassword
-        } catch GocryptfsError.wrongAccessPassword {
-            lock.withLock { accessPassword = nil }
+        } catch RemoteServerError.wrongAccessPassword, RemoteServerError.vaultLocked {
+            // The server's session expired and logging in again failed.
+            lock.withLock { loggedIn = false }
             throw RemoteServerError.wrongAccessPassword
+        }
+    }
+
+    /// Opens the vault over the server's ciphertext endpoints with the engine
+    /// connection and decrypts it here; the session is read-only. With a
+    /// `cacheDir`, files passed to `GocryptfsTransfer.cacheFile` are kept
+    /// there as ciphertext. A client-decrypt server needs `login` first; a
+    /// server-decrypt one is asked to unlock the vault for the connection.
+    /// Blocks on the network and scrypt, off the caller's thread.
+    public func openVault(vaultID: String, password: String, cacheDir: URL?) async throws -> GocryptfsBridge {
+        let dir = cacheDir?.path ?? ""
+        let id = try await engine { h in
+            vaultID.withCString { v in
+                password.withCString { p in
+                    dir.withCString { d in
+                        GocryptfsServerOpenVault(h, UnsafeMutablePointer(mutating: v), UnsafeMutablePointer(mutating: p),
+                                                 UnsafeMutablePointer(mutating: d))
+                    }
+                }
+            }
+        }
+        switch id {
+        case -1: throw GocryptfsError.configNotFound
+        case let id where id > 0: return GocryptfsBridge(sessionID: id, vaultPath: baseURL.appendingPathComponent(vaultID))
+        default: throw RemoteServerError(code: id)
         }
     }
 
@@ -192,10 +256,16 @@ public final class RemoteServerClient: @unchecked Sendable {
 
     /// Ends this client's server session, locking every vault it opened.
     public func logout() async throws {
+        let clientDecrypt = isClientDecrypt
         lock.withLock {
             passwords.removeAll()
             bridges.removeAll()
-            accessPassword = nil
+            loggedIn = false
+        }
+        if clientDecrypt {
+            let rc = try await engine { GocryptfsServerLogout($0) }
+            guard rc == 0 else { throw RemoteServerError(code: rc) }
+            return
         }
         _ = try await send(request("api/logout", method: "POST"))
     }

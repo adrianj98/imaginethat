@@ -5,7 +5,9 @@ import ai.alertd.imagethat.keys.StateStore
 import android.content.Context
 import android.net.Uri
 import java.io.File
+import mobile.Drive
 import mobile.Mobile
+import mobile.Server
 import mobile.Vault
 
 /** Failures opening or creating a local vault, mapped from the Go engine's message prefixes. */
@@ -23,6 +25,18 @@ sealed class LocalError(message: String, cause: Throwable? = null) : Exception(m
     class Closed(m: String, c: Throwable? = null) : LocalError(m, c)
     /** A client-decrypt server refused its access password (openRemote). */
     class WrongAccessPassword(m: String, c: Throwable? = null) : LocalError(m, c)
+    /** A server forgot its session and could not be logged in or unlocked again. */
+    class Locked(m: String, c: Throwable? = null) : LocalError(m, c)
+    /** A server's certificate no longer matches the pinned one. */
+    class CertMismatch(m: String, c: Throwable? = null) : LocalError(m, c)
+    /** The server or the backend refused a write. */
+    class Forbidden(m: String, c: Throwable? = null) : LocalError(m, c)
+    /** A copy, cache fetch or sign-in was cancelled. */
+    class Cancelled(m: String, c: Throwable? = null) : LocalError(m, c)
+    /** Google Drive is not signed in. */
+    class NotConnected(m: String, c: Throwable? = null) : LocalError(m, c)
+    /** Google refused the sign-in or the stored token (revoked, wrong client). */
+    class Auth(m: String, c: Throwable? = null) : LocalError(m, c)
     class Other(m: String, c: Throwable? = null) : LocalError(m, c)
 
     companion object {
@@ -37,6 +51,12 @@ sealed class LocalError(message: String, cause: Throwable? = null) : Exception(m
                 m.startsWith("exists") -> Exists(m, e)
                 m.startsWith("invalid_path") -> InvalidPath(m, e)
                 m.startsWith("closed:") -> Closed(m, e)
+                m.startsWith("locked:") -> Locked(m, e)
+                m.startsWith("cert_mismatch:") -> CertMismatch(m, e)
+                m.startsWith("forbidden:") -> Forbidden(m, e)
+                m.startsWith("cancelled:") -> Cancelled(m, e)
+                m.startsWith("not_connected:") -> NotConnected(m, e)
+                m.startsWith("auth:") -> Auth(m, e)
                 m.contains("${SafStorage.READ_ONLY}:") -> ReadOnly(m, e)
                 // Go wraps passed-through errors, so the prefix may not be at position 0.
                 e is SecurityException || m.contains("${SafStorage.UNAVAILABLE}:") -> Unavailable(m, e)
@@ -47,15 +67,22 @@ sealed class LocalError(message: String, cause: Throwable? = null) : Exception(m
 }
 
 /**
- * The built-in offline vault (app-private, no-backup) and vaults in user-picked
- * SAF folders. Opened [Vault]s are tracked so [closeAll] can lock everything.
- * Passwords arrive as CharArray and are zeroed after the engine call (the
- * String copy that gomobile needs is unavoidable).
+ * The built-in offline vault (app-private, no-backup), vaults in user-picked SAF folders, and the
+ * vaults the Go engine decrypts on the phone from a client-decrypt server or Google Drive. Opened
+ * [Vault]s are tracked so [closeAll] can lock everything. Passwords arrive as CharArray and are
+ * zeroed after the engine call (the String copy that gomobile needs is unavoidable).
+ *
+ * Every opened vault gets the engine's thumbnail caches (memory, and a disk tier in [thumbDir]
+ * sealed with the vault's own key, so no decrypted preview is stored). [fileCacheDir] keeps the
+ * ciphertext of server files the user keeps on the phone; [driveCacheDir] is the Drive cache.
  */
 class LocalVaults(
     private val context: Context,
     private val state: StateStore,
     private val offlineDir: File = File(context.noBackupFilesDir, "offline-vault"),
+    val thumbDir: File = File(context.cacheDir, "thumbs"),
+    val fileCacheDir: File = File(context.noBackupFilesDir, "server-files"),
+    val driveCacheDir: File = File(context.noBackupFilesDir, "drive-cache"),
 ) {
     private val open = ArrayList<Vault>()
 
@@ -74,24 +101,29 @@ class LocalVaults(
     }
 
     fun openOffline(password: CharArray): Vault =
-        track(withPassword(password) { Mobile.openLocal(offlineDir.absolutePath, it) })
+        track(withPassword(password) { Mobile.openLocal(offlineDir.absolutePath, it) }, "offline")
 
     /**
-     * Opens a vault on a client-decrypt imagethat-web server: the engine logs in with [access]
-     * (the server's access password), fetches only ciphertext and unlocks the vault here, so
-     * [password] never leaves the phone. Read-only. Blocks on the network; zeroes both arrays.
+     * Opens a vault on a client-decrypt imagethat-web server through [server], which must already
+     * be logged in with the server's access password: the engine fetches only ciphertext and
+     * unlocks the vault here, so [password] never leaves the phone. Files the user keeps on the
+     * phone are held (as ciphertext) in [fileCacheDir]. Read-only. Blocks on the network; zeroes
+     * [password]. [thumbKey] identifies the vault across launches (server address and vault id).
      */
-    fun openRemote(baseUrl: String, vaultId: String, pin: String?, password: CharArray, access: CharArray): Vault =
-        try {
-            track(withPassword(password) { pw -> withPassword(access) { ap -> Mobile.openRemote(baseUrl, vaultId, pw, pin.orEmpty(), ap) } })
-        } finally {
-            access.fill('\u0000')
-        }
+    fun openRemote(server: Server, vaultId: String, password: CharArray, thumbKey: String): Vault =
+        track(withPassword(password) { server.openVault(vaultId, it, fileCacheDir.absolutePath) }, "server:$thumbKey")
+
+    /**
+     * Unlocks the vault in the Google Drive folder [rootId]. Downloaded ciphertext is cached in
+     * [driveCacheDir]. Writable. Blocks on the network; zeroes [password].
+     */
+    fun openDrive(drive: Drive, rootId: String, password: CharArray): Vault =
+        track(withPassword(password) { Mobile.openDrive(drive, rootId, it, driveCacheDir.absolutePath) }, "drive:$rootId")
 
     fun openFolder(folder: SavedFolder, password: CharArray): Vault {
         try {
             val storage = storageFor(Uri.parse(folder.treeUri))
-            return track(withPassword(password) { Mobile.openStorage(storage, it) })
+            return track(withPassword(password) { Mobile.openStorage(storage, it) }, "folder:${folder.treeUri}")
         } finally {
             password.fill('\u0000')
         }
@@ -136,8 +168,13 @@ class LocalVaults(
         return storage
     }
 
+    /** Remembers [v] for [closeAll] and sets up its thumbnail caches under the stable [thumbKey]. */
     @Synchronized
-    private fun track(v: Vault): Vault = v.also { open.add(it) }
+    private fun track(v: Vault, thumbKey: String): Vault {
+        // Without the disk tier previews still work, from memory only.
+        runCatching { v.configureThumbnails(thumbKey, thumbDir.absolutePath, 0, 0) }
+        return v.also { open.add(it) }
+    }
 
     private fun <T> withPassword(password: CharArray, block: (String) -> T): T {
         try {

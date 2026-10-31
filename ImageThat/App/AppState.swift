@@ -69,8 +69,8 @@ public class AppState: ObservableObject {
 
     /// Vault bridges keyed by vault path — kept alive for the session
     private var vaultBridges: [String: GocryptfsBridge] = [:]
-    /// Drive vault bridges keyed by Drive folder ID
-    private var driveVaultBridges: [String: DriveVaultBridge] = [:]
+    /// Drive vault sessions keyed by Drive folder ID
+    private var driveVaultBridges: [String: GocryptfsBridge] = [:]
 
     // Favorites
     @Published public var favorites: [SidebarItem] = []
@@ -544,6 +544,8 @@ public class AppState: ObservableObject {
                     let destPath: String
                     if let vaultSource = dest as? VaultSource {
                         destPath = vaultSource.currentPath.isEmpty ? name : "\(vaultSource.currentPath)/\(name)"
+                    } else if let driveVault = dest as? DriveVaultSource {
+                        destPath = driveVault.currentPath.isEmpty ? name : "\(driveVault.currentPath)/\(name)"
                     } else if let remote = dest as? RemoteVaultSource {
                         destPath = remote.currentPath.isEmpty ? name : "\(remote.currentPath)/\(name)"
                     } else {
@@ -563,10 +565,11 @@ public class AppState: ObservableObject {
 
                     print("importFiles: copying \(name) (\(size) bytes) to \(destPath)")
 
-                    if let vaultSource = dest as? VaultSource {
-                        // Local vaults copy in the Go engine, which retries and
-                        // resumes on read errors (files on a network share).
-                        try await Self.engineCopy(.file(url), into: vaultSource, at: destPath)
+                    if let bridge = (dest as? VaultSource)?.bridge ?? (dest as? DriveVaultSource)?.bridge {
+                        // Local and Drive vaults copy in the Go engine, which
+                        // retries and resumes on read errors (files on a
+                        // network share) and streams into Drive.
+                        try await Self.engineCopy(.file(url), into: bridge, at: destPath)
                     } else {
                         // Use larger chunks (1MB) for better throughput
                         let chunkSize = 1_048_576  // 1MB chunks
@@ -634,7 +637,7 @@ public class AppState: ObservableObject {
 
                 let destFileName = (transfer.itemRelativePath as NSString).lastPathComponent
                 let destPath = destVaultPath.isEmpty ? destFileName : "\(destVaultPath)/\(destFileName)"
-                try await Self.engineCopy(from, into: destSource, at: destPath)
+                try await Self.engineCopy(from, into: destBridge, at: destPath)
                 self.loadMedia(from: mediaSource ?? destSource)
             } catch {
                 self.errorMessage = error.localizedDescription
@@ -936,8 +939,9 @@ public class AppState: ObservableObject {
         // for many seconds at app launch, leaving the Drive section stuck on
         // "Connect Google Drive" even when a refresh token was saved.
         Task.detached { [weak self] in
-            await GoogleDriveService.shared.loadSavedCredentials()
-            guard await GoogleDriveService.shared.isConnected else { return }
+            AppPaths.removeLegacyDriveCaches()
+            GoogleDriveService.shared.loadSavedCredentials()
+            guard GoogleDriveService.shared.isConnected else { return }
             guard let self else { return }
             await MainActor.run { self.googleDriveConnected = true }
             await self.buildGoogleDriveSidebar()
@@ -962,11 +966,11 @@ public class AppState: ObservableObject {
     }
 
     public func cancelConnectGoogleDrive() {
-        GoogleDriveAuthManager.shared.cancelAuth()
+        GoogleDriveService.shared.cancelAuthorization()
     }
 
     public func disconnectGoogleDrive() {
-        Task { await GoogleDriveService.shared.disconnect() }
+        GoogleDriveService.shared.disconnect()
         googleDriveConnected = false
         googleDriveSidebarItems = []
         if mediaSource is GoogleDriveSource {
@@ -982,17 +986,12 @@ public class AppState: ObservableObject {
             return
         }
         Task {
-            let hasConf = (try? await GoogleDriveService.shared.fileExists(name: "gocryptfs.conf", in: folderId)) ?? false
-            if hasConf {
-                self.tryUnlockDriveVault(folderId: folderId, navigateToSubpath: nil)
-                return
-            }
-            // Folder isn't a vault itself — see if it's INSIDE one. If yes,
-            // unlock the vault root and land directly at the sub-path the user
-            // clicked (so they see *their* photos, not the vault root).
+            // A vault itself, or a folder INSIDE one: unlock the vault root and
+            // land directly at the sub-path the user clicked (so they see
+            // *their* photos, not the vault root).
             if let match = await GoogleDriveService.shared.findVaultRoot(forDescendant: folderId) {
                 let subpath = match.descendantPath.joined(separator: "/")
-                self.tryUnlockDriveVault(folderId: match.rootFolderId, navigateToSubpath: subpath)
+                self.tryUnlockDriveVault(folderId: match.rootFolderId, navigateToSubpath: subpath.isEmpty ? nil : subpath)
                 return
             }
             let source = GoogleDriveSource(folderId: folderId)
@@ -1028,12 +1027,15 @@ public class AppState: ObservableObject {
         if item.vaultPath != nil { return } // locked vault subfolder: nothing to show yet
         Task {
             do {
+                let entries = try await GoogleDriveService.shared.list(in: folderId, mediaOnly: false)
                 // A locked vault shows no children; they appear decrypted once
                 // it is unlocked (see unlockDriveVault).
-                if (try? await GoogleDriveService.shared.fileExists(name: "gocryptfs.conf", in: folderId)) == true {
+                if entries.contains(where: { !$0.isFolder && $0.name == "gocryptfs.conf" }) {
                     return
                 }
-                let folders = try await GoogleDriveService.shared.listFolders(in: folderId)
+                let folders = entries
+                    .filter(\.isFolder)
+                    .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
                 let children = folders.map { folder in
                     SidebarItem(name: folder.name, url: URL(string: "gdrive://\(folder.id)")!, children: [])
                 }
@@ -1063,8 +1065,8 @@ public class AppState: ObservableObject {
     /// Decrypted subfolders of `path` in an unlocked Drive vault, as sidebar
     /// items that keep the vault root's Drive ID in their URL and the
     /// plaintext vault path in `vaultPath`, like local vault items.
-    private func loadDriveVaultSidebarChildren(bridge: DriveVaultBridge, path: String, parentID: UUID) {
-        let rootId = bridge.folderId
+    private func loadDriveVaultSidebarChildren(bridge: GocryptfsBridge, path: String, parentID: UUID) {
+        let rootId = bridge.driveFolderId
         Task.detached {
             // listDirectory blocks on Drive requests; keep it off the main actor.
             let entries = (try? bridge.listDirectory(path: path)) ?? []
@@ -1083,8 +1085,8 @@ public class AppState: ObservableObject {
 
     /// Re-list the decrypted children of the sidebar item for `path` in the
     /// Drive vault rooted at `rootId` (after a folder is created or deleted).
-    private func refreshDriveVaultSidebar(bridge: DriveVaultBridge, path: String) {
-        let rootURL = URL(string: "gdrive://\(bridge.folderId)")!
+    private func refreshDriveVaultSidebar(bridge: GocryptfsBridge, path: String) {
+        let rootURL = URL(string: "gdrive://\(bridge.driveFolderId)")!
         let target = findItem(in: googleDriveSidebarItems) { item in
             item.url == rootURL && (item.vaultPath ?? "") == path
         }
@@ -1125,7 +1127,7 @@ public class AppState: ObservableObject {
 
     /// Maps a path of Drive folder names inside a vault (gocryptfs ciphertext,
     /// as `findVaultRoot` reports them) to the plaintext vault path.
-    nonisolated private static func plainVaultPath(cipherComponents: [String], bridge: DriveVaultBridge) -> String? {
+    nonisolated private static func plainVaultPath(cipherComponents: [String], bridge: GocryptfsBridge) -> String? {
         var plain = ""
         for component in cipherComponents {
             guard let entries = try? bridge.listDirectory(path: plain) else { return nil }
@@ -1213,7 +1215,7 @@ public class AppState: ObservableObject {
     private func unlockDriveVault(folderId: String, password: String, saveToKeychain: Bool = true, subpath: String? = nil) async {
         isLoading = true
         do {
-            let bridge = try await DriveVaultBridge(folderId: folderId, password: password)
+            let bridge = try await GoogleDriveService.shared.openVault(folderId: folderId, password: password)
             let cacheKey = "gdrive://\(folderId)"
             configureThumbnails(bridge, sourceID: cacheKey)
             vaultPasswords[cacheKey] = password
@@ -1672,7 +1674,7 @@ extension AppState {
             do {
                 let name = (transfer.itemRelativePath as NSString).lastPathComponent
                 if let engineSource, let vaultDest = destSource as? VaultSource {
-                    try await Self.engineCopy(engineSource, into: vaultDest, at: destPath.isEmpty ? name : "\(destPath)/\(name)")
+                    try await Self.engineCopy(engineSource, into: vaultDest.bridge, at: destPath.isEmpty ? name : "\(destPath)/\(name)")
                     if let current = mediaSource { loadMedia(from: current) }
                     return
                 }
@@ -1693,11 +1695,12 @@ extension AppState {
         case vault(GocryptfsBridge, String)
     }
 
-    /// Copies one file into a local vault through the Go engine. Reads that
-    /// fail transiently (a network share, a remote server) are retried with
-    /// backoff and resume where they stopped, and the file appears only once
-    /// every byte is in. Progress goes out like VaultSource.writeChunks'.
-    nonisolated static func engineCopy(_ from: EngineCopySource, into dest: VaultSource, at destPath: String) async throws {
+    /// Copies one file into a local or Drive vault through the Go engine.
+    /// Reads that fail transiently (a network share, a remote server) are
+    /// retried with backoff and resume where they stopped, and the file
+    /// appears only once every byte is in. Progress goes out like
+    /// VaultSource.writeChunks'.
+    nonisolated static func engineCopy(_ from: EngineCopySource, into dest: GocryptfsBridge, at destPath: String) async throws {
         let startTime = Date()
         let report: @Sendable (Int64, Int64) -> Void = { done, total in
             NotificationCenter.default.post(name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
@@ -1705,22 +1708,22 @@ extension AppState {
         }
         switch from {
         case .file(let url):
-            try await GocryptfsTransfer.copyFile(url, into: dest.bridge, at: destPath, onProgress: report)
+            try await GocryptfsTransfer.copyFile(url, into: dest, at: destPath, onProgress: report)
         case .vault(let source, let path):
-            try await GocryptfsTransfer.copy(from: source, path: path, into: dest.bridge, at: destPath, onProgress: report)
+            try await GocryptfsTransfer.copy(from: source, path: path, into: dest, at: destPath, onProgress: report)
         }
     }
 
     /// Opens the remote vault a second time in ciphertext mode with a file
-    /// cache. It costs a key derivation and a round trip, so it runs in the
-    /// background; the current remote source picks it up when it is ready.
+    /// cache, on the client's engine connection (logged in already on a
+    /// client-decrypt server). It costs a key derivation and a round trip, so
+    /// it runs in the background; the current remote source picks it up when
+    /// it is ready.
     private func openRemoteCache(server: String, vaultID: String, password: String, key: String) {
-        guard remoteCaches[key] == nil, let base = URL(string: server) else { return }
-        // Set only for client-decrypt servers, which want it instead of the vault password.
-        let access = vaultPasswords[Self.accessPasswordKey(server)] ?? ""
+        guard remoteCaches[key] == nil, let client = serverClients[server] else { return }
         Task.detached(priority: .utility) { [weak self] in
-            guard let bridge = try? GocryptfsBridge(remoteServer: base, vaultID: vaultID, password: password,
-                                                    accessPassword: access, cacheDir: AppPaths.remoteFilesCache) else { return }
+            guard let bridge = try? await client.openVault(vaultID: vaultID, password: password,
+                                                           cacheDir: AppPaths.remoteFilesCache) else { return }
             await self?.adoptRemoteCache(bridge, server: server, vaultID: vaultID, key: key)
         }
     }

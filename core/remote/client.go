@@ -195,6 +195,13 @@ func (c *Client) Login(ctx context.Context, accessPassword string) error {
 	}
 }
 
+// LoggedIn reports whether Login succeeded, so OpenVault will not send the
+// vault password anywhere.
+func (c *Client) LoggedIn() bool {
+	_, ok := c.loggedIn()
+	return ok
+}
+
 func (c *Client) loggedIn() (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
