@@ -271,12 +271,18 @@ enum RemoteServerTest {
             let vthumb = try? await root.loadThumbnail(for: video, size: CGSize(width: 160, height: 160))
             check("video thumbnail rendered here", (vthumb?.size.width ?? 0) > 0, "")
 
-            do {
-                try await root.createDirectory(named: "Nope")
-                check("writes refused", false, "mkdir succeeded")
-            } catch RemoteServerError.readOnly {
-                check("writes refused", true, "")
-            }
+            // Writes are encrypted here and reach the server as ciphertext.
+            let payload = Data("written from the Mac".utf8)
+            try await root.createDirectory(named: "Uploaded")
+            try await client.upload(vaultID: vault.id, directory: "Uploaded", name: "note.txt", data: payload)
+            let back = try await client.fileData(vaultID: vault.id, path: "Uploaded/note.txt")
+            check("upload round-trips", back == payload, "\(back.count) bytes")
+            try await client.move(vaultID: vault.id, from: "Uploaded/note.txt", to: "Uploaded/renamed.txt")
+            let names = try await client.list(vaultID: vault.id, path: "Uploaded").map(\.name)
+            check("rename", names == ["renamed.txt"], "\(names)")
+            try await client.delete(vaultID: vault.id, path: "Uploaded")
+            let top = try await client.list(vaultID: vault.id, path: "").map(\.name)
+            check("delete directory", !top.contains("Uploaded"), "\(top)")
 
             try await client.lock(vaultID: vault.id)
             do {

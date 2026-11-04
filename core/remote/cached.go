@@ -30,7 +30,7 @@ func (c *Client) OpenVaultCached(ctx context.Context, vaultID, password string, 
 		return nil, ErrLoginRequired
 	}
 	raw := &RawFS{c: c, vaultID: vaultID}
-	cfs := cachefs.New(raw, ranges, c.base.String()+"\x00"+vaultID+"\x00", PermanentErrors...)
+	cfs := cachefs.NewWrite(raw, ranges, c.base.String()+"\x00"+vaultID+"\x00", PermanentErrors...)
 	s, err := vault.Open(cfs, password)
 	if errors.Is(err, vault.ErrWrongPassword) {
 		return nil, ErrWrongPassword

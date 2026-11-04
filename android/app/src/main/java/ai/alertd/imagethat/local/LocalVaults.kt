@@ -106,7 +106,7 @@ class LocalVaults(
      * Opens a vault on a client-decrypt imagethat-web server through [server], which must already
      * be logged in with the server's access password: the engine fetches only ciphertext and
      * unlocks the vault here, so [password] never leaves the phone. What it reads is kept (as
-     * ciphertext) in [networkCacheDir]. Read-only. Blocks on the network; zeroes
+     * ciphertext) in [networkCacheDir]. Writable: writes are encrypted here. Blocks on the network; zeroes
      * [password]. [thumbKey] identifies the vault across launches (server address and vault id).
      */
     fun openRemote(server: Server, vaultId: String, password: CharArray, thumbKey: String): Vault =

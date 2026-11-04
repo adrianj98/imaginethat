@@ -111,10 +111,6 @@ func TestRawModeMatchesLocalDecryption(t *testing.T) {
 	if _, err := rs.ReadFile("missing.jpg"); !errors.Is(err, vault.ErrNotFound) {
 		t.Errorf("missing file: %v, want vault.ErrNotFound", err)
 	}
-	// A raw-mode session is read-only.
-	if err := rs.Mkdir("new"); !errors.Is(err, vault.ErrReadOnlyBackend) {
-		t.Errorf("Mkdir over raw mode: %v, want ErrReadOnlyBackend", err)
-	}
 }
 
 func TestRawModeReadsAreCoalesced(t *testing.T) {

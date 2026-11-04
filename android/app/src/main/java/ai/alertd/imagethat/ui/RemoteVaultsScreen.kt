@@ -86,7 +86,8 @@ private sealed interface Load {
  * A client-decrypt server is spoken to through the Go engine ([RemoteServer.client]) and first
  * wants its access password (saved like a vault password). Its vaults are then opened on the phone
  * ([LocalVaults.openRemote]) and browsed as a [LocalSource]: the vault password never goes to the
- * server, they are read-only, and single files can be kept on the phone (Keep on phone).
+ * server, writes are encrypted on the phone (the server gets only ciphertext), and single files
+ * can be kept on the phone (Keep on phone).
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable

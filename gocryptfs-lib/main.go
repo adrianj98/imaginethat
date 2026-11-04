@@ -598,6 +598,24 @@ func GocryptfsRenameFile(sessionID C.int, sourcePath *C.char, destDirPath *C.cha
 	return writeCode(err)
 }
 
+// GocryptfsMove renames or relocates an entry; toPath is the full new path,
+// so unlike GocryptfsRenameFile it can change the name.
+//
+//export GocryptfsMove
+func GocryptfsMove(sessionID C.int, fromPath *C.char, toPath *C.char) C.int {
+	sess := getSession(sessionID)
+	if sess == nil {
+		return rcNoConfig
+	}
+	src := C.GoString(fromPath)
+	err := sess.s.Move(src, C.GoString(toPath))
+	if err == nil {
+		sess.dropAllFiles()
+		sess.invalidateThumb(src)
+	}
+	return writeCode(err)
+}
+
 //export GocryptfsMkdir
 func GocryptfsMkdir(sessionID C.int, dirPath *C.char) C.int {
 	sess := getSession(sessionID)

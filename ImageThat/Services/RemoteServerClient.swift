@@ -21,7 +21,6 @@ public enum RemoteServerError: LocalizedError {
     case wrongPassword
     case accessPasswordRequired
     case wrongAccessPassword
-    case readOnly
     case vaultLocked
     case unreachable
     case http(status: Int, message: String)
@@ -33,7 +32,6 @@ public enum RemoteServerError: LocalizedError {
         case .wrongPassword: return "Wrong password"
         case .accessPasswordRequired: return "This server needs its access password"
         case .wrongAccessPassword: return "Wrong server access password"
-        case .readOnly: return "Vaults on this server are decrypted on this Mac and are read-only for now"
         case .vaultLocked: return "The vault is locked"
         case .unreachable: return "The server could not be reached"
         case .http(_, let message): return "Server: \(message)"
@@ -222,7 +220,8 @@ public final class RemoteServerClient: @unchecked Sendable {
     }
 
     /// Opens the vault over the server's ciphertext endpoints with the engine
-    /// connection and decrypts it here; the session is read-only. With a
+    /// connection and decrypts it here; writes are encrypted here and the
+    /// server gets only ciphertext. With a
     /// `cacheDir` (the network cache), what it reads is kept there as
     /// ciphertext. A client-decrypt server needs `login` first; a
     /// server-decrypt one is asked to unlock the vault for the connection.
@@ -284,10 +283,6 @@ public final class RemoteServerClient: @unchecked Sendable {
     /// Runs a blocking Go library call away from the caller's thread.
     private func offThread<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
         try await Task.detached { try body() }.value
-    }
-
-    private func refuseWritesIfLocal() throws {
-        if isClientDecrypt { throw RemoteServerError.readOnly }
     }
 
     // MARK: - Reading
@@ -360,8 +355,14 @@ public final class RemoteServerClient: @unchecked Sendable {
 
     // MARK: - Writing
 
+    // On a client-decrypt server every write goes through the vault's local
+    // session: it encrypts here and sends the server only ciphertext (the
+    // server's raw write endpoints).
+
     public func mkdir(vaultID: String, path: String) async throws {
-        try refuseWritesIfLocal()
+        if let bridge = try localVault(vaultID) {
+            return try await offThread { try bridge.mkdir(path: path) }
+        }
         _ = try await vaultRequest(vaultID) {
             try self.jsonRequest("api/vaults/\(vaultID)/mkdir", body: ["path": path])
         }
@@ -369,7 +370,9 @@ public final class RemoteServerClient: @unchecked Sendable {
 
     /// Renames or relocates an entry; `to` is the full destination path.
     public func move(vaultID: String, from: String, to: String) async throws {
-        try refuseWritesIfLocal()
+        if let bridge = try localVault(vaultID) {
+            return try await offThread { try bridge.move(from: from, to: to) }
+        }
         _ = try await vaultRequest(vaultID) {
             try self.jsonRequest("api/vaults/\(vaultID)/move", body: ["from": from, "to": to])
         }
@@ -377,7 +380,10 @@ public final class RemoteServerClient: @unchecked Sendable {
 
     /// Deletes a file, or a directory with everything in it.
     public func delete(vaultID: String, path: String) async throws {
-        try refuseWritesIfLocal()
+        if let bridge = try localVault(vaultID) {
+            // The engine's delete takes a file or a whole directory tree.
+            return try await offThread { try bridge.deleteDirectory(path: path) }
+        }
         _ = try await vaultRequest(vaultID) {
             self.request("api/vaults/\(vaultID)/entry", method: "DELETE", query: ["path": path])
         }
@@ -385,7 +391,16 @@ public final class RemoteServerClient: @unchecked Sendable {
 
     /// Uploads an in-memory file. The server refuses to overwrite.
     public func upload(vaultID: String, directory: String, name: String, data: Data) async throws {
-        try refuseWritesIfLocal()
+        if let bridge = try localVault(vaultID) {
+            let path = Self.join(directory, name)
+            return try await offThread {
+                // createFile refuses an existing file, as the server does.
+                let writer = try bridge.createFile(path: path)
+                defer { writer.abort() }
+                try writer.write(data)
+                try writer.finish()
+            }
+        }
         _ = try await vaultRequest(vaultID) {
             var req = self.request("api/vaults/\(vaultID)/upload", method: "POST",
                                    query: ["path": directory, "name": name])
@@ -401,7 +416,23 @@ public final class RemoteServerClient: @unchecked Sendable {
         vaultID: String, directory: String, name: String, chunks: S,
         progress: @escaping @Sendable (Int64) -> Void
     ) async throws where S.Element == Data {
-        try refuseWritesIfLocal()
+        if let bridge = try localVault(vaultID) {
+            let path = Self.join(directory, name)
+            let writer = try await offThread { try bridge.createFile(path: path) }
+            do {
+                var sent: Int64 = 0
+                for try await chunk in chunks {
+                    try await offThread { try writer.write(chunk) }
+                    sent += Int64(chunk.count)
+                    progress(sent)
+                }
+                try await offThread { try writer.finish() }
+            } catch {
+                writer.abort()
+                throw error
+            }
+            return
+        }
         // A streamed body cannot be replayed after a 401, so make sure the
         // server session is live first; this re-unlocks it if it expired.
         _ = try await list(vaultID: vaultID, path: directory)
@@ -444,6 +475,10 @@ public final class RemoteServerClient: @unchecked Sendable {
             throw readError
         }
         try check(try httpResponse(result.1), result.0)
+    }
+
+    private static func join(_ directory: String, _ name: String) -> String {
+        directory.isEmpty ? name : directory + "/" + name
     }
 
     private static func write(_ chunk: Data, to output: OutputStream) async throws {

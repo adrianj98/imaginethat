@@ -66,6 +66,7 @@ extern void GocryptfsFreeListResult(ListResult result);
 extern DecryptResult GocryptfsEncryptData(int sessionID, void* plaintext, int plaintextLen);
 extern DecryptResult GocryptfsDecryptData(int sessionID, void* ciphertext, int ciphertextLen);
 extern int GocryptfsRenameFile(int sessionID, char* sourcePath, char* destDirPath);
+extern int GocryptfsMove(int sessionID, char* fromPath, char* toPath);
 extern int GocryptfsMkdir(int sessionID, char* dirPath);
 extern int GocryptfsDeleteFile(int sessionID, char* filePath);
 extern int GocryptfsDeleteDir(int sessionID, char* dirPath);

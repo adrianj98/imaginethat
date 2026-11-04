@@ -71,12 +71,16 @@ class ClientDecryptServerTest {
                 val tail = source.open("/$file", 100L..199L).use { it.readBytes() }
                 assertEquals(bytes.copyOfRange(100, 200).toList(), tail.toList())
                 assertTrue("thumbnail", source.thumbnail("/$file", 64).isNotEmpty())
-                // Read-only: a client-decrypt vault cannot be written from the phone yet.
-                try {
-                    source.mkdir("/new-folder")
-                    fail("mkdir succeeded on a client-decrypt vault")
-                } catch (_: Exception) {
-                }
+                // Writes are encrypted on the phone; the server gets only ciphertext.
+                val folder = "/phone-upload-${System.nanoTime()}"
+                source.mkdir(folder)
+                val payload = "written from the phone".toByteArray()
+                source.upload(folder, "note.txt", payload.inputStream(), payload.size.toLong())
+                assertEquals(payload.toList(), source.open("$folder/note.txt").use { it.readBytes() }.toList())
+                source.move("$folder/note.txt", "$folder/renamed.txt")
+                assertEquals(listOf("renamed.txt"), source.list(folder).map { it.name })
+                source.delete(folder)
+                assertTrue("folder deleted", source.list("/").none { it.name == folder.removePrefix("/") })
             }
         } finally {
             vault.close()

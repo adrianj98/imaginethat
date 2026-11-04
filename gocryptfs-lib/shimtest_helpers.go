@@ -128,6 +128,13 @@ func tRename(id int, src, dstDir string) int {
 	return int(GocryptfsRenameFile(C.int(id), s, d))
 }
 
+func tMove(id int, from, to string) int {
+	f, d := cstr(from), cstr(to)
+	defer C.free(unsafe.Pointer(f))
+	defer C.free(unsafe.Pointer(d))
+	return int(GocryptfsMove(C.int(id), f, d))
+}
+
 func tMkdir(id int, path string) int {
 	p := cstr(path)
 	defer C.free(unsafe.Pointer(p))

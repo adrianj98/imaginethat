@@ -76,6 +76,10 @@ type Options struct {
 type Client struct {
 	base *url.URL
 	hc   *http.Client
+	// stream sends streamed uploads: same cookies and transport as hc, but
+	// no overall timeout, since a large file over a slow link takes as long
+	// as it takes.
+	stream *http.Client
 
 	mu sync.Mutex
 	// accessPassword is set by Login (client-decrypt servers), for logging in
@@ -105,8 +109,9 @@ func New(baseURL string, opts Options) (*Client, error) {
 		rt = t
 	}
 	return &Client{
-		base: u,
-		hc:   &http.Client{Jar: jar, Timeout: opts.Timeout, Transport: rt},
+		base:   u,
+		hc:     &http.Client{Jar: jar, Timeout: opts.Timeout, Transport: rt},
+		stream: &http.Client{Jar: jar, Transport: rt},
 	}, nil
 }
 
@@ -210,7 +215,8 @@ func (c *Client) loggedIn() (string, bool) {
 }
 
 // OpenVault opens a vault here over the server's ciphertext endpoints; the
-// session decrypts locally and is read-only. It needs Login first and fails
+// session decrypts and encrypts locally, and writes send the server only
+// ciphertext (see write.go). It needs Login first and fails
 // with ErrLoginRequired otherwise; the password is used only here.
 func (c *Client) OpenVault(ctx context.Context, vaultID, password string) (*vault.Session, error) {
 	if !c.LoggedIn() {
@@ -266,7 +272,7 @@ type RawFS struct {
 	vaultID string
 }
 
-var _ vault.VFS = (*RawFS)(nil)
+var _ vault.WriteVFS = (*RawFS)(nil)
 
 func (r *RawFS) url(op, path string) string {
 	return r.c.endpoint("/api/vaults/"+url.PathEscape(r.vaultID)+"/raw/"+op, url.Values{"path": {path}})
@@ -293,6 +299,10 @@ func status(resp *http.Response, op, path string) error {
 		return &fs.PathError{Op: op, Path: path, Err: fs.ErrNotExist}
 	case http.StatusUnauthorized:
 		return ErrLocked
+	case http.StatusConflict:
+		return &fs.PathError{Op: op, Path: path, Err: fs.ErrExist}
+	case http.StatusForbidden:
+		return &fs.PathError{Op: op, Path: path, Err: fs.ErrPermission}
 	default:
 		return fmt.Errorf("remote: %s %s: HTTP %d", op, path, resp.StatusCode)
 	}

@@ -145,8 +145,22 @@ func TestOpenRemoteAgainstRealServer(t *testing.T) {
 	if jpg, err := tThumbGet(rid, "photo.jpg", 64); err != nil || len(jpg) < 2 || jpg[0] != 0xFF {
 		t.Errorf("thumbnail over a remote session: %v (%d bytes)", err, len(jpg))
 	}
-	if rc := tMkdir(rid, "new"); rc != rcNoConfig {
-		t.Errorf("Mkdir on a remote session = %d, want %d (read-only)", rc, rcNoConfig)
+	// Writes go through the server's raw write endpoints, encrypted here;
+	// the local session on the server's files reads them back.
+	if rc := tMkdir(rid, "new"); rc != 0 {
+		t.Fatalf("Mkdir on a remote session = %d", rc)
+	}
+	if rc := tWriteFile(rid, "new/hello.txt", []byte("written remotely")); rc != 0 {
+		t.Fatalf("WriteFile on a remote session = %d", rc)
+	}
+	if rc := tMove(rid, "new/hello.txt", "new/renamed.txt"); rc != 0 {
+		t.Fatalf("Move on a remote session = %d", rc)
+	}
+	if b, err := tDecryptFile(lid, "new/renamed.txt"); err != nil || string(b) != "written remotely" {
+		t.Errorf("remote write read locally: %q, %v", b, err)
+	}
+	if rc := tDeleteDir(rid, "new"); rc != 0 {
+		t.Errorf("DeleteDir on a remote session = %d", rc)
 	}
 
 	// The same vault through the network cache: caching photo.jpg stores its

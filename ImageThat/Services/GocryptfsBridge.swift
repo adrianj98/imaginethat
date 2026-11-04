@@ -213,6 +213,18 @@ public final class GocryptfsBridge: @unchecked Sendable {
         }
     }
 
+    /// Rename or relocate an entry; `to` is the full new path.
+    public func move(from: String, to: String) throws {
+        let result = from.withCString { srcPtr in
+            to.withCString { dstPtr in
+                GocryptfsMove(sessionID, UnsafeMutablePointer(mutating: srcPtr), UnsafeMutablePointer(mutating: dstPtr))
+            }
+        }
+        guard result == 0 else {
+            throw GocryptfsError.moveFailed(Self.describeWriteCode(result))
+        }
+    }
+
     /// Create a new directory in the vault.
     public func mkdir(path: String) throws {
         let result = path.withCString { ptr in

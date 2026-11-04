@@ -57,7 +57,8 @@ func (s *Server) Logout() error {
 // OpenVault opens a vault over the server's ciphertext endpoints and decrypts
 // it here (client-decrypt servers, after Login; "locked:" before it).
 // cacheDir, when not empty, is the network cache its reads are kept in (see
-// networkRanges). Read-only.
+// networkRanges). Writable: writes are encrypted here and the server gets
+// only ciphertext.
 func (s *Server) OpenVault(vaultID, password, cacheDir string) (*Vault, error) {
 	var sess *vault.Session
 	var err error

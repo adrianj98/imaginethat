@@ -31,6 +31,12 @@ func (s *Server) routes() {
 		// No vault is ever unlocked here, so the endpoints that need one do
 		// not exist; clients decrypt the raw files themselves.
 		mux.HandleFunc("POST /api/login", s.handleLogin)
+		// Ciphertext writes, encrypted by the client (handlers_raw_write.go).
+		mux.HandleFunc("HEAD /api/vaults/{id}/raw/entry", s.handleRawEntry)
+		mux.HandleFunc("PUT /api/vaults/{id}/raw/file", s.handleRawPut)
+		mux.HandleFunc("POST /api/vaults/{id}/raw/mkdir", s.handleRawMkdir)
+		mux.HandleFunc("POST /api/vaults/{id}/raw/rename", s.handleRawRename)
+		mux.HandleFunc("DELETE /api/vaults/{id}/raw/entry", s.handleRawDelete)
 	} else {
 		mux.HandleFunc("POST /api/vaults/{id}/unlock", s.handleUnlock)
 		mux.HandleFunc("POST /api/vaults/{id}/lock", s.handleLock)

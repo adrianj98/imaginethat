@@ -143,6 +143,11 @@ are additionally checked against the `Origin` header.
 | `POST` | `/api/logout` | End the session, locking every vault |
 | `GET`, `HEAD` | `/api/vaults/{id}/raw/list?path=` | Ciphertext directory listing (encrypted names, ciphertext sizes), plus `dirIV` and `longNames` (each `gocryptfs.longname.*` entry's sidecar) |
 | `GET`, `HEAD` | `/api/vaults/{id}/raw/file?path=` | Ciphertext file bytes as on disk; supports `Range`; `path=gocryptfs.conf` is the vault config |
+| `HEAD` | `/api/vaults/{id}/raw/entry?path=` | `200` if the ciphertext file or directory exists, `404` if not (`client-decrypt` only) |
+| `PUT` | `/api/vaults/{id}/raw/file?path=` | Write the body (ciphertext) to a path, creating or replacing it; staged in a temp file and renamed into place (`client-decrypt` only) |
+| `POST` | `/api/vaults/{id}/raw/mkdir?path=` | Create one ciphertext directory (`client-decrypt` only) |
+| `POST` | `/api/vaults/{id}/raw/rename` | `{"from": "...", "to": "..."}`, ciphertext paths; replaces a file at `to` (`client-decrypt` only) |
+| `DELETE` | `/api/vaults/{id}/raw/entry?path=[&recursive=1]` | Delete a ciphertext file, or a tree with `recursive=1` (`client-decrypt` only) |
 
 ### Decrypted or encrypted
 
@@ -162,7 +167,15 @@ With `-mode=client-decrypt` the server never sees a vault password, key or
 plaintext. It serves only the `raw/` endpoints, gated by a separate **server
 access password** checked at `/api/login`; every client (the browser UI, the
 macOS and Android apps) unlocks and decrypts vaults itself. `/unlock`, the
-decrypted endpoints, thumbnails and writes do not exist in this mode.
+decrypted endpoints and thumbnails do not exist in this mode.
+
+Writes still work, and the server still sees only ciphertext. The client's
+vault engine (`core/vault.Session` over `core/remote.RawFS`) encrypts file
+content and names, writes `gocryptfs.diriv` for new directories and long-name
+sidecars, and streams the result through the `raw/` write endpoints, which are
+plain file operations on ciphertext paths. They refuse anything outside the
+vault, writing through a symlink, the vault root and `gocryptfs.conf`. The
+macOS and Android apps upload, rename, move and delete this way.
 
 The access password is needed because the raw files include
 `gocryptfs.conf`, which would otherwise let anyone who can reach the port
@@ -181,8 +194,10 @@ downloads work without the server seeing plaintext. Keys stay in the page's
 memory; the worker asks the page for one per request, so reloading or closing
 the tab locks every vault. Thumbnails are made in the browser. This needs a
 secure context: HTTPS, or `localhost`. The browser opens AES-GCM vaults (the
-gocryptfs default); AES-SIV and XChaCha20 vaults need the apps. Writing is
-not available in this mode yet.
+gocryptfs default); AES-SIV and XChaCha20 vaults need the apps. The browser
+UI is read-only in this mode: writing would need the gocryptfs write path
+(content and name encryption, `diriv`, long names) in TypeScript, so upload
+from the macOS or Android app instead.
 
 Video seeking works because `vault.File` implements `io.ReadSeeker`, letting
 `http.ServeContent` answer range requests directly out of the encrypted file.

@@ -83,7 +83,7 @@ func OpenLocalCached(dir, password, cacheDir string) (*Vault, error) {
 // "". accessPassword is the server access password: only client-decrypt
 // servers (see ServerMode) are supported, and the vault password never leaves
 // the device. Without one nothing is sent and the error is "locked:". The
-// vault is read-only. Errors carry the usual codes plus "cert_mismatch:" and
+// vault is writable; writes are encrypted here. Errors carry the usual codes plus "cert_mismatch:" and
 // "wrong_access_password:".
 func OpenRemote(baseURL, vaultID, password, pinnedSHA256, accessPassword string) (*Vault, error) {
 	c, err := remote.New(baseURL, remote.Options{PinnedSHA256: pinnedSHA256})
