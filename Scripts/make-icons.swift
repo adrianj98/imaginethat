@@ -14,41 +14,61 @@ import AppKit
 
 // MARK: Artwork (1024 x 1024 design grid)
 
-/// The symbol: a photo card over a second card, with a padlock badge.
-/// Its bounding box is about (240, 270)-(838, 778).
+/// The symbol: a gold-rimmed keyhole, and through it a sunset over mountains
+/// and a lake: the pictures, seen through the lock that keeps them. One path
+/// draws the rim and clips the scene. Its bounding box is about
+/// (316, 178)-(708, 886), centred on (512, 532).
+let keyhole = "M412 573 A200 200 0 1 1 612 573 L686 846 Q512 884 338 846 Z"
+
 let glyph = """
-<g transform="rotate(-8 512 492)">
-  <rect x="262" y="292" width="500" height="400" rx="56" fill="#ffffff" fill-opacity="0.4"/>
+<path d="\(keyhole)" fill="none" stroke="url(#rim)" stroke-width="44" stroke-linejoin="round"/>
+<clipPath id="hole"><path d="\(keyhole)"/></clipPath>
+<g clip-path="url(#hole)">
+  <rect x="300" y="190" width="424" height="720" fill="url(#sky)"/>
+  <circle cx="512" cy="500" r="92" fill="url(#sun)"/>
+  <path d="M300 640 L300 560 L400 470 L470 530 L560 440 L724 580 L724 640 Z" fill="#6b2d8f"/>
+  <rect x="300" y="600" width="424" height="300" fill="url(#lake)"/>
+  <rect x="452" y="620" width="120" height="10" rx="5" fill="#fff3c4" opacity="0.8"/>
+  <rect x="472" y="650" width="80" height="8" rx="4" fill="#fff3c4" opacity="0.6"/>
+  <rect x="490" y="676" width="44" height="7" rx="3.5" fill="#fff3c4" opacity="0.45"/>
+  <path d="M300 900 L300 760 L420 700 L540 790 L724 720 L724 900 Z" fill="#1d0f3a"/>
+  <circle cx="440" cy="290" r="4" fill="#ffffff" opacity="0.85"/>
+  <circle cx="590" cy="250" r="3" fill="#ffffff" opacity="0.85"/>
+  <circle cx="530" cy="330" r="2.5" fill="#ffffff" opacity="0.7"/>
 </g>
-<rect x="262" y="292" width="500" height="400" rx="56" fill="#ffffff"/>
-<clipPath id="pic"><rect x="298" y="328" width="428" height="328" rx="28"/></clipPath>
-<g clip-path="url(#pic)">
-  <rect x="298" y="328" width="428" height="328" fill="url(#sky)"/>
-  <circle cx="626" cy="414" r="40" fill="#ffc83d"/>
-  <path d="M298 656 L298 590 L410 470 L520 590 L570 540 L726 656 Z" fill="#3f8cff"/>
-  <path d="M298 656 L298 640 L392 560 L470 620 L560 548 L726 656 Z" fill="#0a5bd8"/>
+"""
+
+/// A few stars on the night sky behind the keyhole.
+let stars = """
+<g fill="#ffffff" opacity="0.55">
+  <circle cx="230" cy="250" r="5"/><circle cx="800" cy="210" r="4"/><circle cx="800" cy="440" r="6"/>
+  <circle cx="215" cy="560" r="4"/><circle cx="300" cy="170" r="3"/><circle cx="760" cy="760" r="4"/>
 </g>
-<circle cx="720" cy="660" r="118" fill="#0b1b3a" stroke="#ffffff" stroke-width="20"/>
-<path d="M690 652 V626 a30 30 0 0 1 60 0 V652" fill="none" stroke="#ffffff" stroke-width="17" stroke-linecap="round"/>
-<rect x="668" y="646" width="104" height="80" rx="16" fill="#ffffff"/>
-<circle cx="720" cy="680" r="11" fill="#0b1b3a"/>
-<rect x="714" y="684" width="12" height="22" rx="5" fill="#0b1b3a"/>
 """
 
 let defs = """
 <defs>
   <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-    <stop offset="0" stop-color="#4fa6ff"/>
-    <stop offset="0.55" stop-color="#0a74ff"/>
-    <stop offset="1" stop-color="#0052d6"/>
+    <stop offset="0" stop-color="#1c2340"/>
+    <stop offset="1" stop-color="#07091a"/>
   </linearGradient>
   <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
-    <stop offset="0" stop-color="#e3efff"/>
-    <stop offset="1" stop-color="#bcd7ff"/>
+    <stop offset="0" stop-color="#2a1a7a"/>
+    <stop offset="0.5" stop-color="#d83f7d"/>
+    <stop offset="0.75" stop-color="#ffae4a"/>
   </linearGradient>
-  <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
-    <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
-    <stop offset="0.5" stop-color="#ffffff" stop-opacity="0"/>
+  <radialGradient id="sun" cx="0.5" cy="0.5" r="0.5">
+    <stop offset="0" stop-color="#fff8d6"/>
+    <stop offset="0.75" stop-color="#ffd166"/>
+    <stop offset="1" stop-color="#ffb347"/>
+  </radialGradient>
+  <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#ffe9a8"/>
+    <stop offset="1" stop-color="#c8862b"/>
+  </linearGradient>
+  <linearGradient id="lake" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0" stop-color="#ff9a5a"/>
+    <stop offset="1" stop-color="#3a1a6a"/>
   </linearGradient>
 </defs>
 """
@@ -65,26 +85,27 @@ func svg(_ body: String) -> String {
 /// macOS: the rounded body sits inside Apple's 824 pt grid with room for a shadow.
 let macSVG = svg("""
 <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#bg)"/>
-<rect x="100" y="100" width="824" height="824" rx="185" fill="url(#shine)"/>
-<g transform="translate(512 512) scale(0.98) translate(-539 -524)">\(glyph)</g>
+\(stars)
+<g transform="translate(512 512) scale(0.98) translate(-512 -532)">\(glyph)</g>
 """)
 
 /// Web favicon: full bleed, the glyph a little larger so it reads at 16 px.
 let faviconSVG = svg("""
 <rect width="1024" height="1024" rx="228" fill="url(#bg)"/>
-<g transform="translate(512 512) scale(1.18) translate(-539 -524)">\(glyph)</g>
+<g transform="translate(512 512) scale(1.3) translate(-512 -532)">\(glyph)</g>
 """)
 
 /// iOS home screen (apple-touch-icon): square; iOS rounds the corners itself.
 let touchSVG = svg("""
 <rect width="1024" height="1024" fill="url(#bg)"/>
-<g transform="translate(512 512) scale(1.12) translate(-539 -524)">\(glyph)</g>
+\(stars)
+<g transform="translate(512 512) scale(1.12) translate(-512 -532)">\(glyph)</g>
 """)
 
 /// Android adaptive icon layers (108 dp canvas; launchers may crop to the
 /// central 66 dp circle, so the glyph is kept inside it).
-let androidBackgroundSVG = svg(#"<rect width="1024" height="1024" fill="url(#bg)"/>"#)
-let androidForegroundSVG = svg(#"<g transform="translate(512 512) scale(0.78) translate(-539 -524)">\#(glyph)</g>"#)
+let androidBackgroundSVG = svg(#"<rect width="1024" height="1024" fill="url(#bg)"/>\#(stars)"#)
+let androidForegroundSVG = svg(#"<g transform="translate(512 512) scale(0.76) translate(-512 -532)">\#(glyph)</g>"#)
 
 // MARK: Rendering
 
