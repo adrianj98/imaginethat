@@ -31,6 +31,7 @@ import (
 	"time"
 
 	"github.com/adrianm/imagethat/core/vault"
+	"github.com/adrianm/imagethat/core/xfer"
 )
 
 // Errors a caller can tell apart with errors.Is.
@@ -303,7 +304,12 @@ func status(resp *http.Response, op, path string) error {
 		return &fs.PathError{Op: op, Path: path, Err: fs.ErrExist}
 	case http.StatusForbidden:
 		return &fs.PathError{Op: op, Path: path, Err: fs.ErrPermission}
+	case http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return fmt.Errorf("remote: %s %s: HTTP %d", op, path, resp.StatusCode)
 	default:
+		if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+			return fmt.Errorf("remote: %s %s: HTTP %d: %w", op, path, resp.StatusCode, xfer.ErrRefused)
+		}
 		return fmt.Errorf("remote: %s %s: HTTP %d", op, path, resp.StatusCode)
 	}
 }

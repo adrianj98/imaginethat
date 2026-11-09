@@ -193,6 +193,13 @@ struct IntegrationTest {
 
                 let thumb = try await vaultSource.loadThumbnail(for: imgItem, size: CGSize(width: 50, height: 50))
                 check("VaultSource loadThumbnail works", thumb.size.width > 0)
+
+                let plainSize = try await vaultSource.fileSize(for: imgItem)
+                let existing = await vaultSource.existingFileSize(at: imgItem.url.path)
+                let missing = await vaultSource.existingFileSize(at: "not-there.png")
+                check("a vault reports the plaintext size of what is there", existing == plainSize,
+                      "got \(String(describing: existing)), want \(plainSize)")
+                check("a vault reports nothing for a missing file", missing == nil)
             }
         } catch {
             check("VaultSource operations", false, error.localizedDescription)

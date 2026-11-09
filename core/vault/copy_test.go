@@ -6,7 +6,9 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -180,5 +182,143 @@ func TestCacheFileReadsThroughWithoutCacher(t *testing.T) {
 	}
 	if s.IsCached("big.bin") {
 		t.Fatal("IsCached is true without a Cacher backend")
+	}
+}
+
+// writeFaults makes the storage under a session fail on demand.
+type writeFaults struct {
+	WriteVFS
+	temps      *int
+	failTemps  int // this many temp files die partway through
+	writeErr   error
+	loseCommit *bool // the next Rename lands but reports failure
+}
+
+func (w writeFaults) CreateTemp(dir, pattern string) (io.WriteCloser, string, error) {
+	out, p, err := w.WriteVFS.CreateTemp(dir, pattern)
+	if err != nil {
+		return nil, "", err
+	}
+	*w.temps++
+	if *w.temps > w.failTemps {
+		return out, p, nil
+	}
+	return &dyingWriter{out, 20_000, w.writeErr}, p, nil
+}
+
+func (w writeFaults) Rename(from, to string) error {
+	err := w.WriteVFS.Rename(from, to)
+	if err == nil && w.loseCommit != nil && *w.loseCommit {
+		*w.loseCommit = false
+		return errors.New("connection lost")
+	}
+	return err
+}
+
+type dyingWriter struct {
+	io.WriteCloser
+	left int
+	err  error
+}
+
+func (d *dyingWriter) Write(p []byte) (int, error) {
+	if d.left -= len(p); d.left < 0 {
+		return 0, d.err
+	}
+	return d.WriteCloser.Write(p)
+}
+
+func leftoverTemps(t *testing.T, dir string) []string {
+	t.Helper()
+	found, err := filepath.Glob(filepath.Join(dir, uploadTempPrefix+"*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return found
+}
+
+func TestCopyInStartsOverAfterWriteFailure(t *testing.T) {
+	s, dir := openWritable(t)
+	temps := 0
+	s.fs = writeFaults{WriteVFS: s.fs.(WriteVFS), temps: &temps, failTemps: 2, writeErr: errors.New("share went away")}
+	want := patternBytes(11, 300_000)
+	var p xfer.Progress
+	opts := quick()
+	opts.Progress = &p
+
+	if _, err := s.CopyIn(context.Background(), "again.bin", blipOpener(want, 0), opts); err != nil {
+		t.Fatal(err)
+	}
+	if temps != 3 {
+		t.Errorf("wrote %d temp files, want 3", temps)
+	}
+	got, err := s.ReadFile("again.bin")
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("read back: err %v, equal %v", err, bytes.Equal(got, want))
+	}
+	if done, _, retries := p.Snapshot(); done != int64(len(want)) || retries != 2 {
+		t.Errorf("progress done %d retries %d", done, retries)
+	}
+	if left := leftoverTemps(t, dir); len(left) != 0 {
+		t.Errorf("temp files left: %v", left)
+	}
+}
+
+func TestCopyInDoesNotRetryFullDisk(t *testing.T) {
+	s, _ := openWritable(t)
+	temps := 0
+	s.fs = writeFaults{WriteVFS: s.fs.(WriteVFS), temps: &temps, failTemps: 99, writeErr: syscall.ENOSPC}
+	_, err := s.CopyIn(context.Background(), "full.bin", blipOpener(patternBytes(1, 100_000), 0), quick())
+	if !errors.Is(err, syscall.ENOSPC) || temps != 1 {
+		t.Fatalf("err %v after %d tries, want ENOSPC after 1", err, temps)
+	}
+}
+
+func TestCopyInGivesUpOnEndlessWriteFailures(t *testing.T) {
+	s, _ := openWritable(t)
+	temps := 0
+	s.fs = writeFaults{WriteVFS: s.fs.(WriteVFS), temps: &temps, failTemps: 1 << 30, writeErr: errors.New("share went away")}
+	opts := quick()
+	opts.Attempts = 4
+	if _, err := s.CopyIn(context.Background(), "never.bin", blipOpener(patternBytes(1, 100_000), 0), opts); err == nil {
+		t.Fatal("copy succeeded")
+	}
+	if temps != 4 {
+		t.Errorf("tried %d times, want 4", temps)
+	}
+}
+
+func TestCopyInCountsALandedCommitAsDone(t *testing.T) {
+	s, _ := openWritable(t)
+	temps, lose := 0, true
+	s.fs = writeFaults{WriteVFS: s.fs.(WriteVFS), temps: &temps, loseCommit: &lose}
+	want := patternBytes(5, 50_000)
+	n, err := s.CopyIn(context.Background(), "landed.bin", blipOpener(want, 0), quick())
+	if err != nil || n != int64(len(want)) {
+		t.Fatalf("n %d, err %v", n, err)
+	}
+}
+
+func TestCreateClearsStaleTempsOnly(t *testing.T) {
+	s, dir := openWritable(t)
+	stale := filepath.Join(dir, uploadTempPrefix+"stale")
+	fresh := filepath.Join(dir, uploadTempPrefix+"fresh")
+	for _, p := range []string{stale, fresh} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-2 * staleTempAge)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Create("sweep.bin", bytes.NewReader([]byte("hello"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("stale temp survived: %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Errorf("a temp that may still be in use was removed: %v", err)
 	}
 }

@@ -101,4 +101,8 @@ public protocol WritableMediaSource: MediaSource {
     /// Write a sequence of Data chunks to destinationPath within this source.
     func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
         where S.Element == Data
+
+    /// The size of the file at `path` within this source, or nil when there
+    /// is none or it can't be told right now.
+    func existingFileSize(at path: String) async -> Int64?
 }

@@ -21,7 +21,9 @@ public struct CopiesView: View {
                 ScrollView {
                     LazyVStack(spacing: 12) {
                         ForEach(transfers.batches) { batch in
-                            BatchGroup(batch: batch) { transfers.cancel(batch.id) }
+                            BatchGroup(batch: batch,
+                                       cancel: { transfers.cancel(batch.id) },
+                                       retry: { transfers.retryFailed(batch.id) })
                         }
                     }
                     .padding(20)
@@ -41,6 +43,7 @@ public struct CopiesView: View {
 private struct BatchGroup: View {
     let batch: TransferBatch
     let cancel: () -> Void
+    let retry: () -> Void
 
     /// nil until the chevron is used: open only when something failed.
     @State private var chosenExpanded: Bool?
@@ -52,6 +55,10 @@ private struct BatchGroup: View {
             SettingsRow(title: batch.title, subtitle: batch.summary) {
                 if batch.isRunning {
                     Button("Cancel", action: cancel)
+                        .buttonStyle(PillButtonStyle(height: 28))
+                        .font(.system(size: 12))
+                } else if batch.failedCount > 0 {
+                    Button("Retry Failed", action: retry)
                         .buttonStyle(PillButtonStyle(height: 28))
                         .font(.system(size: 12))
                 }
@@ -115,6 +122,7 @@ private struct FileRow: View {
         case .copying: Image(systemName: "arrow.right.circle").foregroundStyle(Color.accentColor)
         case .done: Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
         case .cancelled: Image(systemName: "minus.circle").foregroundStyle(Glass.label)
+        case .skipped: Image(systemName: "checkmark.circle").foregroundStyle(Glass.label)
         case .failed: Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.red)
         }
     }
@@ -128,6 +136,7 @@ private struct FileRow: View {
             return file.retries > 0 ? "\(done) of \(size), \(file.retries) retries" : "\(done) of \(size)"
         case .done: return size
         case .cancelled: return "Cancelled"
+        case .skipped: return "Already there"
         case .failed: return file.retries > 0 ? "Gave up after \(file.retries) retries" : "Failed"
         }
     }

@@ -93,6 +93,10 @@ public final class DriveVaultSource: WritableMediaSource, @unchecked Sendable {
         try await vault.deleteCurrentDirectory()
     }
 
+    public func existingFileSize(at path: String) async -> Int64? {
+        await vault.existingFileSize(at: path)
+    }
+
     public func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
         where S.Element == Data {
         try await vault.writeChunks(chunks, to: destinationPath, totalSize: totalSize)

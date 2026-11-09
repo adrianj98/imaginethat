@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/adrianm/imagethat/core/xfer"
 )
 
 // FolderMime is the MIME type Drive gives folders.
@@ -54,6 +56,9 @@ func (e *HTTPError) Is(target error) bool {
 		return e.Status == http.StatusNotFound
 	case fs.ErrPermission:
 		return e.Status == http.StatusForbidden && !e.rateLimited()
+	case xfer.ErrRefused:
+		return e.Status >= 400 && e.Status < 500 && !e.rateLimited() &&
+			e.Status != http.StatusRequestTimeout && e.Status != http.StatusTooManyRequests
 	}
 	return false
 }

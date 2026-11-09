@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/adrianm/imagethat/core/internal/gocryptfs/contentenc"
 	"github.com/adrianm/imagethat/core/internal/gocryptfs/cryptocore"
@@ -19,6 +20,26 @@ const (
 	dirIVPerms = 0o444
 	namePerms  = 0o444
 )
+
+// uploadTempPrefix names the temp file of a Create in progress. One older
+// than staleTempAge was left by a crash: an upload that is still running keeps
+// touching its file, so anything that quiet is safe to remove, even in a
+// directory another device is also writing to.
+const (
+	uploadTempPrefix = ".imagethat-upload-"
+	staleTempAge     = 24 * time.Hour
+)
+
+// sweepStaleTemps clears crash leftovers from dir, once per session.
+func (s *Session) sweepStaleTemps(fs WriteVFS, dir string) {
+	remover, ok := fs.(StaleTempRemover)
+	if !ok {
+		return
+	}
+	if _, seen := s.sweptDirs.LoadOrStore(dir, true); !seen {
+		remover.RemoveStaleTemps(dir, uploadTempPrefix, staleTempAge)
+	}
+}
 
 // Create writes a new file into the vault, encrypting r as it streams.
 //
@@ -53,7 +74,8 @@ func (s *Session) Create(plainPath string, r io.Reader) (int64, error) {
 		return 0, fmt.Errorf("%w: %s", ErrExists, plainPath)
 	}
 
-	tmp, tmpPath, err := fs.CreateTemp(cipherDir, ".imagethat-upload-*")
+	s.sweepStaleTemps(fs, cipherDir)
+	tmp, tmpPath, err := fs.CreateTemp(cipherDir, uploadTempPrefix+"*")
 	if err != nil {
 		return 0, fmt.Errorf("create temp in %s: %w", cipherDir, err)
 	}

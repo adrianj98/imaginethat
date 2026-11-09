@@ -79,6 +79,9 @@ type Session struct {
 	// that fails to decrypt drops the entry in case another process recreated
 	// the directory underneath us.
 	dirIV map[string][]byte
+	// sweptDirs records the ciphertext directories already cleared of crash
+	// leftovers by this session.
+	sweptDirs sync.Map
 }
 
 // IsVault reports whether dir looks like a gocryptfs vault.

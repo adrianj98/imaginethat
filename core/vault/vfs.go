@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 )
 
 // DirEntry is a single raw ciphertext directory entry as reported by a VFS.
@@ -59,6 +61,14 @@ type WriteVFS interface {
 	Exists(path string) bool
 }
 
+// StaleTempRemover is an optional WriteVFS capability for backends where a
+// crash can leave a half-written temp file behind.
+type StaleTempRemover interface {
+	// RemoveStaleTemps deletes files in dir whose names start with prefix
+	// and which have not changed for olderThan. Failures are ignored.
+	RemoveStaleTemps(dir, prefix string, olderThan time.Duration)
+}
+
 // LocalFS is a VFS over a plain directory holding gocryptfs ciphertext.
 type LocalFS struct {
 	root string
@@ -71,7 +81,25 @@ var (
 	_ VFS        = (*LocalFS)(nil)
 	_ WriteVFS   = (*LocalFS)(nil)
 	_ FileOpener = (*LocalFS)(nil)
+
+	_ StaleTempRemover = (*LocalFS)(nil)
 )
+
+func (v *LocalFS) RemoveStaleTemps(dir, prefix string, olderThan time.Duration) {
+	entries, err := os.ReadDir(v.abs(dir))
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-olderThan)
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		if info, err := e.Info(); err == nil && info.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(v.abs(dir), e.Name()))
+		}
+	}
+}
 
 // abs resolves a vault-relative ciphertext path against the vault root.
 // Callers have already validated the plaintext path; the ciphertext components

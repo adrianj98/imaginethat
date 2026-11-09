@@ -564,25 +564,9 @@ public class AppState: ObservableObject {
             TransferCenter.Job(name: url.lastPathComponent) { reporter in
                 let name = url.lastPathComponent
                 let destPath = dest.currentPath.isEmpty ? name : "\(dest.currentPath)/\(name)"
-                let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
-                let size = (attrs[.size] as? Int64) ?? 0
-                reporter.report(done: 0, total: size)
-
-                print("importFiles: copying \(name) (\(size) bytes) to \(destPath)")
-
-                if let bridge = (dest as? VaultSource)?.bridge ?? (dest as? DriveVaultSource)?.bridge {
-                    // Local and Drive vaults copy in the Go engine, which
-                    // retries and resumes on read errors (files on a
-                    // network share) and streams into Drive.
-                    try await Self.engineCopy(.file(url), into: bridge, at: destPath, reporter: reporter)
-                } else {
-                    // Use larger chunks (1MB) for better throughput
-                    let localSource = FolderSource(rootURL: url.deletingLastPathComponent())
-                    let chunks = localSource.readChunks(for: MediaItem(url: url), chunkSize: 1_048_576)
-                    try await dest.writeChunks(reporter.counting(chunks, total: size), to: destPath, totalSize: size)
-                }
-
-                print("importFiles: successfully copied \(name)")
+                let localSource = FolderSource(rootURL: url.deletingLastPathComponent())
+                try await Self.copyFile(from: localSource, item: MediaItem(url: url), engine: .file(url),
+                                        to: dest, at: destPath, reporter: reporter)
             }
         }
         let destination = dest.currentPath.isEmpty ? dest.rootDisplayName : "\(dest.rootDisplayName)/\(dest.currentPath)"
@@ -632,6 +616,10 @@ public class AppState: ObservableObject {
         let destFileName = (transfer.itemRelativePath as NSString).lastPathComponent
         let destPath = destVaultPath.isEmpty ? destFileName : "\(destVaultPath)/\(destFileName)"
         let job = TransferCenter.Job(name: destFileName) { reporter in
+            if let size = try? from.size() {
+                reporter.report(done: 0, total: size)
+                try await Self.checkDestination(destSource, destPath, sourceSize: size)
+            }
             try await Self.engineCopy(from, into: destBridge, at: destPath, reporter: reporter)
         }
         transfers.start(destination: sidebarItem.name, jobs: [job]) { [weak self] batch in
@@ -1668,14 +1656,8 @@ extension AppState {
         let fullPath = destPath.isEmpty ? name : "\(destPath)/\(name)"
         let engineCopySource = engineSource
         let job = TransferCenter.Job(name: name) { reporter in
-            if let engineCopySource, let vaultDest = destSource as? VaultSource {
-                try await Self.engineCopy(engineCopySource, into: vaultDest.bridge, at: fullPath, reporter: reporter)
-                return
-            }
-            let size = try await sourceSource.fileSize(for: sourceItem)
-            reporter.report(done: 0, total: size)
-            let chunks = sourceSource.readChunks(for: sourceItem, chunkSize: 1_048_576)
-            try await destSource.writeChunks(reporter.counting(chunks, total: size), to: fullPath, totalSize: size)
+            try await Self.copyFile(from: sourceSource, item: sourceItem, engine: engineCopySource,
+                                    to: destSource, at: fullPath, reporter: reporter)
         }
         transfers.start(destination: sidebarItem.name, jobs: [job]) { [weak self] batch in
             self?.copiesFinished(batch, fallback: destSource)
@@ -1687,6 +1669,72 @@ extension AppState {
     enum EngineCopySource: Sendable {
         case file(URL)
         case vault(GocryptfsBridge, String)
+
+        func size() throws -> Int64 {
+            switch self {
+            case .file(let url):
+                return (try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+            case .vault(let bridge, let path):
+                return try bridge.fileSize(path: path)
+            }
+        }
+    }
+
+    /// Copies one file by the most fault-tolerant route the two ends allow.
+    nonisolated static func copyFile(from source: any MediaSource, item: MediaItem, engine: EngineCopySource?,
+                                     to dest: any WritableMediaSource, at destPath: String,
+                                     reporter: TransferReporter) async throws {
+        let bridge = (dest as? VaultSource)?.bridge ?? (dest as? DriveVaultSource)?.bridge
+            ?? (dest as? RemoteVaultSource)?.engineBridge
+        if let engine, let bridge {
+            // Asking for the size must not fail a copy the engine would retry.
+            if let size = try? await source.fileSize(for: item) {
+                reporter.report(done: 0, total: size)
+                try await checkDestination(dest, destPath, sourceSize: size)
+            }
+            try await engineCopy(engine, into: bridge, at: destPath, reporter: reporter)
+            return
+        }
+
+        let sizeOnce = SizeOnce()
+        try await TransferRetry.run(reporter: reporter, landed: {
+            guard let size = sizeOnce.value else { return false }
+            return await dest.existingFileSize(at: destPath) == size
+        }) {
+            let size = try await source.fileSize(for: item)
+            if sizeOnce.set(size) {
+                reporter.report(done: 0, total: size)
+                try await checkDestination(dest, destPath, sourceSize: size)
+            }
+            let chunks = source.readChunks(for: item, chunkSize: 1_048_576)
+            try await dest.writeChunks(reporter.counting(chunks, total: size), to: destPath, totalSize: size)
+        }
+    }
+
+    /// Re-running a batch must not redo or fail the files that made it last
+    /// time. A file of another size under the same name is someone else's.
+    nonisolated static func checkDestination(_ dest: any WritableMediaSource, _ path: String,
+                                             sourceSize: Int64) async throws {
+        guard let existing = await dest.existingFileSize(at: path) else { return }
+        if existing == sourceSize { throw TransferSkip(size: existing) }
+        throw TransferConflict(name: (path as NSString).lastPathComponent)
+    }
+
+    /// The source's size, kept from the first attempt that learned it.
+    private final class SizeOnce: @unchecked Sendable {
+        private let lock = NSLock()
+        private var size: Int64?
+
+        var value: Int64? { lock.withLock { size } }
+
+        /// True the first time only.
+        func set(_ value: Int64) -> Bool {
+            lock.withLock {
+                guard size == nil else { return false }
+                size = value
+                return true
+            }
+        }
     }
 
     /// Copies one file into a local or Drive vault through the Go engine.

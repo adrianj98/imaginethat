@@ -241,6 +241,10 @@ public final class VaultSource: WritableMediaSource, @unchecked Sendable {
         try bridge.deleteDirectory(path: currentPath)
     }
 
+    public func existingFileSize(at path: String) async -> Int64? {
+        try? bridge.fileSize(path: path)
+    }
+
     public func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
         where S.Element == Data {
         // Stream through the Go engine: each chunk is encrypted as it arrives

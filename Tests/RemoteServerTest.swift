@@ -115,6 +115,10 @@ enum RemoteServerTest {
             check("loadThumbnail (server JPEG)", thumb.size.width > 0 && thumb.size.width <= 200, "size=\(thumb.size)")
             let size = try await photos.fileSize(for: image)
             check("fileSize", size == Int64(png.count), "got \(size), want \(png.count)")
+            let existing = await photos.existingFileSize(at: "Photos/\(name)")
+            let missing = await photos.existingFileSize(at: "Photos/not-there.png")
+            check("a server reports the size of what is there", existing == Int64(png.count), "got \(String(describing: existing))")
+            check("a server reports nothing for a missing file", missing == nil, "got \(String(describing: missing))")
 
             // Editing: copy and replace.
             let edited = makePNG(width: 320, height: 240, red: false)

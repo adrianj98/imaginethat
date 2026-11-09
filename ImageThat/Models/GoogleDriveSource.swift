@@ -187,6 +187,11 @@ public final class GoogleDriveSource: WritableMediaSource, @unchecked Sendable {
         try await service.deleteFile(fileId: folderId)
     }
 
+    public func existingFileSize(at path: String) async -> Int64? {
+        let name = (path as NSString).lastPathComponent
+        return (try? await service.listFiles(in: folderId))?.first { $0.name == name }?.size
+    }
+
     public func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
         where S.Element == Data
     {

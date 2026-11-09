@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	stdfs "io/fs"
 
 	"github.com/adrianm/imagethat/core/xfer"
 )
@@ -17,9 +18,11 @@ var PermanentErrors = []error{
 
 // CopyIn copies the file that open yields into the vault at plainPath,
 // encrypting as it streams. Reads that fail with a transient error are
-// retried and resume where they stopped (see package xfer). The ciphertext
-// goes to a temp file and is renamed into place only once every byte has
-// arrived, so a copy that fails or is cancelled leaves nothing at plainPath.
+// retried and resume where they stopped (see package xfer). A write that
+// fails with a transient error starts the file again, since the destination
+// has no use for the bytes before the failure. The ciphertext goes to a temp
+// file and is renamed into place only once every byte has arrived, so a copy
+// that fails or is cancelled leaves nothing at plainPath.
 //
 // Returns the number of plaintext bytes written.
 func (s *Session) CopyIn(ctx context.Context, plainPath string, open xfer.Opener, opts xfer.Options) (int64, error) {
@@ -30,16 +33,47 @@ func (s *Session) CopyIn(ctx context.Context, plainPath string, open xfer.Opener
 	if err != nil {
 		return 0, fmt.Errorf("open source: %w", err)
 	}
-	written, err := s.Create(plainPath, r)
-	if err != nil {
-		return written, err
+	failures := 0
+	for {
+		src := &watchedReader{r: r}
+		written, err := s.Create(plainPath, src)
+		if err == nil {
+			// encryptStream ends at the first EOF; make sure that was the real end.
+			if written != size {
+				_ = s.Remove(plainPath)
+				return written, fmt.Errorf("copy to %s: wrote %d of %d bytes: %w", plainPath, written, size, xfer.ErrTruncated)
+			}
+			return written, nil
+		}
+		// A commit whose reply was lost arrives here as "already exists".
+		if failures > 0 && (errors.Is(err, ErrExists) || errors.Is(err, stdfs.ErrExist)) {
+			if got, sizeErr := s.FileSize(plainPath); sizeErr == nil && got == size {
+				return size, nil
+			}
+		}
+		// The Reader has already spent its retries on a failure of its own.
+		if src.err != nil || !xfer.Retryable(err, opts.Permanent...) {
+			return written, err
+		}
+		if err := r.Restart(&failures, err); err != nil {
+			return written, err
+		}
 	}
-	// encryptStream ends at the first EOF; make sure that was the real end.
-	if written != size {
-		_ = s.Remove(plainPath)
-		return written, fmt.Errorf("copy to %s: wrote %d of %d bytes: %w", plainPath, written, size, xfer.ErrTruncated)
+}
+
+// watchedReader remembers a read failure, to tell it from a write failure
+// once both have come back out of Create.
+type watchedReader struct {
+	r   io.Reader
+	err error
+}
+
+func (w *watchedReader) Read(p []byte) (int, error) {
+	n, err := w.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		w.err = err
 	}
-	return written, nil
+	return n, err
 }
 
 // Opener returns an xfer.Opener over a plaintext file in this vault, for

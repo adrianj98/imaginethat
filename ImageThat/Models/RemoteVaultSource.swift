@@ -215,6 +215,13 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
         try await client.delete(vaultID: vaultID, path: currentPath)
     }
 
+    /// The session that encrypts on this Mac, on a client-decrypt server.
+    public var engineBridge: GocryptfsBridge? { client.engineBridge(vaultID: vaultID) }
+
+    public func existingFileSize(at path: String) async -> Int64? {
+        try? await client.fileSize(vaultID: vaultID, path: path)
+    }
+
     public func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
         where S.Element == Data {
         try await client.upload(

@@ -4,7 +4,8 @@
 // A Reader streams a source front to back through ReadAt. When a read fails
 // with an error that might go away (an I/O error on a network mount, a reset
 // connection, an HTTP 5xx), it closes the source, waits with exponential
-// backoff, reopens it and carries on from the last byte it delivered. Errors
+// backoff for up to about five minutes, reopens it and carries on from the
+// last byte it delivered. Errors
 // that will not go away (missing file, permission, cancellation, the source
 // changing size underneath the copy) stop it at once.
 //
@@ -21,6 +22,7 @@ import (
 	"io/fs"
 	"os"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -32,6 +34,11 @@ var ErrSourceChanged = errors.New("xfer: source changed during copy")
 // deliberately not io.ErrUnexpectedEOF: io.ReadFull callers treat that as a
 // normal short final read, which would turn a failed copy into a short file.
 var ErrTruncated = errors.New("xfer: source ended early")
+
+// ErrRefused means the far end understood the request and said no (an HTTP
+// 4xx). Backends match it so a refusal stops at once instead of being retried
+// for the length of an outage.
+var ErrRefused = errors.New("xfer: request refused")
 
 // Source is one open handle on the file being copied.
 type Source interface {
@@ -48,7 +55,8 @@ type Opener func() (Source, error)
 type Options struct {
 	// Attempts is how many times one stretch of the copy is retried before
 	// giving up. The count resets whenever a read makes progress, so a long
-	// copy survives any number of separate blips. Default 6.
+	// copy survives any number of separate blips. Default 40, which with
+	// the default delays waits out an outage of about five minutes.
 	Attempts int
 	// BaseDelay is the first wait; it doubles up to MaxDelay. Defaults
 	// 250ms and 8s.
@@ -67,7 +75,7 @@ type Options struct {
 
 func (o *Options) defaults() {
 	if o.Attempts <= 0 {
-		o.Attempts = 6
+		o.Attempts = 40
 	}
 	if o.BaseDelay <= 0 {
 		o.BaseDelay = 250 * time.Millisecond
@@ -201,6 +209,19 @@ func (r *Reader) Read(p []byte) (int, error) {
 	}
 }
 
+// Restart counts a failure of the whole copy, waits the backoff and rewinds
+// to the first byte. It is for failures on the writing side, which a resume
+// cannot repair because the bytes already handed over went nowhere. The
+// caller keeps failures across calls, and cause is reported on giving up.
+func (r *Reader) Restart(failures *int, cause error) error {
+	r.Close()
+	r.off = 0
+	if r.opts.Progress != nil {
+		r.opts.Progress.done.Store(0)
+	}
+	return r.backoff(failures, cause)
+}
+
 // Offset is how many bytes have been delivered.
 func (r *Reader) Offset() int64 { return r.off }
 
@@ -252,8 +273,9 @@ func (r *Reader) retryable(err error) bool {
 }
 
 // Retryable reports whether err might succeed on another try. Cancellation,
-// missing files, permission problems and a changed source never do; nor does
-// anything matching one of extra. A deadline is retryable: a per-request
+// missing files, permission problems, a full or read-only disk, a refused
+// request and a changed source never do; nor does anything matching one of
+// extra. A deadline is retryable: a per-request
 // timeout is exactly the kind of blip worth another go, and the Reader stops
 // on its own context separately.
 func Retryable(err error, extra ...error) bool {
@@ -262,8 +284,9 @@ func Retryable(err error, extra ...error) bool {
 	}
 	for _, target := range append([]error{
 		context.Canceled,
-		fs.ErrNotExist, fs.ErrPermission, fs.ErrInvalid,
-		ErrSourceChanged,
+		fs.ErrNotExist, fs.ErrPermission, fs.ErrInvalid, fs.ErrExist,
+		syscall.ENOSPC, syscall.EDQUOT, syscall.EROFS, syscall.ENAMETOOLONG,
+		ErrSourceChanged, ErrRefused,
 	}, extra...) {
 		if errors.Is(err, target) {
 			return false

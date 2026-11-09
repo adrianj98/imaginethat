@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"math/rand"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -253,5 +255,47 @@ func TestOpenIsRetried(t *testing.T) {
 	got, err := io.ReadAll(r)
 	if err != nil || !bytes.Equal(got, f.data) {
 		t.Fatalf("err %v, equal %v", err, bytes.Equal(got, f.data))
+	}
+}
+
+func TestDefaultRetriesWaitOutFiveMinutes(t *testing.T) {
+	var waited time.Duration
+	opts := Options{sleep: func(_ context.Context, d time.Duration) error { waited += d; return nil }}
+	f := newFlaky(1000, func(int64, int) error { return errors.New("connection reset") })
+	if _, err := io.ReadAll(NewReader(context.Background(), f.opener(), opts)); err == nil {
+		t.Fatal("read succeeded")
+	}
+	if waited < 4*time.Minute || waited > 6*time.Minute {
+		t.Fatalf("waited %v in total, want about five minutes", waited)
+	}
+}
+
+func TestRefusedAndFullDiskAreNotRetried(t *testing.T) {
+	for _, err := range []error{ErrRefused, syscall.ENOSPC, syscall.EROFS, fs.ErrExist} {
+		if Retryable(fmt.Errorf("wrapped: %w", err)) {
+			t.Errorf("%v is retryable", err)
+		}
+	}
+}
+
+func TestRestartGoesBackToTheStart(t *testing.T) {
+	f := newFlaky(5000, func(int64, int) error { return nil })
+	var p Progress
+	opts := fastOpts()
+	opts.Progress = &p
+	r := NewReader(context.Background(), f.opener(), opts)
+	if _, err := io.ReadFull(r, make([]byte, 2000)); err != nil {
+		t.Fatal(err)
+	}
+	failures := 0
+	if err := r.Restart(&failures, errors.New("write failed")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil || !bytes.Equal(got, f.data) {
+		t.Fatalf("after restart: err %v, %d bytes", err, len(got))
+	}
+	if failures != 1 {
+		t.Fatalf("failures = %d", failures)
 	}
 }

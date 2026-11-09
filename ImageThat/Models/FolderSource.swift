@@ -173,12 +173,47 @@ public final class FolderSource: WritableMediaSource, @unchecked Sendable {
     public func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
         where S.Element == Data {
         let dest = rootURL.appendingPathComponent(destinationPath)
-        FileManager.default.createFile(atPath: dest.path, contents: nil)
-        let handle = try FileHandle(forWritingTo: dest)
-        defer { try? handle.close() }
+        let folder = dest.deletingLastPathComponent()
+        Self.sweepStaleTemps(in: folder)
+        let temp = folder.appendingPathComponent(Self.tempPrefix + UUID().uuidString)
+        FileManager.default.createFile(atPath: temp.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: temp)
+        do {
+            for try await chunk in chunks {
+                try handle.write(contentsOf: chunk)
+            }
+            try handle.close()
+            // moveItem refuses an existing destination.
+            try FileManager.default.moveItem(at: temp, to: dest)
+        } catch {
+            try? handle.close()
+            try? FileManager.default.removeItem(at: temp)
+            throw error
+        }
+    }
 
-        for try await chunk in chunks {
-            try handle.write(contentsOf: chunk)
+    public func existingFileSize(at path: String) async -> Int64? {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: rootURL.appendingPathComponent(path).path)
+        return attrs?[.size] as? Int64
+    }
+
+    private static let tempPrefix = ".imagethat-upload-"
+    private static let staleTempAge: TimeInterval = 24 * 60 * 60
+    private static let sweptLock = NSLock()
+    nonisolated(unsafe) private static var sweptFolders = Set<String>()
+
+    /// Removes what a crash left behind, once per folder per run. A copy still
+    /// running keeps touching its temp file, so a day-old one is abandoned.
+    private static func sweepStaleTemps(in folder: URL) {
+        guard sweptLock.withLock({ sweptFolders.insert(folder.path).inserted }) else { return }
+        let fm = FileManager.default
+        let names = (try? fm.contentsOfDirectory(atPath: folder.path)) ?? []
+        for name in names where name.hasPrefix(tempPrefix) {
+            let url = folder.appendingPathComponent(name)
+            if let modified = (try? fm.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date,
+               Date().timeIntervalSince(modified) > staleTempAge {
+                try? fm.removeItem(at: url)
+            }
         }
     }
 }

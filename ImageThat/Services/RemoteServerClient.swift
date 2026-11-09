@@ -280,6 +280,11 @@ public final class RemoteServerClient: @unchecked Sendable {
         }
     }
 
+    /// The session that encrypts on this Mac, on a client-decrypt server.
+    public func engineBridge(vaultID: String) -> GocryptfsBridge? {
+        (try? localVault(vaultID)) ?? nil
+    }
+
     /// Runs a blocking Go library call away from the caller's thread.
     private func offThread<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
         try await Task.detached { try body() }.value

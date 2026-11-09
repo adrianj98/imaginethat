@@ -18,6 +18,7 @@ struct ImageThatApp: App {
             ContentView()
                 .environmentObject(appState)
                 .task {
+                    appDelegate.transfers = appState.transfers
                     guard !hasOpenedInitialPath else { return }
                     hasOpenedInitialPath = true
 
