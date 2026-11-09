@@ -88,10 +88,8 @@ public class AppState: ObservableObject {
     /// File to select after loading a folder (set by openFile)
     @Published private(set) var pendingSelectionName: String?
 
-    /// File transfer progress: (current bytes, total bytes, start time)
-    @Published public var fileTransferProgress: (current: Int64, total: Int64, startTime: Date)? = nil
-    /// Human-readable status during transfer
-    @Published public var fileTransferStatus: String? = nil
+    /// Every copy batch, running and finished (the Copies window).
+    public let transfers = TransferCenter()
 
     /// Files being cached for offline use (remote and Drive vaults), keyed by
     /// item URL, with their progress 0...1.
@@ -103,9 +101,6 @@ public class AppState: ObservableObject {
     /// a file cache, which RemoteVaultSource reads cached files through.
     private var remoteCaches: [String: GocryptfsBridge] = [:]
 
-    /// Current file transfer task (for cancellation)
-    private var fileTransferTask: Task<Void, Never>? = nil
-
     public init() {
         // The engine does not remember the limit; hand it over before any
         // vault opens.
@@ -116,23 +111,11 @@ public class AppState: ObservableObject {
             name: .openExternalFile,
             object: nil
         )
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleFileTransferProgress(_:)),
-            name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
-            object: nil
-        )
     }
 
     @objc private func handleExternalFileOpen(_ notification: Notification) {
         guard let url = notification.object as? URL else { return }
         openFile(url: url)
-    }
-
-    @objc private func handleFileTransferProgress(_ notification: Notification) {
-        guard let tuple = notification.object as? (current: Int64, total: Int64, startTime: Date) else { return }
-        // Sources post this from their write task; @Published must change on the main thread.
-        DispatchQueue.main.async { self.fileTransferProgress = tuple }
     }
 
     public func addFavorite(url: URL) {
@@ -577,78 +560,47 @@ public class AppState: ObservableObject {
         }
         print("importFiles: importing \(urls.count) files")
 
-        // Cancel any existing transfer
-        fileTransferTask?.cancel()
+        let jobs = urls.map { url in
+            TransferCenter.Job(name: url.lastPathComponent) { reporter in
+                let name = url.lastPathComponent
+                let destPath = dest.currentPath.isEmpty ? name : "\(dest.currentPath)/\(name)"
+                let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
+                let size = (attrs[.size] as? Int64) ?? 0
+                reporter.report(done: 0, total: size)
 
-        fileTransferTask = Task.detached { [weak self] in
-            guard let self else { return }
-            for url in urls {
-                do {
-                    print("importFiles: processing \(url.lastPathComponent)")
-                    let name = url.lastPathComponent
-                    let destPath: String
-                    if let vaultSource = dest as? VaultSource {
-                        destPath = vaultSource.currentPath.isEmpty ? name : "\(vaultSource.currentPath)/\(name)"
-                    } else if let driveVault = dest as? DriveVaultSource {
-                        destPath = driveVault.currentPath.isEmpty ? name : "\(driveVault.currentPath)/\(name)"
-                    } else if let remote = dest as? RemoteVaultSource {
-                        destPath = remote.currentPath.isEmpty ? name : "\(remote.currentPath)/\(name)"
-                    } else {
-                        destPath = name
-                    }
+                print("importFiles: copying \(name) (\(size) bytes) to \(destPath)")
 
+                if let bridge = (dest as? VaultSource)?.bridge ?? (dest as? DriveVaultSource)?.bridge {
+                    // Local and Drive vaults copy in the Go engine, which
+                    // retries and resumes on read errors (files on a
+                    // network share) and streams into Drive.
+                    try await Self.engineCopy(.file(url), into: bridge, at: destPath, reporter: reporter)
+                } else {
+                    // Use larger chunks (1MB) for better throughput
                     let localSource = FolderSource(rootURL: url.deletingLastPathComponent())
-                    let item = MediaItem(url: url)
-                    let attrs = try FileManager.default.attributesOfItem(atPath: url.path)
-                    let size = (attrs[.size] as? Int64) ?? 0
-
-                    let startTime = Date()
-                    await MainActor.run {
-                        self.fileTransferStatus = "Copying \(name)..."
-                        self.fileTransferProgress = (0, size, startTime)
-                    }
-
-                    print("importFiles: copying \(name) (\(size) bytes) to \(destPath)")
-
-                    if let bridge = (dest as? VaultSource)?.bridge ?? (dest as? DriveVaultSource)?.bridge {
-                        // Local and Drive vaults copy in the Go engine, which
-                        // retries and resumes on read errors (files on a
-                        // network share) and streams into Drive.
-                        try await Self.engineCopy(.file(url), into: bridge, at: destPath)
-                    } else {
-                        // Use larger chunks (1MB) for better throughput
-                        let chunkSize = 1_048_576  // 1MB chunks
-                        let sourceChunks = localSource.readChunks(for: item, chunkSize: chunkSize)
-
-                        // Pass chunks directly to destination.
-                        // Destination tracks write progress and posts notifications.
-                        try await dest.writeChunks(sourceChunks, to: destPath, totalSize: size)
-                    }
-
-                    print("importFiles: successfully copied \(name)")
-                } catch {
-                    print("importFiles: error - \(error)")
-                    await MainActor.run {
-                        self.errorMessage = error.localizedDescription
-                        self.fileTransferStatus = nil
-                        self.fileTransferProgress = nil
-                    }
+                    let chunks = localSource.readChunks(for: MediaItem(url: url), chunkSize: 1_048_576)
+                    try await dest.writeChunks(reporter.counting(chunks, total: size), to: destPath, totalSize: size)
                 }
+
+                print("importFiles: successfully copied \(name)")
             }
-            await MainActor.run {
-                self.fileTransferStatus = nil
-                self.fileTransferProgress = nil
-                self.loadMedia(from: source ?? dest)
-            }
+        }
+        let destination = dest.currentPath.isEmpty ? dest.rootDisplayName : "\(dest.rootDisplayName)/\(dest.currentPath)"
+        transfers.start(destination: destination, jobs: jobs) { [weak self] batch in
+            self?.copiesFinished(batch, fallback: dest)
         }
     }
 
-    /// Cancel the current file transfer
-    public func cancelFileTransfer() {
-        fileTransferTask?.cancel()
-        fileTransferTask = nil
-        fileTransferStatus = nil
-        fileTransferProgress = nil
+    /// Shows what a finished batch brought in. A failure is reported once for
+    /// the batch; the Copies window has the details for each file.
+    private func copiesFinished(_ batch: TransferBatch, fallback: any MediaSource) {
+        loadMedia(from: mediaSource ?? fallback)
+        guard batch.failedCount > 0 else { return }
+        if batch.files.count == 1, case .failed(let message) = batch.files[0].state {
+            errorMessage = message
+        } else {
+            errorMessage = "\(batch.failedCount) of \(batch.files.count) files couldn't be copied. Window ▸ Copies shows why."
+        }
     }
 
     /// Handle a MediaTransfer drop onto a sidebar folder
@@ -670,23 +622,20 @@ public class AppState: ObservableObject {
 
         // Cross-source → copy in the Go engine (retries and resumes on read
         // errors; the file appears only once complete)
-        Task {
-            do {
-                let from: EngineCopySource
-                if transfer.isVault, let bridge = vaultBridges[transfer.sourceRootPath] {
-                    from = .vault(bridge, transfer.itemRelativePath)
-                } else {
-                    let rootURL = URL(fileURLWithPath: transfer.sourceRootPath)
-                    from = .file(rootURL.appendingPathComponent(transfer.itemRelativePath))
-                }
-
-                let destFileName = (transfer.itemRelativePath as NSString).lastPathComponent
-                let destPath = destVaultPath.isEmpty ? destFileName : "\(destVaultPath)/\(destFileName)"
-                try await Self.engineCopy(from, into: destBridge, at: destPath)
-                self.loadMedia(from: mediaSource ?? destSource)
-            } catch {
-                self.errorMessage = error.localizedDescription
-            }
+        let from: EngineCopySource
+        if transfer.isVault, let bridge = vaultBridges[transfer.sourceRootPath] {
+            from = .vault(bridge, transfer.itemRelativePath)
+        } else {
+            let rootURL = URL(fileURLWithPath: transfer.sourceRootPath)
+            from = .file(rootURL.appendingPathComponent(transfer.itemRelativePath))
+        }
+        let destFileName = (transfer.itemRelativePath as NSString).lastPathComponent
+        let destPath = destVaultPath.isEmpty ? destFileName : "\(destVaultPath)/\(destFileName)"
+        let job = TransferCenter.Job(name: destFileName) { reporter in
+            try await Self.engineCopy(from, into: destBridge, at: destPath, reporter: reporter)
+        }
+        transfers.start(destination: sidebarItem.name, jobs: [job]) { [weak self] batch in
+            self?.copiesFinished(batch, fallback: destSource)
         }
     }
 
@@ -1715,21 +1664,21 @@ extension AppState {
             return
         }
 
-        Task {
-            do {
-                let name = (transfer.itemRelativePath as NSString).lastPathComponent
-                if let engineSource, let vaultDest = destSource as? VaultSource {
-                    try await Self.engineCopy(engineSource, into: vaultDest.bridge, at: destPath.isEmpty ? name : "\(destPath)/\(name)")
-                    if let current = mediaSource { loadMedia(from: current) }
-                    return
-                }
-                let size = try await sourceSource.fileSize(for: sourceItem)
-                let chunks = sourceSource.readChunks(for: sourceItem, chunkSize: 1_048_576)
-                try await destSource.writeChunks(chunks, to: destPath.isEmpty ? name : "\(destPath)/\(name)", totalSize: size)
-                if let current = mediaSource { loadMedia(from: current) }
-            } catch {
-                errorMessage = error.localizedDescription
+        let name = (transfer.itemRelativePath as NSString).lastPathComponent
+        let fullPath = destPath.isEmpty ? name : "\(destPath)/\(name)"
+        let engineCopySource = engineSource
+        let job = TransferCenter.Job(name: name) { reporter in
+            if let engineCopySource, let vaultDest = destSource as? VaultSource {
+                try await Self.engineCopy(engineCopySource, into: vaultDest.bridge, at: fullPath, reporter: reporter)
+                return
             }
+            let size = try await sourceSource.fileSize(for: sourceItem)
+            reporter.report(done: 0, total: size)
+            let chunks = sourceSource.readChunks(for: sourceItem, chunkSize: 1_048_576)
+            try await destSource.writeChunks(reporter.counting(chunks, total: size), to: fullPath, totalSize: size)
+        }
+        transfers.start(destination: sidebarItem.name, jobs: [job]) { [weak self] batch in
+            self?.copiesFinished(batch, fallback: destSource)
         }
     }
 
@@ -1743,14 +1692,10 @@ extension AppState {
     /// Copies one file into a local or Drive vault through the Go engine.
     /// Reads that fail transiently (a network share, a remote server) are
     /// retried with backoff and resume where they stopped, and the file
-    /// appears only once every byte is in. Progress goes out like
-    /// VaultSource.writeChunks'.
-    nonisolated static func engineCopy(_ from: EngineCopySource, into dest: GocryptfsBridge, at destPath: String) async throws {
-        let startTime = Date()
-        let report: @Sendable (Int64, Int64) -> Void = { done, total in
-            NotificationCenter.default.post(name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
-                                            object: (current: done, total: total, startTime: startTime))
-        }
+    /// appears only once every byte is in.
+    nonisolated static func engineCopy(_ from: EngineCopySource, into dest: GocryptfsBridge, at destPath: String,
+                                       reporter: TransferReporter) async throws {
+        let report: @Sendable (Int64, Int64, Int64) -> Void = { reporter.report(done: $0, total: $1, retries: $2) }
         switch from {
         case .file(let url):
             try await GocryptfsTransfer.copyFile(url, into: dest, at: destPath, onProgress: report)

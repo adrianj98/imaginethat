@@ -193,15 +193,8 @@ public final class GoogleDriveSource: WritableMediaSource, @unchecked Sendable {
         var data = Data()
         data.reserveCapacity(Int(min(totalSize, Int64(Int.max))))
 
-        let startTime = Date()
         for try await chunk in chunks {
             data.append(chunk)
-            let current = Int64(data.count)
-            let progressTuple = (current: current, total: totalSize, startTime: startTime)
-            NotificationCenter.default.post(
-                name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
-                object: progressTuple
-            )
         }
 
         let fileName = (destinationPath as NSString).lastPathComponent

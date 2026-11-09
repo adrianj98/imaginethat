@@ -204,6 +204,9 @@ struct IntegrationTest {
         // === Test 5: Vaults on an imagethat-web server ===
         await RemoteServerTest.run { check($0, $1, $2) }
 
+        // === Test 6: Copy batches ===
+        await TransferCenterTest.run { check($0, $1, $2) }
+
         // === Summary ===
         print("\n=== Results: \(passed) passed, \(failed) failed ===")
         if failed > 0 {

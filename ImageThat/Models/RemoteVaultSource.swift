@@ -217,17 +217,12 @@ public final class RemoteVaultSource: WritableMediaSource, @unchecked Sendable {
 
     public func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
         where S.Element == Data {
-        let startTime = Date()
-        let progressName = NSNotification.Name("com.adrianm.imagethat.fileTransferProgress")
         try await client.upload(
             vaultID: vaultID,
             directory: parentDirectory(destinationPath),
             name: (destinationPath as NSString).lastPathComponent,
             chunks: chunks
-        ) { sent in
-            NotificationCenter.default.post(name: progressName, object: (current: sent, total: totalSize, startTime: startTime))
-        }
-        NotificationCenter.default.post(name: progressName, object: (current: totalSize, total: totalSize, startTime: startTime))
+        ) { _ in }
     }
 
     // MARK: - Private

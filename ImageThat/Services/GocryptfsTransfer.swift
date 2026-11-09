@@ -27,13 +27,14 @@ public final class GocryptfsJob: @unchecked Sendable {
     }
 
     /// Runs a blocking engine call off the cooperative pool, reporting
-    /// progress every 200 ms. Cancelling the Swift task cancels the job.
+    /// bytes done, total and retries every 200 ms. Cancelling the Swift task
+    /// cancels the job.
     fileprivate func run(_ call: @escaping @Sendable (Int32) -> Int32,
-                         onProgress: (@Sendable (Int64, Int64) -> Void)?) async throws {
+                         onProgress: (@Sendable (Int64, Int64, Int64) -> Void)?) async throws {
         let poller = Task { [weak self] in
             while !Task.isCancelled, let self {
                 let p = self.progress
-                onProgress?(p.done, p.total)
+                onProgress?(p.done, p.total, p.retries)
                 try? await Task.sleep(for: .milliseconds(200))
             }
         }
@@ -47,7 +48,7 @@ public final class GocryptfsJob: @unchecked Sendable {
             self.cancel()
         }
         let p = progress
-        onProgress?(p.done, p.total)
+        onProgress?(p.done, p.total, p.retries)
         switch rc {
         case 0: return
         case -7: throw CancellationError()
@@ -60,7 +61,7 @@ public final class GocryptfsJob: @unchecked Sendable {
 public enum GocryptfsTransfer {
     /// Copy a plaintext file on disk into a vault at `destPath`.
     public static func copyFile(_ file: URL, into dest: GocryptfsBridge, at destPath: String,
-                                onProgress: (@Sendable (Int64, Int64) -> Void)? = nil) async throws {
+                                onProgress: (@Sendable (Int64, Int64, Int64) -> Void)? = nil) async throws {
         let destID = dest.sessionID, src = file.path
         try await GocryptfsJob().run({ job in
             destPath.withCString { d in
@@ -74,7 +75,7 @@ public enum GocryptfsTransfer {
     /// Copy a file from one open vault session (local or remote) into another.
     public static func copy(from source: GocryptfsBridge, path srcPath: String,
                             into dest: GocryptfsBridge, at destPath: String,
-                            onProgress: (@Sendable (Int64, Int64) -> Void)? = nil) async throws {
+                            onProgress: (@Sendable (Int64, Int64, Int64) -> Void)? = nil) async throws {
         let destID = dest.sessionID, srcID = source.sessionID
         try await GocryptfsJob().run({ job in
             destPath.withCString { d in
@@ -93,7 +94,7 @@ public enum GocryptfsTransfer {
                                  onProgress: (@Sendable (Int64, Int64) -> Void)? = nil) async throws {
         try await GocryptfsJob().run({ job in
             path.withCString { p in GocryptfsCacheFile(job, session, UnsafeMutablePointer(mutating: p)) }
-        }, onProgress: onProgress)
+        }, onProgress: onProgress.map { report in { done, total, _ in report(done, total) } })
     }
 
     /// Whether the network cache holds the whole file.

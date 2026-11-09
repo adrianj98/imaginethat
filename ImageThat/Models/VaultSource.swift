@@ -249,36 +249,15 @@ public final class VaultSource: WritableMediaSource, @unchecked Sendable {
         // error or cancellation part-way discards it, leaving nothing behind.
         let writer = try bridge.createFile(path: destinationPath)
 
-        let startTime = Date()
-        var totalWritten: Int64 = 0
-        var lastReportTime = Date()
-
         do {
             for try await chunk in chunks {
                 try Task.checkCancellation()
                 try writer.write(chunk)
-                totalWritten += Int64(chunk.count)
-
-                // Report progress every 0.5 seconds
-                let now = Date()
-                if now.timeIntervalSince(lastReportTime) >= 0.5 {
-                    lastReportTime = now
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
-                        object: (current: totalWritten, total: totalSize, startTime: startTime)
-                    )
-                }
             }
             try writer.finish()
         } catch {
             writer.abort()
             throw error
         }
-
-        // Final progress update
-        NotificationCenter.default.post(
-            name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
-            object: (current: totalSize, total: totalSize, startTime: startTime)
-        )
     }
 }

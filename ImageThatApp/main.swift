@@ -40,6 +40,11 @@ struct ImageThatApp: App {
             }
         }
 
+        Window("Copies", id: CopiesView.windowID) {
+            CopiesView(transfers: appState.transfers)
+        }
+        .keyboardShortcut("j", modifiers: [.command, .shift])
+
         Settings {
             PreferencesView()
         }

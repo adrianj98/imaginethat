@@ -172,41 +172,14 @@ public final class FolderSource: WritableMediaSource, @unchecked Sendable {
 
     public func writeChunks<S: AsyncSequence>(_ chunks: S, to destinationPath: String, totalSize: Int64) async throws
         where S.Element == Data {
-        // Post "writing" phase notification
-        NotificationCenter.default.post(
-            name: NSNotification.Name("com.adrianm.imagethat.fileTransferPhase"),
-            object: "writing"
-        )
-
         let dest = rootURL.appendingPathComponent(destinationPath)
         FileManager.default.createFile(atPath: dest.path, contents: nil)
         let handle = try FileHandle(forWritingTo: dest)
         defer { try? handle.close() }
 
-        let startTime = Date()
-        var totalWritten: Int64 = 0
-        var lastReportTime = Date()
-
         for try await chunk in chunks {
             try handle.write(contentsOf: chunk)
-            totalWritten += Int64(chunk.count)
-
-            // Report progress every 0.5 seconds while writing
-            let now = Date()
-            if now.timeIntervalSince(lastReportTime) >= 0.5 {
-                lastReportTime = now
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("com.adrianm.imagethat.fileTransferProgress"),
-                    object: (current: totalWritten, total: totalSize, startTime: startTime)
-                )
-            }
         }
-
-        // Report completion
-        NotificationCenter.default.post(
-            name: NSNotification.Name("com.adrianm.imagethat.fileTransferPhase"),
-            object: nil
-        )
     }
 }
 

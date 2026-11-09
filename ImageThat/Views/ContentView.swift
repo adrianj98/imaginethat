@@ -38,44 +38,7 @@ public struct ContentView: View {
         .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 350)
         .frame(minWidth: 800, minHeight: 600)
         .overlay(alignment: .bottom) {
-            if let progress = appState.fileTransferProgress,
-               let status = appState.fileTransferStatus {
-                let elapsed = Date().timeIntervalSince(progress.startTime)
-                let percentComplete = progress.total > 0 ? Double(progress.current) / Double(progress.total) : 0
-                let bytesPerSecond = elapsed > 0 ? Double(progress.current) / elapsed : 0
-                let mbPerSecond = bytesPerSecond / 1_000_000
-
-                VStack(spacing: 12) {
-                    HStack {
-                        Text(status)
-                            .font(.subheadline)
-                        Spacer()
-                        Button(action: { appState.cancelFileTransfer() }) {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 14))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    ProgressView(value: percentComplete)
-                    HStack {
-                        Text("\(progress.current / 1_000_000) / \(progress.total / 1_000_000) MB")
-                            .font(.caption)
-                        Spacer()
-                        Text(String(format: "%.1f MB/s", mbPerSecond))
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.blue)
-                        Spacer()
-                        Text(String(format: "%.0fs", elapsed))
-                            .font(.caption)
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .padding()
-                .frame(maxWidth: 520)
-                .glassCard()
-                .padding(20)
-            }
+            CopyProgressCard(transfers: appState.transfers)
         }
         .alert("Error", isPresented: .init(
             get: { appState.errorMessage != nil },
