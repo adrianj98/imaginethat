@@ -27,22 +27,35 @@ Scripts/install-mac.sh --open    # launch it afterwards
 
 #### Stop the keychain prompt after Touch ID
 
-Touch ID unlocks a master key in your login keychain, and the keychain only
-trusts the exact app signature that clicked "Always Allow". `make app` signs ad
-hoc by default, and that signature changes with every build, so macOS asks for
-your login password again after each rebuild. To fix that once, create a
-self-signed "ImageThat Local" signing certificate in your login keychain and
-reinstall:
+Touch ID unlocks a master key in your login keychain, and macOS checks two
+things about the app before handing it over: its signature, and a "partition
+list". `make app` signs ad hoc by default, and that signature changes with every
+build. A stable self-signed certificate fixes the first check:
 
 ```bash
 Scripts/make-signing-cert.sh    # asks for your login password once, to trust it
 Scripts/install-mac.sh
 ```
 
-`make app` picks up `ImageThat Local` on its own. Unlock with Touch ID once
-more and choose **Always Allow**; later builds keep the same signature, so it
-won't ask again. (By hand instead: Keychain Access > Certificate Assistant >
-Create a Certificate…, name `ImageThat Local`, Self-Signed Root, Code Signing.)
+`make app` picks up `ImageThat Local` on its own. (By hand instead: Keychain
+Access > Certificate Assistant > Create a Certificate…, name `ImageThat Local`,
+Self-Signed Root, Code Signing.)
+
+A self-signed certificate has no Team ID, so the partition list still records
+each build's hash, and macOS can ask for your login password after a rebuild.
+There are two ways around that:
+
+- Sign with an Apple Development certificate, whose Team ID stays the same
+  between builds: `make app SIGN_IDENTITY="Apple Development: ..."`.
+- Clear the master key's partition list. It asks for your login password, and
+  has to be repeated if the app ever saves a new master key:
+
+```bash
+security set-generic-password-partition-list -S "" -s com.adrianm.imagethat -a master-key ~/Library/Keychains/login.keychain-db
+```
+
+Run it in Terminal, and don't pass the password with `-k`, which would put it in
+your shell history.
 
 The app icons for Mac, Android and the web UI all come from
 `Scripts/make-icons.swift`; run `make icons` after changing the artwork.
