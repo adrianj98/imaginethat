@@ -717,3 +717,16 @@ User request: "add zoom and fullscreen to vieos and images". Answers to my quest
 - **Icon.tsx, styles.css:** pause, expand and compress icons; grab cursor, no transition while dragging, the video bar.
 - **Checked:** `npm run typecheck`, `vitest` 15/15, `make web-test`. In Chrome against a real server and a copy of the test vault, with a generated image and 20 s clip: double-click zoom at a point and back, drag pan and its clamp, touch pinch, trackpad pinch (page zoom suppressed), − / Fit / + buttons, video zoomed to 300% and panned while it kept playing, click to pause, bar play and seek, 0, F into fullscreen, arrow to the next item staying fullscreen, Esc leaving fullscreen then Esc closing. Pointer and wheel events were sent by script; keys and clicks were real.
 - **Not checked:** Safari and Firefox, a real touch screen, Safari's trackpad pinch (its own gesture events). On a 500 px wide window the toolbar wraps to two rows and covers the top of the stage; it has one more button than before.
+
+### Android
+- **ViewerScreen.kt, `Zoom`:** the image's scale, offset and clamp moved into a small `Zoom` type so the video can use the same arithmetic and it can be unit-tested. Image pinch, pan and the 6x limit are unchanged; double-tap now zooms on the tapped point (it zoomed on the centre).
+- **Video zoom:** pinch, drag while zoomed and double-tap on a video. The transform goes on the player's picture frame (`exo_content_frame`), so the player's controls stay normal size. *Why the gestures run before the player sees the touch:* the player view takes every touch for its own controls, so nothing reached the page otherwise. A drag that starts on the bottom 120 dp while the player's controls show is left to the seek bar. Single taps still go to the player.
+- **Fullscreen:** a button in the top bar hides the system bars, the top bar and the bottom panel. Back leaves it (then Back closes the viewer); on an image a tap leaves it; on a video an exit button appears with the player's controls. The bars come back when the viewer closes.
+- **Zoom state for screen readers:** the image and video pages say "Fit" or "Zoomed 250%"; the UI tests read the same value.
+- **AppIcons.kt:** fullscreen and exit-fullscreen icons.
+- **Tests:** 3 unit tests on `Zoom` in `ViewerHelpersTest`; 4 on-device tests in `BrowserFlowTest` (fullscreen hides the status bar and a tap restores it; Back leaves fullscreen first; double-tap zooms an image in and out; pinch and double-tap zoom a video).
+- **Checked:** `make android-test`; `BrowserFlowTest` on the `pixel6b` emulator, 15 of 15.
+- **Not checked:** the video picture actually moving on screen. The test clip is undecodable bytes, so the on-device test proves the gestures and state, not the pixels. Needs a real video on a phone.
+
+### Not checked on the Mac
+Nothing in the running Mac app was tried: pinch, drag, double-click, scroll over a video, the fullscreen button, F, 0 and Esc all need a person at the trackpad. Two things to look at first: a zoomed video pans in the same direction as the drag (the layer's y axis is flipped relative to SwiftUI's, handled in `PlayerLayerView.applyZoom`), and scroll-wheel zoom over a video.

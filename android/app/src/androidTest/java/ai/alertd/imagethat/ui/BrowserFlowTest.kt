@@ -9,6 +9,14 @@ import ai.alertd.imagethat.data.VaultSource
 import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.doubleClick
+import androidx.compose.ui.test.pinch
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -89,6 +97,75 @@ class BrowserFlowTest {
         rule.onNodeWithTag("viewer").assertIsDisplayed()
         rule.onNodeWithTag("viewer-close").performClick()
         waitForTag("browser-grid")
+    }
+
+    private fun statusBarShown(): Boolean {
+        var shown = true
+        rule.runOnUiThread {
+            val insets = ViewCompat.getRootWindowInsets(rule.activity.window.decorView)
+            shown = insets?.isVisible(WindowInsetsCompat.Type.statusBars()) ?: true
+        }
+        return shown
+    }
+
+    @Test fun fullscreenHidesTheBarsAndATapOnTheImageBringsThemBack() {
+        show("srv:v1")
+        waitForTag("item-pic.png")
+        rule.onNodeWithTag("item-pic.png").performClick()
+        waitForTag("viewer-image")
+        rule.onNodeWithTag("viewer-fullscreen").performClick()
+        gone("viewer-close")
+        gone("viewer-info")
+        rule.waitUntil(10_000) { !statusBarShown() }
+        rule.onNodeWithTag("viewer-image").performClick()
+        waitForTag("viewer-close")
+        rule.waitUntil(10_000) { statusBarShown() }
+    }
+
+    @Test fun backLeavesFullscreenBeforeItClosesTheViewer() {
+        show("srv:v1")
+        waitForTag("item-clip.mp4")
+        rule.onNodeWithTag("item-clip.mp4").performClick()
+        waitForTag("viewer-video")
+        rule.onNodeWithTag("viewer-fullscreen").performClick()
+        gone("viewer-close")
+        rule.runOnUiThread { rule.activity.onBackPressedDispatcher.onBackPressed() }
+        waitForTag("viewer-close")
+        rule.onNodeWithTag("viewer").assertIsDisplayed()
+        rule.waitUntil(10_000) { statusBarShown() }
+    }
+
+    @Test fun doubleTapZoomsAnImageInAndBackOut() {
+        show("srv:v1")
+        waitForTag("item-pic.png")
+        rule.onNodeWithTag("item-pic.png").performClick()
+        waitForTag("viewer-image")
+        val zoomed = SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Zoomed 250%")
+        val fit = SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Fit")
+        rule.onNodeWithTag("viewer-image").assert(fit)
+        rule.onNodeWithTag("viewer-image").performTouchInput { doubleClick() }
+        rule.waitUntil(5_000) { rule.onAllNodes(hasTestTag("viewer-image") and zoomed).fetchSemanticsNodes().isNotEmpty() }
+        rule.onNodeWithTag("viewer-image").performTouchInput { doubleClick() }
+        rule.waitUntil(5_000) { rule.onAllNodes(hasTestTag("viewer-image") and fit).fetchSemanticsNodes().isNotEmpty() }
+    }
+
+    @Test fun pinchAndDoubleTapZoomAVideo() {
+        show("srv:v1")
+        waitForTag("item-clip.mp4")
+        rule.onNodeWithTag("item-clip.mp4").performClick()
+        waitForTag("viewer-video")
+        val fit = SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Fit")
+        fun isFit() = rule.onAllNodes(hasTestTag("viewer-video") and fit).fetchSemanticsNodes().isNotEmpty()
+        assertTrue(isFit())
+        rule.onNodeWithTag("viewer-video").performTouchInput {
+            pinch(center - Offset(40f, 0f), center - Offset(200f, 0f), center + Offset(40f, 0f), center + Offset(200f, 0f))
+        }
+        rule.waitUntil(5_000) { !isFit() }
+        // Zoomed: a double-tap goes back to fit, and another zooms in again.
+        rule.onNodeWithTag("viewer-video").performTouchInput { doubleClick(center - Offset(0f, 200f)) }
+        rule.waitUntil(5_000) { isFit() }
+        rule.onNodeWithTag("viewer-video").performTouchInput { doubleClick(center - Offset(0f, 200f)) }
+        rule.waitUntil(5_000) { !isFit() }
     }
 
     @Test fun unsupportedTypeShowsNameAndSizeOnly() {

@@ -52,6 +52,8 @@ object AppIcons {
     val SaveOffline = icon("SaveOffline", "M12 4v12M7 11l5 5 5-5", "M4 20h16")
     val Delete = icon("Delete", "M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3")
     val Info = icon("Info", circle(12f, 12f, 9f), "M12 11v5M12 8h.01")
+    val Fullscreen = icon("Fullscreen", "M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5")
+    val FullscreenExit = icon("FullscreenExit", "M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5")
     val More = icon("More", fills = listOf(circle(5f, 12f, 2f), circle(12f, 12f, 2f), circle(19f, 12f, 2f)))
     val Play = icon("Play", fills = listOf("M8 5.5v13a1 1 0 0 0 1.5.85l10.5-6.5a1 1 0 0 0 0-1.7L9.5 4.65A1 1 0 0 0 8 5.5z"))
     val Eye = icon("Eye", EYE, circle(12f, 12f, 3f))

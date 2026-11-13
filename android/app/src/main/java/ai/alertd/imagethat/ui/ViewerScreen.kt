@@ -17,11 +17,15 @@ import ai.alertd.imagethat.ui.components.IconTile
 import ai.alertd.imagethat.ui.components.RoundIconButton
 import ai.alertd.imagethat.ui.components.SectionLabel
 import ai.alertd.imagethat.ui.theme.Palette
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
 import android.view.LayoutInflater
+import android.view.View
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -71,6 +75,7 @@ import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -79,6 +84,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.PopupProperties
 import androidx.compose.ui.window.SecureFlagPolicy
@@ -109,6 +117,41 @@ private const val MAX_IMAGE_BYTES = 48L * 1024 * 1024
 /** Decoded images are downsampled until the long edge is at most about this many pixels. */
 private const val MAX_DECODE_EDGE = 2048
 private const val MAX_ZOOM = 6f
+/** Where a double-tap zooms to. */
+private const val TOGGLE_ZOOM = 2.5f
+private const val DOUBLE_TAP_MS = 300L
+/** Height, from the bottom of a video, left to the player's own control bar while it shows. */
+private val PLAYER_CONTROLS_BAND = 120.dp
+
+/** Zoom and pan of the photo or video on a page. Scale 1 is "fit"; [offset] is in pixels. */
+internal data class Zoom(val scale: Float = 1f, val offset: Offset = Offset.Zero) {
+    val isZoomed: Boolean get() = scale > 1f
+
+    /** Applies a pinch and a drag, keeping the media from being dragged off a page of [size]. */
+    fun transformed(zoomBy: Float, pan: Offset, size: IntSize): Zoom {
+        val s = (scale * zoomBy).coerceIn(1f, MAX_ZOOM)
+        return if (s == 1f) Zoom() else Zoom(s, clamp(offset + pan, s, size))
+    }
+
+    /** Double-tap: zoom in on [tap] (measured from the centre of the page), or back to fit. */
+    fun toggled(tap: Offset, size: IntSize): Zoom =
+        if (isZoomed) Zoom() else Zoom(TOGGLE_ZOOM, clamp(tap - tap * TOGGLE_ZOOM, TOGGLE_ZOOM, size))
+
+    /** Spoken by screen readers, and read by the UI tests. */
+    val description: String get() = if (isZoomed) "Zoomed ${(scale * 100).toInt()}%" else "Fit"
+
+    private fun clamp(o: Offset, s: Float, size: IntSize): Offset {
+        val mx = size.width * (s - 1f) / 2f
+        val my = size.height * (s - 1f) / 2f
+        return Offset(o.x.coerceIn(-mx, mx), o.y.coerceIn(-my, my))
+    }
+}
+
+private tailrec fun Context.findActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
 private const val KEEP_ALIVE_MS = 30_000L
 
 internal fun formatSize(bytes: Long): String = when {
@@ -129,7 +172,8 @@ class ViewerActions(
 /**
  * Full-screen pager over [items] (the folder's media). Images are decoded in memory and
  * pinch-zoomable; videos stream through Media3. Nothing is exported, shared or cached.
- * Tapping an image hides the top bar and the bottom panel.
+ * Tapping an image hides the top bar and the bottom panel. Fullscreen hides those and the system
+ * bars; Back, or a tap on an image, leaves it.
  */
 @Composable
 fun ViewerScreen(
@@ -141,9 +185,24 @@ fun ViewerScreen(
     onClose: () -> Unit,
     actions: ViewerActions? = null,
 ) {
-    BackHandler(onBack = onClose)
+    var fullscreen by remember { mutableStateOf(false) }
+    BackHandler { if (fullscreen) fullscreen = false else onClose() }
+    val view = LocalView.current
+    DisposableEffect(fullscreen) {
+        val window = view.context.findActivity()?.window
+        val bars = window?.let { WindowCompat.getInsetsController(it, view) }
+        if (fullscreen) {
+            bars?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            bars?.hide(WindowInsetsCompat.Type.systemBars())
+        }
+        // Also runs when the viewer closes while fullscreen.
+        onDispose { bars?.show(WindowInsetsCompat.Type.systemBars()) }
+    }
     val pager = rememberPagerState(initialPage = startIndex.coerceIn(0, (items.size - 1).coerceAtLeast(0))) { items.size }
-    var chrome by remember { mutableStateOf(true) }
+    var chromeWanted by remember { mutableStateOf(true) }
+    val chrome = chromeWanted && !fullscreen
+    // Whether the video player's own control bar is showing; in fullscreen the exit button rides with it.
+    var playerControls by remember { mutableStateOf(false) }
     var info by remember { mutableStateOf<Item?>(null) }
     var menu by remember { mutableStateOf(false) }
     // Full-size pixel dimensions, learned when a page decodes its image or the player reports the video size.
@@ -155,9 +214,9 @@ fun ViewerScreen(
             HorizontalPager(pager, Modifier.fillMaxSize(), beyondViewportPageCount = 0, key = { items[it].path }) { page ->
                 val item = items[page]
                 when (item.media) {
-                    MediaKind.IMAGE -> ImagePage(session, sourceId, source, item, onSize = { dims[item.path] = it }, onTap = { chrome = !chrome })
+                    MediaKind.IMAGE -> ImagePage(session, sourceId, source, item, onSize = { dims[item.path] = it }, onTap = { if (fullscreen) fullscreen = false else chromeWanted = !chromeWanted })
                     MediaKind.VIDEO -> if (pager.settledPage == page) {
-                        VideoPage(session, sourceId, source, item, onSize = { dims[item.path] = it })
+                        VideoPage(session, sourceId, source, item, onSize = { dims[item.path] = it }, onControls = { playerControls = it })
                     } else Box(Modifier.fillMaxSize())
                     MediaKind.OTHER -> UnsupportedPage(item)
                 }
@@ -172,6 +231,7 @@ fun ViewerScreen(
                         Text(cur?.name.orEmpty(), color = Palette.Text, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text("${pager.currentPage + 1} of ${items.size}", color = Palette.TextSecondary, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Normal))
                     }
+                    RoundIconButton(AppIcons.Fullscreen, "Full screen", { fullscreen = true }, Modifier.padding(end = 8.dp).testTag("viewer-fullscreen"), background = Palette.Scrim)
                     Box {
                         RoundIconButton(AppIcons.More, "More options", { menu = true }, Modifier.testTag("viewer-more"), background = Palette.Scrim)
                         DropdownMenu(
@@ -181,10 +241,18 @@ fun ViewerScreen(
                             properties = PopupProperties(focusable = true, securePolicy = SecureFlagPolicy.SecureOn),
                         ) {
                             DropdownMenuItem(text = { Text("Info") }, onClick = { menu = false; info = cur })
-                            DropdownMenuItem(text = { Text("Hide controls") }, onClick = { menu = false; chrome = false })
+                            DropdownMenuItem(text = { Text("Hide controls") }, onClick = { menu = false; chromeWanted = false })
                         }
                     }
                 }
+            }
+            // A fullscreen video has no tap of its own to leave with, so the way out shows with its controls.
+            if (fullscreen && cur?.media == MediaKind.VIDEO && playerControls) {
+                RoundIconButton(
+                    AppIcons.FullscreenExit, "Exit full screen", { fullscreen = false },
+                    Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(16.dp).testTag("viewer-fullscreen-exit"),
+                    background = Palette.Scrim,
+                )
             }
         }
         if (chrome && cur != null) {
@@ -385,15 +453,8 @@ private fun ImagePage(session: Session, sourceId: String, source: VaultSource, i
 
 @Composable
 private fun ZoomableImage(bitmap: Bitmap, description: String, onTap: () -> Unit) {
-    var scale by remember(bitmap) { mutableFloatStateOf(1f) }
-    var offset by remember(bitmap) { mutableStateOf(Offset.Zero) }
+    var zoom by remember(bitmap) { mutableStateOf(Zoom()) }
     var size by remember { mutableStateOf(IntSize.Zero) }
-
-    fun clamp(o: Offset, s: Float): Offset {
-        val mx = size.width * (s - 1f) / 2f
-        val my = size.height * (s - 1f) / 2f
-        return Offset(o.x.coerceIn(-mx, mx), o.y.coerceIn(-my, my))
-    }
 
     Image(
         bitmap = bitmap.asImageBitmap(),
@@ -402,12 +463,13 @@ private fun ZoomableImage(bitmap: Bitmap, description: String, onTap: () -> Unit
         modifier = Modifier
             .fillMaxSize()
             .testTag("viewer-image")
+            .semantics { stateDescription = zoom.description }
             .onSizeChanged { size = it }
             .pointerInput(bitmap) {
                 detectTapGestures(
                     onTap = { onTap() },
-                    onDoubleTap = {
-                        if (scale > 1f) { scale = 1f; offset = Offset.Zero } else scale = 2.5f
+                    onDoubleTap = { tap ->
+                        zoom = zoom.toggled(tap - Offset(size.width / 2f, size.height / 2f), size)
                     },
                 )
             }
@@ -417,17 +479,14 @@ private fun ZoomableImage(bitmap: Bitmap, description: String, onTap: () -> Unit
                     awaitFirstDown(requireUnconsumed = false)
                     do {
                         val ev = awaitPointerEvent(PointerEventPass.Main)
-                        if (ev.changes.size > 1 || scale > 1f) {
-                            val z = ev.calculateZoom()
-                            val pan = ev.calculatePan()
-                            scale = (scale * z).coerceIn(1f, MAX_ZOOM)
-                            offset = if (scale == 1f) Offset.Zero else clamp(offset + pan, scale)
+                        if (ev.changes.size > 1 || zoom.isZoomed) {
+                            zoom = zoom.transformed(ev.calculateZoom(), ev.calculatePan(), size)
                             ev.changes.forEach { if (it.positionChanged()) it.consume() }
                         }
                     } while (ev.changes.any { it.pressed })
                 }
             }
-            .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y),
+            .graphicsLayer(scaleX = zoom.scale, scaleY = zoom.scale, translationX = zoom.offset.x, translationY = zoom.offset.y),
     )
 }
 
@@ -482,7 +541,7 @@ private suspend fun loadBitmap(source: VaultSource, item: Item): ImageLoad.Ready
 }
 
 @Composable
-private fun VideoPage(session: Session, sourceId: String, source: VaultSource, item: Item, onSize: (IntSize) -> Unit) {
+private fun VideoPage(session: Session, sourceId: String, source: VaultSource, item: Item, onSize: (IntSize) -> Unit, onControls: (Boolean) -> Unit) {
     val context = LocalContext.current
     var error by remember(item.path) { mutableStateOf<String?>(null) }
     var playing by remember(item.path) { mutableStateOf(false) }
@@ -539,10 +598,68 @@ private fun VideoPage(session: Session, sourceId: String, source: VaultSource, i
         }
     }
 
-    Box(Modifier.fillMaxSize().testTag("viewer-video")) {
+    var zoom by remember(item.path) { mutableStateOf(Zoom()) }
+    var controlsShown by remember(item.path) { mutableStateOf(false) }
+    DisposableEffect(item.path) { onDispose { onControls(false) } }
+
+    Box(
+        Modifier.fillMaxSize().testTag("viewer-video")
+            .semantics { stateDescription = zoom.description }
+            // Before the player sees the touches (Initial pass): pinches, drags of a zoomed picture
+            // and double-taps are taken here; everything else, single taps included, goes on to the
+            // player and its controls.
+            .pointerInput(item.path) {
+                var lastTap = 0L
+                var lastTapAt = Offset.Zero
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    // Leave the seek bar alone: a drag there scrubs, it does not pan.
+                    val onPlayerControls = controlsShown && down.position.y > size.height - PLAYER_CONTROLS_BAND.toPx()
+                    var travel = 0f
+                    var taken = false
+                    var upTime = down.uptimeMillis
+                    do {
+                        val ev = awaitPointerEvent(PointerEventPass.Initial)
+                        upTime = ev.changes.first().uptimeMillis
+                        val pan = ev.calculatePan()
+                        travel += pan.getDistance()
+                        if (!onPlayerControls && (ev.changes.size > 1 || (zoom.isZoomed && travel > viewConfiguration.touchSlop))) {
+                            taken = true
+                            zoom = zoom.transformed(ev.calculateZoom(), pan, size)
+                            ev.changes.forEach { if (it.positionChanged()) it.consume() }
+                        }
+                    } while (ev.changes.any { it.pressed })
+                    if (!taken && !onPlayerControls && travel <= viewConfiguration.touchSlop) {
+                        val near = (down.position - lastTapAt).getDistance() < viewConfiguration.touchSlop * 4
+                        if (upTime - lastTap < DOUBLE_TAP_MS && near) {
+                            zoom = zoom.toggled(down.position - Offset(size.width / 2f, size.height / 2f), size)
+                            lastTap = 0L
+                        } else {
+                            lastTap = upTime
+                            lastTapAt = down.position
+                        }
+                    }
+                }
+            },
+    ) {
         AndroidView(
             factory = { ctx ->
-                (LayoutInflater.from(ctx).inflate(R.layout.vault_player, null) as PlayerView).also { it.player = player }
+                (LayoutInflater.from(ctx).inflate(R.layout.vault_player, null) as PlayerView).also {
+                    it.player = player
+                    it.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+                        controlsShown = visibility == View.VISIBLE
+                        onControls(controlsShown)
+                    })
+                }
+            },
+            // Only the picture is zoomed: the player's controls sit beside this frame, not inside it.
+            update = { pv ->
+                pv.findViewById<View>(androidx.media3.ui.R.id.exo_content_frame)?.apply {
+                    scaleX = zoom.scale
+                    scaleY = zoom.scale
+                    translationX = zoom.offset.x
+                    translationY = zoom.offset.y
+                }
             },
             modifier = Modifier.fillMaxSize(),
         )

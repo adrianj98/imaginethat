@@ -2,6 +2,7 @@ package ai.alertd.imagethat.ui
 
 import ai.alertd.imagethat.data.Item
 import ai.alertd.imagethat.data.MediaKind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.unit.IntSize
 import androidx.lifecycle.Lifecycle
 import androidx.media3.common.Player
@@ -11,6 +12,27 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ViewerHelpersTest {
+    private val page = IntSize(800, 600)
+
+    @Test fun zoomStaysBetweenFitAndTheMaximum() {
+        assertEquals(6f, Zoom().transformed(100f, Offset.Zero, page).scale)
+        assertEquals(Zoom(), Zoom(2f, Offset(100f, 50f)).transformed(0.001f, Offset.Zero, page))
+    }
+
+    @Test fun panOnlyWhileZoomedAndNeverOffThePage() {
+        assertEquals(Zoom(), Zoom().transformed(1f, Offset(50f, 50f), page))
+        assertEquals(Offset(100f, -50f), Zoom(2f).transformed(1f, Offset(100f, -50f), page).offset)
+        assertEquals(Offset(400f, -300f), Zoom(2f).transformed(1f, Offset(5000f, -5000f), page).offset)
+        assertEquals(Zoom(1.5f, Offset(200f, -150f)), Zoom(2f, Offset(400f, -300f)).transformed(0.75f, Offset.Zero, page))
+    }
+
+    @Test fun doubleTapZoomsInOnThePointAndBack() {
+        val z = Zoom().toggled(Offset(100f, -60f), page)
+        assertEquals(Zoom(2.5f, Offset(-150f, 90f)), z)
+        assertEquals(Zoom(2.5f, Offset(-600f, -450f)), Zoom().toggled(Offset(400f, 300f), page))
+        assertEquals(Zoom(), z.toggled(Offset.Zero, page))
+    }
+
     @Test fun sampleSizeKeepsLongEdgeAtOrBelow2048() {
         assertEquals(1, decodeSampleSize(2048, 1000))
         assertEquals(2, decodeSampleSize(2049, 100))
