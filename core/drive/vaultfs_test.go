@@ -489,3 +489,31 @@ func TestPublicURLCarriesUploads(t *testing.T) {
 		t.Error("no upload session request went through the public URL")
 	}
 }
+
+// A copy's context must reach a Drive upload, or cancelling a copy cannot
+// stop an upload that is retrying a chunk.
+func TestCancelStopsADriveUpload(t *testing.T) {
+	defer drive.SetUploadChunk(256 << 10)()
+	srv := drivetest.New()
+	defer srv.Close()
+	_, v, _ := newVault(t, srv, nil)
+
+	var _ vault.ContextTempCreator = v
+	ctx, cancel := context.WithCancel(context.Background())
+	w, _, err := v.CreateTempContext(ctx, "", "tmp-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if _, err := w.Write(randBytes(t, 600<<10)); !errors.Is(err, context.Canceled) {
+		t.Errorf("Write after cancel returned %v, want context.Canceled", err)
+	}
+	if err := w.Close(); err == nil {
+		t.Error("Close after cancel reported success")
+	}
+	for _, name := range srv.Children(srv.Lookup("root", "Vault")) {
+		if strings.HasPrefix(name, "tmp-") {
+			t.Errorf("a cancelled upload left %s on Drive", name)
+		}
+	}
+}

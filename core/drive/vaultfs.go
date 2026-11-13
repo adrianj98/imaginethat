@@ -434,6 +434,14 @@ func (v *VaultFS) Rename(oldPath, newPath string) error {
 // CreateTemp starts a streaming upload into dir under a temporary name. The
 // vault engine writes ciphertext to it and then renames it into place.
 func (v *VaultFS) CreateTemp(dir, pattern string) (io.WriteCloser, string, error) {
+	return v.CreateTempContext(context.Background(), dir, pattern)
+}
+
+var _ vault.ContextTempCreator = (*VaultFS)(nil)
+
+// CreateTempContext is CreateTemp for a copy that can be cancelled:
+// cancelling ctx stops the upload's requests and its retries.
+func (v *VaultFS) CreateTempContext(ctx context.Context, dir, pattern string) (io.WriteCloser, string, error) {
 	parent, err := v.folder(dir)
 	if err != nil {
 		return nil, "", err
@@ -444,7 +452,7 @@ func (v *VaultFS) CreateTemp(dir, pattern string) (io.WriteCloser, string, error
 	if !strings.Contains(pattern, "*") {
 		name = pattern + hex.EncodeToString(rnd)
 	}
-	up, err := v.c.NewUpload(context.Background(), parent, name, "", "")
+	up, err := v.c.NewUpload(ctx, parent, name, "", "")
 	if err != nil {
 		return nil, "", err
 	}
