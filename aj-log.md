@@ -804,3 +804,13 @@ Screenshots and accessibility scripting aren't permitted from this terminal, so 
 - **Reverted my own change:** I briefly replaced the scroll-wheel handler with an event monitor after a synthetic scroll didn't zoom. That was the harness (its events carry no window), not the app, and the old handler already worked for images, so it is back as it was.
 - **Checked:** double-click zooms an image and a video to 250% and back; the video's picture lands exactly where the arithmetic says, so the flipped layer y axis is right and a zoomed video pans the way you drag; 0 resets; F enters and leaves native fullscreen with the toolbars kept; Esc leaves fullscreen first and goes back to the grid on the second press; the transport bar stays normal size while the video is zoomed. `make test-logic` 124/0.
 - **Not checked (needs a person at the trackpad):** drag to pan, pinch, scroll-wheel zoom over a video, swipe between items. Synthetic drags didn't move even a bare test view, and synthetic scrolls carry no window, so the harness can't judge them.
+
+## 2026-11-13 — Fault harness, task 8: scenarios waiting on later pieces, and the final check
+- **webserver/server/copy_faults_later_test.go (new):** three scenarios that fail today, skipped until the piece that fixes them. `IMAGETHAT_RUN_LATER=1` runs them; each was run that way and fails for the reason it states.
+  - *Silent corruption (piece 2):* a source that returns one wrong byte with no error ends in a "successful" copy of the wrong bytes.
+  - *Same-size file from elsewhere (piece 2):* after a failed commit, the retry finds a file of the right size at the destination and counts it as its own, though another device put it there. **A real gap in today's engine** (`vault.CopyIn`'s check for a commit whose reply was lost goes by size alone). The window is narrow: the other file has to land between a failed commit and its retry.
+  - *Upload cut at 90% (piece 3):* the copy sent 6.0 MB for a 3.1 MB file.
+  - Changed from the plan: the first scenario corrupts a source read, not a byte of the stored ciphertext, since gocryptfs's authenticated encryption already catches a stored flip on read. The second plants the other file in the moment the commit fails, so it tests the Go engine, not the Mac's Swift skip.
+- **core/faulttest/proxy.go:** `Proxy.Bytes(dir)`, bytes passed on since the proxy started.
+- **Checked:** `go test -race -count=3` on `core/faulttest` and on the whole fault table (2 min 7 s for the three); `make core-test`, `make web-test`, `make golib-test` (69 checks, 0 failed) and `make test-logic` (110 passed, 0 failed) all pass with every change in place.
+- **Not checked:** Android tests, the apps by hand, real hardware.
