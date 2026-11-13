@@ -717,3 +717,8 @@ Building the plan in `docs/superpowers/plans/2026-11-13-copy-fault-harness.md`, 
 - **Tests differ from the plan in one place:** for `Close` and `Reset` on the upload side the tests check what the target received, not what the client got echoed back. The echo races with the close, and a reset may discard bytes the target hasn't read.
 - **core/Makefile:** `./faulttest/...` added to the test, test-short and vet lists.
 - **Checked:** `go vet`, and `go test -race -count=5 ./faulttest/` (14 tests) passes. Watched the tests fail to compile before the proxy existed.
+
+## 2026-11-13 — Fault harness, task 2: the faulty filesystem wrapper
+- **core/faulttest/fs.go (new):** `FS` wraps a `vault.WriteVFS` and fails `ReadAt`, temp-file `Write` and `Close`, and `Rename` with a chosen error. `FailRename(…, landed: true, …)` does the rename and then returns the error, which is a commit whose reply was lost. `FlakyOpener` puts the same read faults on a plain source file. *Why:* it stands in for a NAS mount, where the copy engine's retries matter most.
+- **Added beyond the plan:** `Clear()` on `FS` and a `*Flaky` handle from `FlakyOpener` (with `Set`, `Clear`, `Fired`), because the scenario runner has to heal a fault before re-running a copy. A read fault matches any read that reaches `From`, so a fault "on the last byte" hits the 1 MiB read that covers it.
+- **Checked:** `go vet`; `go test -race ./faulttest/` passes (24 tests); `make core-test` passes. Watched the tests fail to compile first.
