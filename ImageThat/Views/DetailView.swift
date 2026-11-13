@@ -15,6 +15,8 @@ public struct DetailView: View {
     @GestureState private var panDelta: CGSize = .zero
     @State private var stageSize: CGSize = .zero
     @State private var isFullScreen = false
+    /// The window this viewer is in, reported by `WindowReader`.
+    @State private var viewerWindow: NSWindow?
 
     // Editing state
     @State private var isEditing = false
@@ -163,8 +165,11 @@ public struct DetailView: View {
         }
         .onChange(of: editMode) { _, _ in updateEditedImage() }
         .onChange(of: cropAspect) { _, _ in updateEditedImage() }
+        .background(WindowReader { window in
+            viewerWindow = window
+            isFullScreen = window?.styleMask.contains(.fullScreen) ?? false
+        })
         .onAppear {
-            isFullScreen = viewerWindow?.styleMask.contains(.fullScreen) ?? false
             loadCurrentImage()
             scheduleArrowHide()
         }
@@ -240,8 +245,6 @@ public struct DetailView: View {
     }
 
     // MARK: - Fullscreen
-
-    private var viewerWindow: NSWindow? { NSApp.mainWindow ?? NSApp.keyWindow }
 
     /// The window's own macOS fullscreen; the sidebar and toolbars stay.
     private func toggleFullScreen() {
@@ -616,5 +619,36 @@ class ScrollWheelView: NSView {
     override func scrollWheel(with event: NSEvent) {
         handler(event)
         super.scrollWheel(with: event)
+    }
+}
+
+/// Tells SwiftUI which window a view is in. `NSApp.mainWindow` is not a
+/// substitute: it can be nil, or another window such as Copies.
+struct WindowReader: NSViewRepresentable {
+    let onChange: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView { ReaderView(onChange: onChange) }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class ReaderView: NSView {
+        let onChange: (NSWindow?) -> Void
+
+        init(onChange: @escaping (NSWindow?) -> Void) {
+            self.onChange = onChange
+            super.init(frame: .zero)
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            // After the current view update; state can't change during one.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.onChange(self.window)
+            }
+        }
     }
 }

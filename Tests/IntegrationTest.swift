@@ -6,6 +6,13 @@ import ImageThatCore
 @main
 struct IntegrationTest {
     static func main() async {
+        // `IntegrationTest viewer-ui <folder> <output>` drives the viewer in a
+        // window instead of running the logic tests.
+        if CommandLine.arguments.count == 4, CommandLine.arguments[1] == "viewer-ui" {
+            ViewerUITest.run(folder: CommandLine.arguments[2], output: CommandLine.arguments[3])
+            exit(0)
+        }
+
         var passed = 0
         var failed = 0
 
