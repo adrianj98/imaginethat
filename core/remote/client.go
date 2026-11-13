@@ -81,6 +81,8 @@ type Client struct {
 	// no overall timeout, since a large file over a slow link takes as long
 	// as it takes.
 	stream *http.Client
+	// idle is how long a streamed upload may stand still (Options.Timeout).
+	idle time.Duration
 
 	mu sync.Mutex
 	// accessPassword is set by Login (client-decrypt servers), for logging in
@@ -113,6 +115,7 @@ func New(baseURL string, opts Options) (*Client, error) {
 		base:   u,
 		hc:     &http.Client{Jar: jar, Timeout: opts.Timeout, Transport: rt},
 		stream: &http.Client{Jar: jar, Transport: rt},
+		idle:   opts.Timeout,
 	}, nil
 }
 

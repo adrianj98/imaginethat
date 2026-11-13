@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -59,6 +60,14 @@ type WriteVFS interface {
 	// can stream ciphertext in and then Rename it into place.
 	CreateTemp(dir, pattern string) (io.WriteCloser, string, error)
 	Exists(path string) bool
+}
+
+// ContextTempCreator is an optional WriteVFS capability for backends whose
+// writes can block on a network. The temp file's writes and its Close stop
+// with an error once ctx is cancelled, which is the only way a cancelled copy
+// can get out of an upload that stands still.
+type ContextTempCreator interface {
+	CreateTempContext(ctx context.Context, dir, pattern string) (io.WriteCloser, string, error)
 }
 
 // StaleTempRemover is an optional WriteVFS capability for backends where a
