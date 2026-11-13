@@ -72,6 +72,7 @@ type Proxy struct {
 	conns     map[*pair]struct{}
 	fault     *Fault
 	count     [2]int64
+	total     [2]int64
 	fired     bool
 	firedCh   chan struct{}
 	healCh    chan struct{}
@@ -126,6 +127,14 @@ func (p *Proxy) Arm(f Fault) {
 	p.fired = false
 	p.firedCh = make(chan struct{})
 	p.gen++
+}
+
+// Bytes is how many bytes have been passed on in direction d since the proxy
+// started, over all connections. Swallowed bytes do not count.
+func (p *Proxy) Bytes(d Dir) int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.total[d]
 }
 
 // Heal ends a stall, a blackhole or an outage.
@@ -285,7 +294,11 @@ func (p *Proxy) deliver(pr *pair, d Dir, buf []byte, dst net.Conn) (stop bool) {
 			return false
 		}
 		if allow > 0 {
-			if _, err := dst.Write(buf[:allow]); err != nil {
+			n, err := dst.Write(buf[:allow])
+			p.mu.Lock()
+			p.total[d] += int64(n)
+			p.mu.Unlock()
+			if err != nil {
 				return true
 			}
 		}

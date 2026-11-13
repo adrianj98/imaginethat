@@ -128,6 +128,9 @@ func TestForwardsUntouched(t *testing.T) {
 	if p.Fired() {
 		t.Error("Fired with nothing armed")
 	}
+	if up, down := p.Bytes(Up), p.Bytes(Down); up != 1<<20 || down != 1<<20 {
+		t.Errorf("Bytes: up %d, down %d; want %d each", up, down, 1<<20)
+	}
 	if p.URL() != "http://"+p.Addr() {
 		t.Errorf("URL = %q", p.URL())
 	}
