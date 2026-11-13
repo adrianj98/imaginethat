@@ -702,3 +702,10 @@ User request: "i want to focus on making sure we can copy files with lots of fau
 - **docs/superpowers/specs/2026-11-13-copy-fault-harness-design.md (new):** design for piece 1. User's choices: simulated faults that run in CI (no real hardware, no soak run), a real TCP proxy plus a faulty filesystem wrapper in a new `core/faulttest` package, Go only (the Mac's Swift-only `TransferRetry` paths are left out). Bugs it finds in today's behaviour get fixed in this piece; scenarios that need pieces 2 to 4 are written and skipped.
 - **Corrected while writing:** I told the user the Go client covers both server modes. It only speaks client-decrypt, so server-decrypt is tested at the HTTP level (`POST /upload`, ranged downloads).
 - **No code changed.** Nothing was run.
+
+## 2026-11-13 — Fault harness: implementation plan; zoom/fullscreen handed off
+- **docs/superpowers/plans/2026-11-13-copy-fault-harness.md (new):** eight tasks for the spec the user approved: the TCP fault proxy, the faulty filesystem wrapper, a `PublicURL` on the fake Drive (its upload links bypassed any proxy), the scenario runner with the filesystem paths, server paths plus a server restart, Drive and vault-to-vault, server-decrypt at the HTTP level, and the skipped scenarios for pieces 2 and 3.
+- **Decided in the plan:** the spec's `Down` action is called `Outage` in code, since `Down` is also a direction. "Commit landed, reply lost" on the server path uses a test transport that drops the rename's reply, not the proxy, because a byte count can't pick out one small response reliably. The expected fix for a stalled upload is an idle timer in `core/remote/write.go`, only if the scenario confirms the hang.
+- **Noticed:** `core/drive/upload.go` already resumes an interrupted Drive upload session, so piece 3 may only be needed for server vaults. The plan has the Drive task record what actually happens.
+- **Handed off at the user's request (`/handoff add zoom and fullscreen to vieos and images`):** new branch and worktree `viewer-zoom-fullscreen` from origin/main, with an agent started on a written brief. Not part of this checkout's work.
+- **No code changed.** Nothing was run.
