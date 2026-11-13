@@ -695,3 +695,14 @@ User request: "close the gap", after my list of what a copy did not survive.
 - **Mac, UI:** Retry Failed in the Copies window. Quitting during a copy asks first, and a confirmed quit waits up to 3 s so temp files get cleaned up.
 - **Checked:** `go test ./...` in core, `make web-test`, `make golib-test` 69/0, `make test-logic` 106/0 three times, then 110/0 once with the real-vault and server size checks added.
 - **Not checked:** a real outage against a real SMB share or server, the Retry Failed button and the quit prompt in the running app, and Android and web UI (they get the engine change only).
+
+## 2026-11-13 — Zoom and fullscreen for images and videos
+User request: "add zoom and fullscreen to vieos and images". Answers to my questions: all three clients; on the Mac, native window fullscreen with the sidebar and toolbars kept; videos zoom and pan like images and keep playing; F toggles fullscreen, Esc leaves it, double-click zooms, 0 resets to fit, pinch zooms in and out.
+
+### Mac
+- **ImageThat/Models/ViewerZoom.swift (new):** scale plus pan offset, with the limits (1x to 10x, as before), a clamp so the media can't be dragged off the stage, and double-click zoom around the clicked point. *Why a separate type:* it is plain arithmetic, so it can be tested without a window.
+- **DetailView.swift:** the existing `zoomScale` became `zoom` (a `ViewerZoom`); pinch, scroll wheel and the − / + buttons are the same code calling it. Added: drag to pan while zoomed, double-click to zoom to 2.5x and back, the − / Fit / + buttons for videos too (they were images only), clicking the "Fit"/percent label resets, and a fullscreen button that calls the window's `toggleFullScreen`. Keys: F fullscreen, 0 fit, and Esc now leaves fullscreen first and goes back to the grid on the next press.
+- **VideoPlayerView.swift:** the video takes the zoom and applies it to its `AVPlayerLayer`, clipped to the stage. *Why:* scaling the whole stage, as before, scaled the transport bar with the picture. The player layer view no longer takes mouse events, so pinch, drag, double-click and scroll over a video reach the stage.
+- **ShortcutManager.swift:** two new remappable actions, Full Screen (F) and Zoom to Fit (0); they show up in Preferences with the others.
+- **Tests/ViewerZoomTest.swift (new):** 14 checks on the arithmetic.
+- **Checked:** `make build`; `make test-logic` 124/0.

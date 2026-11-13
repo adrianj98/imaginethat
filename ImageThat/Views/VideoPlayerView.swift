@@ -5,6 +5,9 @@ public struct VideoPlayerView: View {
     @EnvironmentObject var appState: AppState
     @ObservedObject private var shortcuts = ShortcutManager.shared
     public let item: MediaItem
+    /// Zoom of the picture only; the transport bar is not scaled.
+    public var zoomScale: CGFloat
+    public var zoomOffset: CGSize
     @State private var player: AVPlayer?
     @State private var showControls = true
     @State private var hideTask: Task<Void, Never>?
@@ -22,15 +25,20 @@ public struct VideoPlayerView: View {
     /// Whether the next item has been handed to `AppState.prefetch` yet.
     @State private var prefetchedNext = false
 
-    public init(item: MediaItem) {
+    public init(item: MediaItem, zoomScale: CGFloat = 1, zoomOffset: CGSize = .zero) {
         self.item = item
+        self.zoomScale = zoomScale
+        self.zoomOffset = zoomOffset
     }
 
     public var body: some View {
         Group {
             if let player {
                 ZStack(alignment: .bottom) {
-                    VideoPlayerRepresentable(player: player)
+                    // Not hit-testable, so pinch, drag, double-click and
+                    // scroll reach the viewer's stage behind it.
+                    VideoPlayerRepresentable(player: player, zoomScale: zoomScale, zoomOffset: zoomOffset)
+                        .allowsHitTesting(false)
 
                     // Mouse tracking overlay for more reliable detection
                     MouseTrackingView(
@@ -245,19 +253,25 @@ private struct BufferingBadge: View {
 
 public struct VideoPlayerRepresentable: NSViewRepresentable {
     public let player: AVPlayer
+    public var zoomScale: CGFloat
+    public var zoomOffset: CGSize
 
-    public init(player: AVPlayer) {
+    public init(player: AVPlayer, zoomScale: CGFloat = 1, zoomOffset: CGSize = .zero) {
         self.player = player
+        self.zoomScale = zoomScale
+        self.zoomOffset = zoomOffset
     }
 
     public func makeNSView(context: Context) -> PlayerLayerView {
         let view = PlayerLayerView()
         view.player = player
+        view.setZoom(scale: zoomScale, offset: zoomOffset)
         return view
     }
 
     public func updateNSView(_ nsView: PlayerLayerView, context: Context) {
         nsView.player = player
+        nsView.setZoom(scale: zoomScale, offset: zoomOffset)
     }
 }
 
@@ -279,6 +293,7 @@ public final class PlayerLayerView: NSView {
         let host = CALayer()
         host.backgroundColor = nil
         host.isOpaque = false
+        host.masksToBounds = true // a zoomed picture stays inside the stage
         layer = host
         playerLayer.videoGravity = .resizeAspect
         playerLayer.backgroundColor = nil
@@ -288,14 +303,46 @@ public final class PlayerLayerView: NSView {
 
     public override var isOpaque: Bool { false }
 
+    /// Clicks, drags and scrolling pass through to the viewer's stage, which
+    /// owns zoom and pan; this view has no controls of its own.
+    public override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
     public var player: AVPlayer? {
         get { playerLayer.player }
         set { playerLayer.player = newValue }
     }
 
+    private var zoomScale: CGFloat = 1
+    private var zoomOffset: CGSize = .zero
+
+    /// Zooms and pans the picture inside this view. `offset` is in SwiftUI
+    /// terms: positive height moves the picture down.
+    public func setZoom(scale: CGFloat, offset: CGSize) {
+        guard scale != zoomScale || offset != zoomOffset else { return }
+        zoomScale = scale
+        zoomOffset = offset
+        applyZoom()
+    }
+
+    private func applyZoom() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true) // follow the fingers, no lag
+        // The layer's y axis points up, the offset's points down.
+        playerLayer.setAffineTransform(
+            CGAffineTransform(translationX: zoomOffset.width, y: -zoomOffset.height)
+                .scaledBy(x: zoomScale, y: zoomScale))
+        CATransaction.commit()
+    }
+
     public override func layout() {
         super.layout()
+        // `frame` is undefined under a transform; set it at identity.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        playerLayer.setAffineTransform(.identity)
         playerLayer.frame = bounds
+        CATransaction.commit()
+        applyZoom()
     }
 }
 

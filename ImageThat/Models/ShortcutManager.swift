@@ -8,6 +8,8 @@ public enum ShortcutAction: String, CaseIterable, Identifiable {
     case togglePlayPause
     case openFolder
     case goUp
+    case toggleFullScreen
+    case zoomToFit
 
     public var id: String { rawValue }
 
@@ -19,6 +21,8 @@ public enum ShortcutAction: String, CaseIterable, Identifiable {
         case .togglePlayPause:  return "Play / Pause Video"
         case .openFolder:       return "Open Folder"
         case .goUp:             return "Go Up Directory"
+        case .toggleFullScreen: return "Full Screen"
+        case .zoomToFit:        return "Zoom to Fit"
         }
     }
 
@@ -98,6 +102,8 @@ public class ShortcutManager: ObservableObject {
         case .togglePlayPause:  return KeyBinding(keyName: "space")
         case .openFolder:       return KeyBinding(keyName: "o", modifiers: Int(EventModifiers.command.rawValue))
         case .goUp:             return KeyBinding(keyName: "upArrow", modifiers: Int(EventModifiers.command.rawValue))
+        case .toggleFullScreen: return KeyBinding(keyName: "f")
+        case .zoomToFit:        return KeyBinding(keyName: "0")
         }
     }
 

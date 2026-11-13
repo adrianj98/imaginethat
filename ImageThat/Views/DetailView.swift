@@ -9,8 +9,12 @@ public struct DetailView: View {
     @State private var sourceCGImage: CGImage?
     @State private var isLoadingMedia = false
     @GestureState private var dragOffset: CGFloat = 0
-    @State private var zoomScale: CGFloat = 1.0
+    @State private var zoom = ViewerZoom()
     @GestureState private var magnifyDelta: CGFloat = 1.0
+    /// Drag in progress while zoomed; committed to `zoom` when it ends.
+    @GestureState private var panDelta: CGSize = .zero
+    @State private var stageSize: CGSize = .zero
+    @State private var isFullScreen = false
 
     // Editing state
     @State private var isEditing = false
@@ -42,7 +46,7 @@ public struct DetailView: View {
                 .padding(.trailing, panelVisible ? 316 : 32)
                 .padding(.bottom, isEditing ? 44 : 16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .gesture(zoomScale > 1.0 || isEditing ? nil : swipeGesture)
+                .gesture(zoom.isZoomed || isEditing ? nil : swipeGesture)
 
             if !isEditing {
                 // Navigation arrows (auto-hide on mouse idle, but stay
@@ -123,16 +127,35 @@ public struct DetailView: View {
                 appState.navigateNext()
                 return .handled
             }
+            if shortcuts.matches(keyPress, action: .toggleFullScreen) {
+                toggleFullScreen()
+                return .handled
+            }
+            if shortcuts.matches(keyPress, action: .zoomToFit) {
+                zoom.reset()
+                return .handled
+            }
             if shortcuts.matches(keyPress, action: .backToGrid) {
-                appState.exitDetail()
+                // Leave fullscreen first; the next press goes back to the grid.
+                if isFullScreen {
+                    toggleFullScreen()
+                } else {
+                    appState.exitDetail()
+                }
                 return .handled
             }
             return .ignored
         }
         .onChange(of: appState.selectedIndex) { _, _ in
             resetEditingState()
-            zoomScale = 1.0
+            zoom.reset()
             loadCurrentImage()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { note in
+            if (note.object as? NSWindow) === viewerWindow { isFullScreen = true }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { note in
+            if (note.object as? NSWindow) === viewerWindow { isFullScreen = false }
         }
         .onReceive(pipeline.objectWillChange) { _ in
             // objectWillChange fires before the value lands; render after it.
@@ -141,6 +164,7 @@ public struct DetailView: View {
         .onChange(of: editMode) { _, _ in updateEditedImage() }
         .onChange(of: cropAspect) { _, _ in updateEditedImage() }
         .onAppear {
+            isFullScreen = viewerWindow?.styleMask.contains(.fullScreen) ?? false
             loadCurrentImage()
             scheduleArrowHide()
         }
@@ -152,9 +176,12 @@ public struct DetailView: View {
     @ViewBuilder
     private var stage: some View {
         if let item = appState.selectedItem {
+            let isVideo = item.mediaType == .video
             ZStack {
-                if item.mediaType == .video {
-                    VideoPlayerView(item: item)
+                if isVideo {
+                    // The video zooms inside its own view, so the transport
+                    // bar stays put and stays its normal size.
+                    VideoPlayerView(item: item, zoomScale: liveScale, zoomOffset: liveOffset)
                 } else {
                     imageView
                 }
@@ -164,20 +191,61 @@ public struct DetailView: View {
                                     aspect: cropAspect.ratio(for: shown.size))
                 }
             }
-            .scaleEffect(zoomScale * magnifyDelta)
+            .scaleEffect(isVideo ? 1 : liveScale)
+            .offset(isVideo ? .zero : liveOffset)
+            .background(GeometryReader { geo in
+                Color.clear
+                    .onAppear { stageSize = geo.size }
+                    .onChange(of: geo.size) { _, size in
+                        stageSize = size
+                        zoom.pan(by: .zero, in: size) // re-clamp after a resize
+                    }
+            })
             .gesture(
                 MagnificationGesture()
                     .updating($magnifyDelta) { value, state, _ in state = value }
                     .onEnded { value in
-                        zoomScale = max(1.0, min(zoomScale * value, 10.0))
+                        zoom.zoom(by: value, in: stageSize)
                     }
             )
+            .gesture(zoom.isZoomed && !isCropping ? panGesture : nil)
             .contentShape(Rectangle())
+            .onTapGesture(count: 2) { location in
+                guard !isEditing else { return }
+                let fromCentre = CGPoint(x: location.x - stageSize.width / 2,
+                                         y: location.y - stageSize.height / 2)
+                withAnimation(.easeOut(duration: 0.2)) { zoom.toggle(at: fromCentre, in: stageSize) }
+            }
             .onScrollWheel { delta in
                 guard !isCropping else { return }
-                zoomScale = max(1.0, min(zoomScale * (1 - delta.scrollingDeltaY * 0.01), 10.0))
+                zoom.zoom(by: 1 - delta.scrollingDeltaY * 0.01, in: stageSize)
             }
         }
+    }
+
+    /// Scale and offset as drawn right now, including a pinch or drag that
+    /// hasn't ended.
+    private var liveScale: CGFloat {
+        max(ViewerZoom.minScale, min(zoom.scale * magnifyDelta, ViewerZoom.maxScale))
+    }
+
+    private var liveOffset: CGSize {
+        zoom.offset(adding: panDelta, scaledBy: magnifyDelta, in: stageSize)
+    }
+
+    private var panGesture: some Gesture {
+        DragGesture(minimumDistance: 2)
+            .updating($panDelta) { value, state, _ in state = value.translation }
+            .onEnded { value in zoom.pan(by: value.translation, in: stageSize) }
+    }
+
+    // MARK: - Fullscreen
+
+    private var viewerWindow: NSWindow? { NSApp.mainWindow ?? NSApp.keyWindow }
+
+    /// The window's own macOS fullscreen; the sidebar and toolbars stay.
+    private func toggleFullScreen() {
+        viewerWindow?.toggleFullScreen(nil)
     }
 
     // MARK: - Floating toolbars
@@ -220,26 +288,35 @@ public struct DetailView: View {
 
             Spacer(minLength: 0)
 
-            if appState.selectedItem?.mediaType == .image {
-                HStack(spacing: 2) {
-                    GlassIconButton(systemImage: "minus", help: "Zoom Out", dark: true) {
-                        zoomScale = max(1.0, zoomScale / 1.25)
-                    }
-                    Text(zoomScale <= 1.0 ? "Fit" : "\(Int((zoomScale * 100).rounded()))%")
+            HStack(spacing: 2) {
+                GlassIconButton(systemImage: "minus", help: "Zoom Out", dark: true) {
+                    zoom.zoom(by: 1 / 1.25, in: stageSize)
+                }
+                Button(action: { zoom.reset() }) {
+                    Text(zoom.isZoomed ? "\(Int((zoom.scale * 100).rounded()))%" : "Fit")
                         .font(.system(size: 12))
                         .monospacedDigit()
-                        .frame(minWidth: 44)
-                    GlassIconButton(systemImage: "plus", help: "Zoom In", dark: true) {
-                        zoomScale = min(10.0, zoomScale * 1.25)
-                    }
+                        .frame(minWidth: 44, minHeight: 32)
+                        .contentShape(Rectangle())
                 }
-                .padding(.horizontal, 4)
-                .glassCapsule(dark: true)
+                .buttonStyle(.plain)
+                .help("Zoom to Fit")
+                GlassIconButton(systemImage: "plus", help: "Zoom In", dark: true) {
+                    zoom.zoom(by: 1.25, in: stageSize)
+                }
+                GlassIconButton(systemImage: isFullScreen ? "arrow.down.right.and.arrow.up.left"
+                                                          : "arrow.up.left.and.arrow.down.right",
+                                help: isFullScreen ? "Exit Full Screen" : "Enter Full Screen",
+                                isOn: isFullScreen, dark: true) {
+                    toggleFullScreen()
+                }
             }
+            .padding(.horizontal, 4)
+            .glassCapsule(dark: true)
 
             HStack(spacing: 2) {
                 GlassIconButton(systemImage: "pencil", help: "Edit — images only", dark: true) {
-                    zoomScale = 1.0
+                    zoom.reset()
                     editMode = .adjust
                     isEditing = true
                 }

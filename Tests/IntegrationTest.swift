@@ -214,6 +214,9 @@ struct IntegrationTest {
         // === Test 6: Copy batches ===
         await TransferCenterTest.run { check($0, $1, $2) }
 
+        // === Test 7: Viewer zoom and pan ===
+        ViewerZoomTest.run { check($0, $1, $2) }
+
         // === Summary ===
         print("\n=== Results: \(passed) passed, \(failed) failed ===")
         if failed > 0 {
