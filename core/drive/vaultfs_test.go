@@ -7,11 +7,14 @@ import (
 	"errors"
 	"io/fs"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -450,5 +453,67 @@ func TestFindVaultRootAndPlainBrowsing(t *testing.T) {
 	}
 	if th, err := c.Thumbnail(ctx, img.ThumbnailLink, 400); err != nil || !strings.HasSuffix(string(th), "=s400") {
 		t.Fatalf("thumbnail = %q, %v", th, err)
+	}
+}
+
+// A proxy in front of the fake Drive must carry every request, including the
+// upload session links the server hands out.
+func TestPublicURLCarriesUploads(t *testing.T) {
+	defer drive.SetUploadChunk(256 << 10)()
+	srv := drivetest.New()
+	defer srv.Close()
+	target, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sessionRequests atomic.Int64
+	rp := httputil.NewSingleHostReverseProxy(target)
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/upload/session/") {
+			sessionRequests.Add(1)
+		}
+		rp.ServeHTTP(w, r)
+	}))
+	defer front.Close()
+	srv.PublicURL = front.URL
+
+	s, _, _ := newVault(t, srv, nil)
+	data := randBytes(t, 600<<10)
+	if _, err := s.Create("big.bin", bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.ReadFile("big.bin"); err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("read back: %v", err)
+	}
+	if sessionRequests.Load() == 0 {
+		t.Error("no upload session request went through the public URL")
+	}
+}
+
+// A copy's context must reach a Drive upload, or cancelling a copy cannot
+// stop an upload that is retrying a chunk.
+func TestCancelStopsADriveUpload(t *testing.T) {
+	defer drive.SetUploadChunk(256 << 10)()
+	srv := drivetest.New()
+	defer srv.Close()
+	_, v, _ := newVault(t, srv, nil)
+
+	var _ vault.ContextTempCreator = v
+	ctx, cancel := context.WithCancel(context.Background())
+	w, _, err := v.CreateTempContext(ctx, "", "tmp-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if _, err := w.Write(randBytes(t, 600<<10)); !errors.Is(err, context.Canceled) {
+		t.Errorf("Write after cancel returned %v, want context.Canceled", err)
+	}
+	if err := w.Close(); err == nil {
+		t.Error("Close after cancel reported success")
+	}
+	for _, name := range srv.Children(srv.Lookup("root", "Vault")) {
+		if strings.HasPrefix(name, "tmp-") {
+			t.Errorf("a cancelled upload left %s on Drive", name)
+		}
 	}
 }

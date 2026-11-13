@@ -36,7 +36,7 @@ func (s *Session) CopyIn(ctx context.Context, plainPath string, open xfer.Opener
 	failures := 0
 	for {
 		src := &watchedReader{r: r}
-		written, err := s.Create(plainPath, src)
+		written, err := s.create(ctx, plainPath, src)
 		if err == nil {
 			// encryptStream ends at the first EOF; make sure that was the real end.
 			if written != size {

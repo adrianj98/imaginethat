@@ -322,3 +322,60 @@ func TestCreateClearsStaleTempsOnly(t *testing.T) {
 		t.Errorf("a temp that may still be in use was removed: %v", err)
 	}
 }
+
+// ctxTemps is storage whose temp files can be told to stop.
+type ctxTemps struct {
+	WriteVFS
+	got context.Context
+}
+
+func (c *ctxTemps) CreateTempContext(ctx context.Context, dir, pattern string) (io.WriteCloser, string, error) {
+	c.got = ctx
+	out, p, err := c.WriteVFS.CreateTemp(dir, pattern)
+	if err != nil {
+		return nil, "", err
+	}
+	return blockedWriter{out, ctx}, p, nil
+}
+
+// blockedWriter is an upload on a link that stands still: a write returns
+// only when the copy is cancelled.
+type blockedWriter struct {
+	io.WriteCloser
+	ctx context.Context
+}
+
+func (b blockedWriter) Write(p []byte) (int, error) {
+	<-b.ctx.Done()
+	return 0, b.ctx.Err()
+}
+
+// A copy's context must reach the storage, or cancelling cannot stop a write
+// that is blocked on the network.
+func TestCopyInCancelReachesABlockedWrite(t *testing.T) {
+	s, dir := openWritable(t)
+	store := &ctxTemps{WriteVFS: s.fs.(WriteVFS)}
+	s.fs = store
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.CopyIn(ctx, "blocked.bin", blipOpener(patternBytes(3, 100_000), 0), quick())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("CopyIn returned %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("CopyIn did not return within 2s of being cancelled")
+	}
+	if store.got == nil {
+		t.Error("the storage was never given the copy's context")
+	}
+	if left := leftoverTemps(t, dir); len(left) != 0 {
+		t.Errorf("leftover temp files: %v", left)
+	}
+}

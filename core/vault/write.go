@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -50,6 +51,12 @@ func (s *Session) sweepStaleTemps(fs WriteVFS, dir string) {
 //
 // Returns the number of plaintext bytes written.
 func (s *Session) Create(plainPath string, r io.Reader) (int64, error) {
+	return s.create(context.Background(), plainPath, r)
+}
+
+// create is Create with a context for the storage's writes, on backends
+// that can stop them (ContextTempCreator).
+func (s *Session) create(ctx context.Context, plainPath string, r io.Reader) (int64, error) {
 	if err := s.checkOpen(); err != nil {
 		return 0, err
 	}
@@ -75,7 +82,15 @@ func (s *Session) Create(plainPath string, r io.Reader) (int64, error) {
 	}
 
 	s.sweepStaleTemps(fs, cipherDir)
-	tmp, tmpPath, err := fs.CreateTemp(cipherDir, uploadTempPrefix+"*")
+	var (
+		tmp     io.WriteCloser
+		tmpPath string
+	)
+	if c, ok := fs.(ContextTempCreator); ok {
+		tmp, tmpPath, err = c.CreateTempContext(ctx, cipherDir, uploadTempPrefix+"*")
+	} else {
+		tmp, tmpPath, err = fs.CreateTemp(cipherDir, uploadTempPrefix+"*")
+	}
 	if err != nil {
 		return 0, fmt.Errorf("create temp in %s: %w", cipherDir, err)
 	}

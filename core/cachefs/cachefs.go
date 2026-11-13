@@ -241,4 +241,13 @@ func (f *WriteFS) CreateTemp(dir, pattern string) (io.WriteCloser, string, error
 	return f.w.CreateTemp(dir, pattern)
 }
 
+// CreateTempContext passes a copy's context on to a backend that can stop a
+// blocked upload (vault.ContextTempCreator).
+func (f *WriteFS) CreateTempContext(ctx context.Context, dir, pattern string) (io.WriteCloser, string, error) {
+	if c, ok := f.w.(vault.ContextTempCreator); ok {
+		return c.CreateTempContext(ctx, dir, pattern)
+	}
+	return f.w.CreateTemp(dir, pattern)
+}
+
 func (f *WriteFS) Exists(path string) bool { return f.w.Exists(path) }
