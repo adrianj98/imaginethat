@@ -29,6 +29,11 @@ type Server struct {
 	// PageSize caps files.list pages, to exercise paging. Default 1000.
 	PageSize int
 
+	// PublicURL, if set, replaces URL in Config and in every link the
+	// server hands out (upload sessions, thumbnails), so a proxy placed in
+	// front of the server carries all of a client's requests.
+	PublicURL string
+
 	mu       sync.Mutex
 	files    map[string]*entry
 	nextID   int
@@ -72,8 +77,16 @@ func New() *Server {
 func (s *Server) Config() drive.Config {
 	return drive.Config{
 		ClientID: "client", ClientSecret: "secret", RefreshToken: refreshToken,
-		APIBase: s.URL, TokenURL: s.URL + "/token", AuthURL: s.URL + "/auth",
+		APIBase: s.base(), TokenURL: s.base() + "/token", AuthURL: s.base() + "/auth",
 	}
+}
+
+// base is the address clients are told to use.
+func (s *Server) base() string {
+	if s.PublicURL != "" {
+		return s.PublicURL
+	}
+	return s.URL
 }
 
 // Client is a signed-in client for this server.
@@ -171,7 +184,7 @@ func (s *Server) entryJSON(e *entry, withParents bool) map[string]any {
 	if e.mime != drive.FolderMime {
 		m["size"] = strconv.Itoa(len(e.data))
 		if strings.HasPrefix(e.mime, "image/") {
-			m["thumbnailLink"] = s.URL + "/thumb/" + e.id + "=s220"
+			m["thumbnailLink"] = s.base() + "/thumb/" + e.id + "=s220"
 		}
 	}
 	if withParents && e.parent != "" {
@@ -438,7 +451,7 @@ func (s *Server) serveUpload(w http.ResponseWriter, r *http.Request, id string) 
 		sid := strconv.Itoa(s.nextID)
 		s.sessions[sid] = &session{meta: meta, fileID: id}
 		s.mu.Unlock()
-		w.Header().Set("Location", s.URL+"/upload/session/"+sid)
+		w.Header().Set("Location", s.base()+"/upload/session/"+sid)
 		w.WriteHeader(http.StatusOK)
 	default:
 		apiError(w, http.StatusBadRequest, "uploadType")

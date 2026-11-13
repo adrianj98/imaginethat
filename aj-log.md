@@ -722,3 +722,8 @@ Building the plan in `docs/superpowers/plans/2026-11-13-copy-fault-harness.md`, 
 - **core/faulttest/fs.go (new):** `FS` wraps a `vault.WriteVFS` and fails `ReadAt`, temp-file `Write` and `Close`, and `Rename` with a chosen error. `FailRename(…, landed: true, …)` does the rename and then returns the error, which is a commit whose reply was lost. `FlakyOpener` puts the same read faults on a plain source file. *Why:* it stands in for a NAS mount, where the copy engine's retries matter most.
 - **Added beyond the plan:** `Clear()` on `FS` and a `*Flaky` handle from `FlakyOpener` (with `Set`, `Clear`, `Fired`), because the scenario runner has to heal a fault before re-running a copy. A read fault matches any read that reaches `From`, so a fault "on the last byte" hits the 1 MiB read that covers it.
 - **Checked:** `go vet`; `go test -race ./faulttest/` passes (24 tests); `make core-test` passes. Watched the tests fail to compile first.
+
+## 2026-11-13 — Fault harness, task 3: the fake Drive can sit behind a proxy
+- **core/drive/drivetest/drivetest.go:** new `PublicURL` field. When set, `Config()` and the links the server hands out (upload session `Location`, `thumbnailLink`) use it. *Why:* the server built those links from its own address, so a resumable upload would have gone around any proxy placed in front of it.
+- **core/drive/vaultfs_test.go:** `TestPublicURLCarriesUploads` puts a counting reverse proxy in front and checks that upload session requests pass through it.
+- **Checked:** watched the test fail to compile; `go test -race ./drive/...` passes.
