@@ -78,14 +78,20 @@ type rig struct {
 	// heal clears every fault.
 	heal func()
 
+	// opts are the retry settings the copy runs with. A scenario may widen
+	// them in arm.
+	opts xfer.Options
+
 	proxy *faulttest.Proxy
 	fs    *faulttest.FS
 	flaky *faulttest.Flaky
+	// also reports a fault that none of the three above carries.
+	also func() bool
 }
 
 func (r *rig) fired() bool {
 	return (r.proxy != nil && r.proxy.Fired()) || (r.fs != nil && r.fs.Fired()) ||
-		(r.flaky != nil && r.flaky.Fired())
+		(r.flaky != nil && r.flaky.Fired()) || (r.also != nil && r.also())
 }
 
 type copyPath struct {
@@ -140,8 +146,25 @@ func (r *rig) assertCopied(t *testing.T) {
 	if sha256.Sum256(got) != sha256.Sum256(r.want) {
 		t.Errorf("destination differs from the source: %d bytes, want %d", len(got), len(r.want))
 	}
-	if left := r.leftovers(); len(left) > 0 {
-		t.Errorf("temp files left behind: %v", left)
+	r.assertNoLeftovers(t)
+}
+
+// tidyWait is how long a server gets to notice a dead upload and remove its
+// temp file. A connection that dies without a reset reaching the server (a
+// client that drops off the network, and sometimes this proxy's reset under
+// load) is only found by TCP keepalive, which Go's servers send after 15s.
+const tidyWait = 30 * time.Second
+
+func (r *rig) assertNoLeftovers(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(tidyWait)
+	left := r.leftovers()
+	for len(left) > 0 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		left = r.leftovers()
+	}
+	if len(left) > 0 {
+		t.Errorf("temp files still there after %v: %v", tidyWait, left)
 	}
 }
 
@@ -150,9 +173,7 @@ func (r *rig) assertNothing(t *testing.T) {
 	if got, err := r.got(); !errors.Is(err, vault.ErrNotFound) {
 		t.Errorf("destination after a failed copy: %d bytes, err %v; want not found", len(got), err)
 	}
-	if left := r.leftovers(); len(left) > 0 {
-		t.Errorf("temp files left behind: %v", left)
-	}
+	r.assertNoLeftovers(t)
 }
 
 func runScenario(t *testing.T, p copyPath, size int, sc scenario) {
@@ -320,9 +341,9 @@ var localIn = copyPath{name: "local in", setup: func(t *testing.T, size int) *ri
 	if err := s.Mkdir(filepath.Dir(destPath)); err != nil {
 		t.Fatal(err)
 	}
-	r := &rig{want: want, fs: ffs, heal: ffs.Clear}
+	r := &rig{want: want, opts: faultOpts(), fs: ffs, heal: ffs.Clear}
 	r.copy = func(ctx context.Context) error {
-		_, err := s.CopyIn(ctx, destPath, xfer.OpenFile(src), faultOpts())
+		_, err := s.CopyIn(ctx, destPath, xfer.OpenFile(src), r.opts)
 		return err
 	}
 	r.got, r.entries = localReaders(t, dir)
@@ -344,9 +365,9 @@ var mountIn = copyPath{name: "mount in", setup: func(t *testing.T, size int) *ri
 		t.Fatal(err)
 	}
 	open, flaky := faulttest.FlakyOpener(xfer.OpenFile(src), faulttest.ReadFault{})
-	r := &rig{want: want, flaky: flaky, heal: flaky.Clear}
+	r := &rig{want: want, opts: faultOpts(), flaky: flaky, heal: flaky.Clear}
 	r.copy = func(ctx context.Context) error {
-		_, err := s.CopyIn(ctx, destPath, open, faultOpts())
+		_, err := s.CopyIn(ctx, destPath, open, r.opts)
 		return err
 	}
 	r.got, r.entries = localReaders(t, dir)
@@ -478,9 +499,9 @@ func TestCopyFaultsSourceShrinks(t *testing.T) {
 	}
 	open, flaky := faulttest.FlakyOpener(shrinking, faulttest.ReadFault{From: faultSize / 2, Calls: 1, Err: syscall.EIO})
 
-	r := &rig{want: want, flaky: flaky}
+	r := &rig{want: want, opts: faultOpts(), flaky: flaky}
 	r.copy = func(ctx context.Context) error {
-		_, err := s.CopyIn(ctx, destPath, open, faultOpts())
+		_, err := s.CopyIn(ctx, destPath, open, r.opts)
 		return err
 	}
 	r.got, r.entries = localReaders(t, dir)

@@ -231,7 +231,14 @@ func TestBlackholeUntilHeal(t *testing.T) {
 	}
 	p.Heal()
 	if !echoWorks(p) {
-		t.Error("no echo after Heal")
+		t.Error("no echo on a new connection after Heal")
+	}
+	// The connection that lost bytes stays silent: its peer is gone and no
+	// reset ever comes, which is what a half-open connection looks like.
+	_, _ = c.Write(pattern(100))
+	_ = c.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+	if n, err := io.ReadFull(c, make([]byte, 100)); n != 0 || !errors.As(err, &ne) || !ne.Timeout() {
+		t.Errorf("after Heal the old connection read %d bytes, err %v; want silence", n, err)
 	}
 }
 
@@ -351,5 +358,34 @@ func TestCloseStopsEverything(t *testing.T) {
 	}
 	if echoWorks(p) {
 		t.Error("a closed proxy still forwards")
+	}
+}
+
+// A connection left dead by a blackhole stays silent while both ends hold
+// on. Once one end gives up, the other is cut too, which stands for the
+// keepalive that tells a real server its client is gone.
+func TestDeadConnectionEndsWhenOneSideLeaves(t *testing.T) {
+	addr, got := sinkServer(t)
+	p := NewProxy(t, addr)
+	p.Arm(Fault{Dir: Up, At: 10, Action: Blackhole})
+	c := dial(t, p)
+	if _, err := c.Write(pattern(100)); err != nil {
+		t.Fatal(err)
+	}
+	waitFired(t, p)
+	p.Heal()
+	select {
+	case r := <-got:
+		t.Fatalf("the target's connection ended while the client still held on: %+v", r)
+	case <-time.After(200 * time.Millisecond):
+	}
+	c.Close()
+	select {
+	case r := <-got:
+		if r.n > 10 {
+			t.Errorf("target got %d bytes, want at most the 10 before the blackhole", r.n)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the target's connection is still open 2s after the client left")
 	}
 }

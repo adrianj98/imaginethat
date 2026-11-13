@@ -34,8 +34,12 @@ const (
 	// until Heal, then carries on. The connection stays open.
 	Stall
 	// Blackhole swallows every byte, on every connection and in both
-	// directions, until Heal. Neither side sees an error. Heal resets the
-	// connections that lost bytes, since their streams now have holes.
+	// directions, until Heal. Neither side sees an error. After Heal new
+	// connections work, and the ones that were open stay silent: their peer
+	// is gone and no reset comes, like a half-open connection after a
+	// router or server lost its state. When one end of such a connection
+	// gives up and closes, the other end is reset, standing for the TCP
+	// keepalive that would tell it.
 	Blackhole
 	// Outage resets the open connections and refuses new ones for
 	// Fault.For, or until Heal when For is zero.
@@ -147,7 +151,7 @@ func (p *Proxy) heal(gen int) {
 	p.healCh = make(chan struct{})
 	p.mu.Unlock()
 	for _, pr := range holed {
-		pr.reset()
+		pr.dead.Store(true)
 	}
 }
 
@@ -248,7 +252,7 @@ func (p *Proxy) forward(pr *pair, d Dir) {
 		n, err := src.Read(buf)
 		// After a clean close the rest is read and dropped, so that closing
 		// with unread bytes does not turn into a reset.
-		if n > 0 && !pr.closing.Load() {
+		if n > 0 && !pr.closing.Load() && !pr.dead.Load() {
 			if stop := p.deliver(pr, d, buf[:n], dst); stop {
 				pr.shut()
 				return
@@ -256,6 +260,12 @@ func (p *Proxy) forward(pr *pair, d Dir) {
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) && !pr.closing.Load() {
+				if pr.dead.Load() {
+					// One end of a dead connection gave up. Cut the other
+					// too: a real peer would learn of it from keepalive.
+					pr.reset()
+					return
+				}
 				// One side finished sending; the other may still be.
 				closeWrite(dst)
 				return
@@ -346,6 +356,7 @@ func (p *Proxy) account(d Dir, n int) (allow int, swallow bool, act *Fault, heal
 type pair struct {
 	client, target net.Conn
 	closing        atomic.Bool
+	dead           atomic.Bool // swallows everything, forever
 	once           sync.Once
 }
 
