@@ -695,3 +695,10 @@ User request: "close the gap", after my list of what a copy did not survive.
 - **Mac, UI:** Retry Failed in the Copies window. Quitting during a copy asks first, and a confirmed quit waits up to 3 s so temp files get cleaned up.
 - **Checked:** `go test ./...` in core, `make web-test`, `make golib-test` 69/0, `make test-logic` 106/0 three times, then 110/0 once with the real-vault and server size checks added.
 - **Not checked:** a real outage against a real SMB share or server, the Retry Failed button and the quit prompt in the running app, and Android and web UI (they get the engine change only).
+
+## 2026-11-13 — Copy fault tolerance: plan of four pieces, spec for the fault harness
+User request: "i want to focus on making sure we can copy files with lots of fault tolorance". Asked which gaps matter; the user chose all four: prove it under real faults, verify content, resume big uploads, survive quit/crash/sleep.
+- **Split into four pieces**, order chosen by the user: 1 fault harness and tests, 2 content verification, 3 resumable uploads, 4 batches survive quit. *Why:* they touch different layers and the harness tests the other three.
+- **docs/superpowers/specs/2026-11-13-copy-fault-harness-design.md (new):** design for piece 1. User's choices: simulated faults that run in CI (no real hardware, no soak run), a real TCP proxy plus a faulty filesystem wrapper in a new `core/faulttest` package, Go only (the Mac's Swift-only `TransferRetry` paths are left out). Bugs it finds in today's behaviour get fixed in this piece; scenarios that need pieces 2 to 4 are written and skipped.
+- **Corrected while writing:** I told the user the Go client covers both server modes. It only speaks client-decrypt, so server-decrypt is tested at the HTTP level (`POST /upload`, ranged downloads).
+- **No code changed.** Nothing was run.
