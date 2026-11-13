@@ -709,3 +709,11 @@ User request: "i want to focus on making sure we can copy files with lots of fau
 - **Noticed:** `core/drive/upload.go` already resumes an interrupted Drive upload session, so piece 3 may only be needed for server vaults. The plan has the Drive task record what actually happens.
 - **Handed off at the user's request (`/handoff add zoom and fullscreen to vieos and images`):** new branch and worktree `viewer-zoom-fullscreen` from origin/main, with an agent started on a written brief. Not part of this checkout's work.
 - **No code changed.** Nothing was run.
+
+## 2026-11-13 — Fault harness, task 1: the TCP fault proxy
+Building the plan in `docs/superpowers/plans/2026-11-13-copy-fault-harness.md`, on main in place (the user's choice when asked).
+- **core/faulttest/proxy.go (new):** `Proxy` forwards TCP to a target and applies one armed `Fault` at a byte count in one direction: `Close`, `Reset`, `Stall`, `Blackhole`, `Outage`, plus `Truncate(at)` for a short response. Byte counts start at `Arm`, so login traffic before a copy doesn't count. *Why a real proxy:* the copy tests so far inject errors at Go interfaces and never produce a half-open or reset socket.
+- **Choices made while building:** a clean close half-closes both ends and drains for up to 500 ms, because closing a socket with unread bytes turns into a reset. `Heal` after a blackhole resets the connections that lost bytes, since their streams have holes. `Stall` also ends on `Heal`.
+- **Tests differ from the plan in one place:** for `Close` and `Reset` on the upload side the tests check what the target received, not what the client got echoed back. The echo races with the close, and a reset may discard bytes the target hasn't read.
+- **core/Makefile:** `./faulttest/...` added to the test, test-short and vet lists.
+- **Checked:** `go vet`, and `go test -race -count=5 ./faulttest/` (14 tests) passes. Watched the tests fail to compile before the proxy existed.
