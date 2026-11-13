@@ -503,6 +503,13 @@ func readMultipart(r *http.Request) (map[string]any, []byte, error) {
 }
 
 func (s *Server) serveSession(w http.ResponseWriter, r *http.Request, sid string) {
+	// Read the chunk before taking the lock: a sender that stalls or
+	// vanishes must not hold up every other request.
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		apiError(w, http.StatusBadRequest, "chunk cut short")
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, ok := s.sessions[sid]
@@ -515,7 +522,6 @@ func (s *Server) serveSession(w http.ResponseWriter, r *http.Request, sid string
 		w.WriteHeader(499)
 		return
 	}
-	data, _ := io.ReadAll(r.Body)
 	cr := r.Header.Get("Content-Range") // "bytes a-b/total", "bytes */total", "bytes */*"
 	rest := strings.TrimPrefix(cr, "bytes ")
 	slash := strings.LastIndex(rest, "/")
