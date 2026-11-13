@@ -706,3 +706,14 @@ User request: "add zoom and fullscreen to vieos and images". Answers to my quest
 - **ShortcutManager.swift:** two new remappable actions, Full Screen (F) and Zoom to Fit (0); they show up in Preferences with the others.
 - **Tests/ViewerZoomTest.swift (new):** 14 checks on the arithmetic.
 - **Checked:** `make build`; `make test-logic` 124/0.
+
+### Web
+- **webserver/web/src/viewerZoom.ts (new), viewerZoom.test.ts (new):** the same zoom and pan arithmetic as the Mac's `ViewerZoom`, 7 tests.
+- **Lightbox.tsx:** the `zoom` number became scale plus offset; the − / + buttons and `+`/`-` keys are the same. Added: drag to pan while zoomed, double-click to 2.5x and back, two-finger touch pinch, zoom for videos, the "Fit"/percent label as a reset button, and a fullscreen button (browser Fullscreen API on the viewer, so the toolbar and arrows stay). Keys: F fullscreen, 0 fit, Esc leaves fullscreen first.
+- **Wheel:** now a non-passive listener. *Why:* React's `onWheel` can't cancel the event, so a trackpad pinch zoomed the whole page along with the photo. Pinch speed follows the fingers instead of a fixed 10% per event, and zoom is centred on the cursor.
+- **Stray double-click:** with the info panel closed the grid opens the viewer on the first click, so the second click of a double-click landed on the viewer and zoomed it. The viewer ignores a double-click unless both presses were on it. Found in the browser check.
+- **components/VideoBar.tsx (new):** play/pause, seek and time, shown only while a video is zoomed. *Why:* the browser's video controls are part of the picture and would be zoomed and panned away with it, so they are switched off while zoomed. At fit the browser's controls are used as before. A click on a zoomed video plays or pauses.
+- **`controlsList="nofullscreen"` on the video:** the browser's own fullscreen button showed the video alone, without the viewer; the viewer's button replaces it. Firefox and Safari ignore this attribute, so their button is still there.
+- **Icon.tsx, styles.css:** pause, expand and compress icons; grab cursor, no transition while dragging, the video bar.
+- **Checked:** `npm run typecheck`, `vitest` 15/15, `make web-test`. In Chrome against a real server and a copy of the test vault, with a generated image and 20 s clip: double-click zoom at a point and back, drag pan and its clamp, touch pinch, trackpad pinch (page zoom suppressed), − / Fit / + buttons, video zoomed to 300% and panned while it kept playing, click to pause, bar play and seek, 0, F into fullscreen, arrow to the next item staying fullscreen, Esc leaving fullscreen then Esc closing. Pointer and wheel events were sent by script; keys and clicks were real.
+- **Not checked:** Safari and Firefox, a real touch screen, Safari's trackpad pinch (its own gesture events). On a 500 px wide window the toolbar wraps to two rows and covers the top of the stage; it has one more button than before.

@@ -902,7 +902,14 @@ input {
 
 .zoom-label {
   min-width: 44px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
   text-align: center;
+  font: inherit;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
@@ -920,6 +927,48 @@ input {
   gap: 8px;
   overflow: hidden;
   transition: right 0.2s ease-out;
+  /* Pinch and drag are the viewer's, not the browser's page zoom and scroll. */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.viewer-stage.zoomed {
+  cursor: grab;
+}
+
+.viewer-stage.dragging {
+  cursor: grabbing;
+}
+
+/* Follow the pointer exactly while dragging or pinching. */
+.viewer-stage.dragging img,
+.viewer-stage.dragging video {
+  transition: none;
+}
+
+.video-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  z-index: 2;
+  width: min(520px, calc(100% - 24px));
+  gap: 8px;
+  padding: 0 14px 0 4px;
+  cursor: default;
+}
+
+.video-bar input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  accent-color: currentColor;
+}
+
+.video-bar .time {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .viewer.with-info .viewer-stage {
